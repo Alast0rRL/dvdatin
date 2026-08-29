@@ -1,0 +1,2 @@
+# Dev/test dependencies (для прогона тестов и сравнения с baseline на сервере)
+pytest>=8.0

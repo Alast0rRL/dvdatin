@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# DvAI runtime
+data/sessions/*.session
+data/sessions/*.session-journal
+data/logs/*.log
+data/database.db
+
+# SQLite runtime artifacts (WAL/SHM)
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+data/database.db-wal
+data/database.db-shm
+
+# Config (secrets)
+config/config.yaml
+
+# Proxy (vendored xray-core + real VLESS credentials — NEVER commit)
+proxy/
+
+# Test cache
+.pytest_cache/
+
+# Telethon session files (any location)
+*.session
+*.session-journal
+
+# OS
+.DS_Store
+Thumbs.db

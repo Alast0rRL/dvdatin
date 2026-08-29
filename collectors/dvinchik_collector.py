@@ -1,0 +1,883 @@
+# Коллектор сообщений Telegram: перехват, сохранение RAW, классификация.
+# Сохраняет RAW ПЕРВЫМ — парсер не может помешать сохранению.
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+from loguru import logger
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from telethon import events
+from telethon.tl.types import (
+    MessageMediaDocument,
+    MessageMediaGeo,
+    MessageMediaPhoto,
+    MessageMediaPoll,
+    MessageMediaWebPage,
+)
+
+from collectors.dedup import Dedup
+from collectors.dvinchik_parser import DvinchikParser
+from collectors.raw_worker import DvinchikRawWorker, RawTask
+from models.raw import MessageType
+
+if TYPE_CHECKING:
+    from telethon import TelegramClient
+
+    from app.config import AppConfig
+    from database.database import Database
+    from models.ai import AIScore
+    from services.ai_scoring_service import AIScoringService
+    from services.filter_service import FilterService
+    from services.profile_service import ProfileService
+
+console = Console(force_terminal=True)
+
+_MEDIA_TYPE_MAP: dict[type, str] = {
+    MessageMediaPhoto: "photo",
+    MessageMediaDocument: "document",
+    MessageMediaGeo: "geo",
+    MessageMediaWebPage: "webpage",
+    MessageMediaPoll: "poll",
+}
+
+
+def _detect_media_type(msg: object) -> str:
+    """Определяет тип media через MessageMedia объект."""
+    if not hasattr(msg, "media") or msg.media is None:
+        return ""
+
+    media = msg.media
+    media_type = type(media)
+
+    if media_type in _MEDIA_TYPE_MAP:
+        return _MEDIA_TYPE_MAP[media_type]
+
+    if media_type == MessageMediaDocument and hasattr(media, "document"):
+        doc = media.document
+        if hasattr(doc, "mime_type"):
+            mime = doc.mime_type
+            if "video" in mime:
+                return "video"
+            if "gif" in mime:
+                return "gif"
+            if "sticker" in getattr(doc, "attributes", [None])[0] if doc.attributes else False:
+                return "sticker"
+            if "voice" in mime or "audio" in mime:
+                return "voice"
+        return "document"
+
+    return "unknown"
+
+
+class DvinchikCollector:
+    """Перехватывает входящие сообщения и сохраняет в БД."""
+
+    def __init__(
+        self,
+        client: TelegramClient,
+        db: Database,
+        config: AppConfig,
+        profile_service: ProfileService | None = None,
+        filter_service: FilterService | None = None,
+        ai_scoring_service: AIScoringService | None = None,
+        decision_service: object | None = None,
+        stats: object | None = None,
+        worker: DvinchikRawWorker | None = None,
+    ) -> None:
+        self._client = client
+        self._db = db
+        self._dedup: Dedup = Dedup()
+        self._config = config
+        self._parser = DvinchikParser(config.filters)
+        self._dvinchik_chat_id = config.dvinchik.chat_id
+        self._allowed_chat_ids = set(
+            config.sources.allowed_chat_ids
+            or ([config.dvinchik.chat_id] if config.dvinchik.chat_id else [])
+        )
+        self._pending_profiles: dict[int, int] = {}
+        self._stats = stats
+        # C: per-chat блокировка для гарантии порядка PROFILE → MEDIA_ONLY
+        # при конкурентных handlers (без глобальной блокировки).
+        self._chat_locks: dict[int, asyncio.Lock] = {}
+        # D: raw_id, уже поставленные в очередь в этой сессии (live handler).
+        # Исключает двойной enqueue между live worker и startup recovery (W3).
+        # Set очищается после завершения recovery (steady-state live-сообщения
+        # имеют id > cutoff и не могут быть продублированы recovery), поэтому
+        # он не растёт бесконечно (MEDIUM-1). Флаг ``_recovery_armed`` показывает,
+        # что startup-recovery ещё активна (или будет запущена) — только тогда
+        # live handler добавляет raw_id в set.
+        self._enqueued_raw_ids: set[int] = set()
+        self._enqueued_raw_ids_cap: int = 5000
+        self._recovery_armed: bool = False
+        self._profile_service = profile_service
+        self._filter_service = filter_service
+        self._ai_scoring_service = ai_scoring_service
+        self._decision_service = decision_service
+        # Worker потребляет RawQueue и выполняет pipeline вне Telegram-хендлера.
+        # Если worker не задан (тесты/отладка) — обработка идёт синхронно в
+        # хендлере (fallback). В проде всегда привязан worker.
+        self._worker = worker
+
+    def attach_worker(self, worker: DvinchikRawWorker) -> None:
+        """Привязывает worker; хендлер начинает только ставить в очередь."""
+        self._worker = worker
+
+    def start(self) -> None:
+        """Запускает фоновый worker (если привязан)."""
+        if self._worker is not None:
+            self._worker.start()
+            # Recovery (W3) запускается сразу после start в main.py; считаем
+            # защиту от double-enqueue вооружённой, пока recovery не завершится.
+            self._recovery_armed = True
+
+    async def stop(self) -> None:
+        """Плавно останавливает worker (если привязан)."""
+        if self._worker is not None:
+            await self._worker.stop()
+
+    async def recover_backlog(self, batch_size: int = 200) -> int:
+        """Восстанавливает необработанные RAW из БД в очередь worker'а (W3).
+
+        Обрабатывает батчами по ``batch_size``, чтобы не держать весь backlog
+        в памяти. Очередь ограничена (maxsize), поэтому ``enqueue`` блокируется
+        при заполнении — worker успевает обрабатывать (естественная backpressure,
+        память ограничена). Захватывает cutoff (MAX id) на момент старта, чтобы
+        не дублировать живой трафик, который хендлер сам ставит в очередь.
+        Возвращает число поставленных в очередь заданий.
+        """
+        if self._worker is None:
+            return 0
+        try:
+            cutoff_id = await self._db.get_max_raw_id()
+        except Exception as e:
+            logger.error(f"Backlog recovery: ошибка БД: {e}")
+            return 0
+
+        # Recovery активна: live handler помечает свои raw_id в set (см.
+        # _handle_new_message). После завершения recovery флаг снимается и
+        # set очищается — steady-state live-сообщения (id > cutoff) не могут
+        # быть продублированы recovery, поэтому отслеживать их не нужно.
+        self._recovery_armed = True
+
+        total = 0
+        after_id = 0
+        while True:
+            try:
+                rows = await self._db.get_unprocessed_raw_messages_before(
+                    cutoff_id, batch_size, after_id
+                )
+            except Exception as e:
+                logger.error(f"Backlog recovery: ошибка чтения БД: {e}")
+                break
+            if not rows:
+                break
+            for row in rows:
+                raw_id = row["id"]
+                # D: не дублируем raw_id, уже поставленный live handler'ом
+                # в эту сессию (иначе один RAW попадёт и в live worker, и в
+                # recover_backlog). Recovery сама не добавляет в set — её курсор
+                # (after_id) гарантирует, что каждая строка читается ровно один
+                # раз, поэтому set нужен только для пропуска live-энqueued.
+                if raw_id in self._enqueued_raw_ids:
+                    continue
+                task = RawTask(
+                    chat_id=row["chat_id"],
+                    message_id=row["telegram_message_id"],
+                    sender_id=row["sender_id"],
+                    sender_username=row.get("sender_username") or "",
+                    sender_name=row.get("sender_name") or "",
+                    text=row.get("text") or "",
+                    media_type=row.get("media_type") or "",
+                    entities_json=row.get("raw_entities") or "[]",
+                    reply_to=row.get("reply_to_message_id"),
+                    received_at=row["received_at"],
+                    msg_date=row["message_date"],
+                    msg=None,
+                    raw_id=raw_id,
+                )
+                try:
+                    await self._worker.enqueue(task)
+                    total += 1
+                except Exception as e:
+                    logger.error(f"Backlog recovery: ошибка enqueue: {e}")
+                    break
+            # Продвигаем курсор, чтобы не переобрабатывать те же строки
+            # (worker может ещё не пометить их processed_at).
+            after_id = max(r["id"] for r in rows)
+        # После recovery live-сообщения имеют id > cutoff и с recovery не
+        # пересекаются, поэтому set больше не нужен: снимаем защиту и очищаем.
+        # В steady-state (recovery не активна) live handler НЕ добавляет в set,
+        # поэтому память не растёт бесконечно (MEDIUM-1).
+        self._recovery_armed = False
+        self._enqueued_raw_ids.clear()
+        if total:
+            logger.info(f"Backlog recovery: поставлено заданий: {total}")
+        return total
+
+    def register(self) -> None:
+        """Регистрирует обработчик новых сообщений."""
+        self._client.add_event_handler(
+            self._handle_new_message,
+            events.NewMessage(incoming=True),
+        )
+        logger.info("Collector registered: listening for new messages")
+
+    async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
+        """Обработчик: сохраняет RAW потом парсит."""
+        # === SOURCE FILTER (allowlist) ===
+        # Источник отбрасывается ДО любых операций: до classify, логирования,
+        # создания/сохранения RAW, фильтра, AI и скачивания media.
+        chat_id = event.chat_id
+        if chat_id not in self._allowed_chat_ids:
+            logger.debug(
+                f"Ignored Telegram message from unauthorized chat_id={chat_id}"
+            )
+            return
+
+        # === DEDUP (in-memory, атомарно в asyncio) ===
+        # Быстрый фильтр повторной доставки в рамках сессии. Проверка БЕЗ
+        # добавления: сам факт обработки фиксируется только ПОСЛЕ успешного
+        # RAW-save (см. ниже ``mark``), чтобы при сбое сохранения сообщение не
+        # терялось до restart (MEDIUM-2). Авторитетная защита — UNIQUE
+        # (chat_id, telegram_message_id) в БД: save_raw_message делает
+        # INSERT OR IGNORE и возвращает None при дубликате (переживает
+        # restart/reconnect, когда in-memory Dedup пуст).
+        if self._dedup.is_known((chat_id, event.message.id)):
+            logger.debug(
+                f"Повторная доставка отброшена (in-memory dedup): "
+                f"chat_id={chat_id}, message_id={event.message.id}"
+            )
+            return
+
+        msg = event.message
+
+        # Синхронно доступный sender_id — БЕЗ network await (RAW-first):
+        # сохраняем RAW до любого обращения к Telegram API.
+        sender_id = msg.sender_id if getattr(msg, "sender_id", None) else 0
+
+        text = msg.text or ""
+        media_type = _detect_media_type(msg)
+        entities_json = self._serialize_entities(msg)
+        reply_to = msg.reply_to_msg_id if msg.reply_to else None
+        now = datetime.now(timezone.utc).isoformat()
+        msg_date = msg.date.isoformat() if msg.date else now
+
+        # === Сериализация save+enqueue на уровне chat_id (C) ===
+        # Гарантирует порядок PROFILE → MEDIA_ONLY для одного чата даже при
+        # конкурентных Telegram handlers. Без глобальной блокировки и без
+        # второй очереди: первый обработчик чата захватывает per-chat lock,
+        # выполняет save+enqueue; второй (напр. MEDIA_ONLY) дожидается и
+        # становится в очередь строго ПОСЛЕ PROFILE. Блокировка только внутри
+        # одного chat_id, другие чаты не затрагиваются.
+        lock = self._chat_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chat_locks[chat_id] = lock
+        async with lock:
+            # === RAW сохраняется ПЕРВЫМ — ДО любого network await ===
+            # save_raw_message сам делает ограниченный retry при транзитных
+            # сбоях БД. Если после retry сохранить не удалось — сообщение НЕ
+            # идёт дальше в pipeline (W4). C1/C2: дубликат → None (UNIQUE).
+            try:
+                raw_id = await self._db.save_raw_message(
+                    telegram_message_id=msg.id,
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    sender_username="",
+                    sender_name="",
+                    message_date=msg_date,
+                    text=text,
+                    raw_entities=entities_json,
+                    media_type=media_type,
+                    reply_to_message_id=reply_to,
+                    received_at=now,
+                )
+            except Exception as e:
+                logger.error(
+                    f"RAW save не удался (после retry) — сообщение НЕ попадает "
+                    f"в pipeline: chat_id={chat_id}, message_id={msg.id}: {e}"
+                )
+                return
+            if raw_id is None:
+                logger.debug(
+                    f"Повторная доставка отброшена (БД UNIQUE): "
+                    f"chat_id={chat_id}, message_id={msg.id}"
+                )
+                return
+
+            # C2/MEDIUM-2: помечаем сообщение в dedup ТОЛЬКО после успешного
+            # RAW-save. Если save упал (W4 исчерпал retry), dedup НЕ
+            # помечается — при повторной доставке сообщение можно переобработать,
+            # а не терять до restart.
+            self._dedup.mark((chat_id, event.message.id))
+
+            # D: raw_id поставлен в очередь в этой сессии (live handler).
+            # Только пока активна startup-recovery (recover_backlog) — иначе в
+            # steady-state set рос бы бесконечно (MEDIUM-1). При переполнении
+            # (на случай, если recovery не запускалась) — bounded eviction.
+            if self._recovery_armed:
+                s = self._enqueued_raw_ids
+                s.add(raw_id)
+                if len(s) > self._enqueued_raw_ids_cap:
+                    for _ in range(len(s) - self._enqueued_raw_ids_cap // 2):
+                        s.pop()
+
+            # === Только ПОСЛЕ успешного RAW-save: best-effort обогащение sender ===
+            # Сетевой вызов; ошибка/None sender не мешает сохранению и pipeline.
+            sender_username = ""
+            sender_name = ""
+            try:
+                sender = await msg.get_sender()
+                if sender is not None:
+                    sender_username = getattr(sender, "username", "") or ""
+                    if getattr(sender, "first_name", None):
+                        sender_name = (
+                            (sender.first_name or "") + " " + (sender.last_name or "")
+                        ).strip()
+            except Exception as e:
+                logger.debug(
+                    f"get_sender недоступен (RAW уже сохранён): {e}"
+                )
+
+            # === Формируем задание для pipeline ===
+            task = RawTask(
+                chat_id=chat_id,
+                message_id=msg.id,
+                sender_id=sender_id,
+                sender_username=sender_username,
+                sender_name=sender_name,
+                text=text,
+                media_type=media_type,
+                entities_json=entities_json,
+                reply_to=reply_to,
+                received_at=now,
+                msg_date=msg_date,
+                msg=msg,
+                raw_id=raw_id,
+            )
+
+            if self._worker is not None:
+                # Worker привязан: хендлер только ставит в очередь, а дорогой
+                # pipeline (parse → filter → AI) выполняется фоновой задачей
+                # вне Telegram event handler'а.
+                await self._worker.enqueue(task)
+                return
+
+            # Fallback (без worker — тесты/отладка): обрабатываем синхронно.
+            await self._process_message(task)
+
+    async def _process_message(self, task: RawTask) -> None:
+        """Выполняет pipeline: parse → filter → AI → decision.
+
+        Вызывается worker'ом (в проде) или напрямую из хендлера (fallback).
+        RAW к этому моменту уже сохранён — ошибки pipeline не теряют сырьё.
+        """
+        chat_id = task.chat_id
+        msg = task.msg
+        text = task.text
+        media_type = task.media_type
+        sender_id = task.sender_id
+        sender_username = task.sender_username
+        sender_name = task.sender_name
+        msg_date = task.msg_date
+
+        logger.info(
+            f"New Telegram message: chat_id={chat_id}, "
+            f"sender_id={sender_id}, message_id={task.message_id}, "
+            f"media={media_type}"
+        )
+
+        # === Парсер работает после сохранения ===
+        success = False
+        try:
+            has_media = media_type != ""
+            msg_type = self._parser.classify(text, has_media=has_media)
+            logger.info(f"Message classified: type={msg_type.value}")
+
+            self._print_message(
+                chat_id=chat_id,
+                message_id=task.message_id,
+                sender_name=sender_name,
+                sender_username=sender_username,
+                text=text,
+                msg_date=msg_date,
+                media_type=media_type,
+                msg_type=msg_type,
+            )
+
+            if msg_type == MessageType.PROFILE:
+                parsed = self._parser.parse_profile(
+                    text,
+                    source_message_id=task.message_id,
+                    source_chat_id=chat_id,
+                )
+
+                if self._profile_service:
+                    try:
+                        profile = await self._profile_service.upsert_profile(parsed)
+
+                        # PROFILE-сообщение становится "контекстом" для
+                        # последующих MEDIA_ONLY того же чата. Фиксируем сразу
+                        # после сохранения — независимо от вывода в консоль.
+                        self._pending_profiles[chat_id] = task.message_id
+                        # Персистентный контекст: переживает restart/reconnect,
+                        # когда in-memory кэш пуст (W2).
+                        try:
+                            await self._db.set_chat_profile_context(
+                                chat_id, task.message_id
+                            )
+                        except Exception as e:
+                            logger.error(f"Ошибка сохранения контекста чата: {e}")
+
+                        is_new = profile.status == "NEW"
+                        self._print_profile_stored(profile, is_new=is_new)
+
+                        if self._filter_service:
+                            try:
+                                filter_result = await self._filter_service.evaluate(profile)
+                                self._print_filter_result(profile, filter_result)
+
+                                # AI scoring только для PASS
+                                if (
+                                    self._ai_scoring_service
+                                    and self._ai_scoring_service.is_enabled
+                                    and str(filter_result.decision) == "PASS"
+                                ):
+                                    try:
+                                        image_data_list = (
+                                            await self._download_profile_images(msg)
+                                        )
+                                        # Stage 5: если есть Decision Engine — используем его
+                                        # (один вызов шлюза: скор + решение сохраняются раздельно)
+                                        if self._decision_service:
+                                            decision = (
+                                                await self._decision_service.evaluate(
+                                                    profile.id,
+                                                    image_data_list=image_data_list,
+                                                    filter_result=filter_result,
+                                                )
+                                            )
+                                            self._print_ai_decision(profile, decision)
+                                        else:
+                                            ai_score = (
+                                                await self._ai_scoring_service.evaluate(
+                                                    profile,
+                                                    image_data_list=image_data_list,
+                                                )
+                                            )
+                                            self._print_ai_score(profile, ai_score)
+                                    except Exception as e:
+                                        logger.error(f"AI scoring error: {e}")
+                            except Exception as e:
+                                logger.error(f"FilterService error: {e}")
+                    except Exception as e:
+                        logger.error(f"ProfileService error: {e}")
+                        self._print_profile(parsed)
+                else:
+                    self._print_profile(parsed)
+
+                if self._stats:
+                    self._stats.record_profile(
+                        filter_match=parsed.filter_result.value == "FILTER_MATCH"
+                    )
+
+            elif msg_type == MessageType.MATCH:
+                match = self._parser.parse_match(text)
+                if match:
+                    self._print_match(match)
+                if self._stats:
+                    self._stats.record_match()
+
+            elif msg_type == MessageType.MEDIA_ONLY:
+                await self._handle_media_only(chat_id, task.message_id)
+                if self._stats:
+                    self._stats.record_media_only()
+
+            elif msg_type == MessageType.UNKNOWN:
+                logger.warning(
+                    f"Unknown message format: message_id={task.message_id}, "
+                    f"preview={text[:100]}"
+                )
+                if self._stats:
+                    self._stats.record_unknown()
+
+            elif msg_type == MessageType.SERVICE:
+                if self._stats:
+                    self._stats.record_service()
+
+            success = True
+        except Exception as e:
+            logger.error(f"Parser error (RAW already saved): {e}")
+        finally:
+            if success:
+                # Помечаем RAW обработанным, чтобы startup-backlog recovery (W3)
+                # не переобрабатывал завершённые сообщения.
+                try:
+                    await self._db.mark_raw_processed(task.raw_id)
+                except Exception as e:
+                    logger.error(f"Ошибка пометки RAW обработанным: {e}")
+            else:
+                # Ошибка pipeline: RAW остаётся processed_at=NULL, чтобы W3
+                # повторил обработку после restart (at-least-once). Ошибка
+                # одного RAW не роняет worker — исключение уже перехвачено.
+                logger.warning(
+                    f"Pipeline НЕ завершён для RAW id={task.raw_id}; "
+                    f"processed_at не помечен — W3 повторит после restart."
+                )
+
+    async def _handle_media_only(self, chat_id: int, message_id: int) -> None:
+        """Обработка photo-only сообщений: привязка к ПРЕДЫДУЩЕЙ анкете.
+
+        Контекст (последнее PROFILE-сообщение чата) восстанавливается из БД
+        (переживает restart/reconnect), затем — из in-memory кэша. Найденный
+        профиль связывается с медиа-сообщением через profile_messages
+        (UNIQUE(profile_id, telegram_message_id) исключает дубли media).
+        """
+        # Сначала пытаемся восстановить профиль из БД, затем in-memory.
+        prev = await self._db.get_chat_profile_context(chat_id)
+        if prev is None:
+            prev = self._pending_profiles.get(chat_id)
+
+        if prev is None:
+            logger.info(
+                f"Media-only without profile context: msg={message_id}"
+            )
+            return
+
+        if self._profile_service is not None:
+            try:
+                profile = await self._profile_service.find_profile_by_message(
+                    chat_id, prev
+                )
+                if profile is not None:
+                    await self._profile_service.link_message_to_profile(
+                        profile.id, message_id, chat_id
+                    )
+                    logger.info(
+                        f"Media-only linked to profile: "
+                        f"media_msg={message_id}, profile_id={profile.id}, "
+                        f"profile_msg={prev}"
+                    )
+                else:
+                    logger.warning(
+                        f"Media-only: контекст указывает на несуществующий "
+                        f"профиль (profile_msg={prev}); media не привязано"
+                    )
+            except Exception as e:
+                logger.error(f"Media-only profile link error: {e}")
+        else:
+            logger.info(
+                f"Media-only context (no service): "
+                f"media_msg={message_id}, profile_msg={prev}"
+            )
+
+    async def _download_profile_images(
+        self, msg: object,
+    ) -> list[bytes]:
+        """Скачивает фотографии из сообщения для CLIP-анализа.
+
+        Скачивание происходит только после Filter PASS.
+        Ошибки отдельных изображений не ломают pipeline.
+        """
+        images_config = self._config.ai.images
+        if not images_config.enabled:
+            return []
+
+        if not hasattr(msg, "media") or msg.media is None:
+            return []
+
+        max_bytes = images_config.max_size_mb * 1024 * 1024
+
+        try:
+            data = await self._client.download_media(msg, file=bytes)  # type: ignore[union-attr]
+            if data and len(data) <= max_bytes:
+                logger.info(
+                    f"Скачано изображение для CLIP: {len(data)} bytes"
+                )
+                return [data]
+            if data:
+                logger.warning(
+                    f"Фото превышает лимит "
+                    f"({len(data)} > {max_bytes} bytes)"
+                )
+        except Exception as e:
+            logger.warning(f"Ошибка скачивания фото: {e}")
+
+        return []
+
+    def _serialize_entities(self, msg: object) -> str:
+        """Сериализует entities сообщения в JSON."""
+        if not msg.entities:
+            return "[]"
+        entities = []
+        for e in msg.entities:
+            entities.append({
+                "type": type(e).__name__,
+                "offset": e.offset,
+                "length": e.length,
+            })
+        return json.dumps(entities, ensure_ascii=False)
+
+    def _print_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        sender_name: str,
+        sender_username: str,
+        text: str,
+        msg_date: str,
+        media_type: str,
+        msg_type: MessageType,
+    ) -> None:
+        """Красивый вывод нового сообщения в консоль."""
+        is_dvinchik = (
+            self._dvinchik_chat_id != 0
+            and chat_id == self._dvinchik_chat_id
+        )
+        source = "[green]Дайвинчик[/green]" if is_dvinchik else f"chat={chat_id}"
+
+        type_color = {
+            MessageType.PROFILE: "yellow",
+            MessageType.MATCH: "green",
+            MessageType.MEDIA_ONLY: "cyan",
+            MessageType.SERVICE: "dim",
+            MessageType.UNKNOWN: "red",
+        }.get(msg_type, "white")
+
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold cyan", width=14)
+        table.add_column("Value")
+        table.add_row("Source", source)
+        table.add_row("Message ID", str(message_id))
+        table.add_row("Date", msg_date[:19])
+        table.add_row("Type", f"[{type_color}]{msg_type.value}[/{type_color}]")
+        table.add_row(
+            "Sender",
+            f"{sender_name} (@{sender_username})" if sender_username else sender_name,
+        )
+        if media_type:
+            table.add_row("Media", media_type)
+        if text:
+            preview = text[:200] + ("..." if len(text) > 200 else "")
+            table.add_row("Text", preview)
+
+        console.print(Panel(table, title="[bold]NEW MESSAGE[/bold]", border_style="blue"))
+
+    def _print_profile_stored(self, profile: object, is_new: bool = True) -> None:
+        """Красивый вывод сохранённого профиля (Stage 2 format)."""
+        status_color = "green" if is_new else "cyan"
+        status_label = "NEW" if is_new else "SEEN"
+        title = f"[bold {status_color}]PROFILE[/]"
+
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold yellow", width=18)
+        table.add_column("Value")
+
+        if hasattr(profile, "id") and profile.id:
+            table.add_row("Profile ID", str(profile.id))
+        if hasattr(profile, "name") and profile.name:
+            table.add_row("Name", profile.name)
+        if hasattr(profile, "age") and profile.age:
+            table.add_row("Age", str(profile.age))
+        if hasattr(profile, "normalized_city") and profile.normalized_city:
+            table.add_row("City", profile.normalized_city)
+        if hasattr(profile, "status"):
+            table.add_row("Status", f"[{status_color}]{profile.status}[/{status_color}]")
+        if hasattr(profile, "first_seen_at") and profile.first_seen_at:
+            table.add_row("First seen", profile.first_seen_at[:19])
+        if hasattr(profile, "last_seen_at") and profile.last_seen_at:
+            table.add_row("Last seen", profile.last_seen_at[:19])
+        if hasattr(profile, "source_message_id") and profile.source_message_id:
+            table.add_row("Source message", str(profile.source_message_id))
+        if hasattr(profile, "message_count") and profile.message_count:
+            table.add_row("Messages", str(profile.message_count))
+
+        console.print(Panel(table, title=title, border_style="yellow"))
+
+    def _print_profile(self, profile: object) -> None:
+        """Красивый вывод распарсенной анкеты (без сохранения)."""
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold yellow", width=18)
+        table.add_column("Value")
+
+        if hasattr(profile, "name") and profile.name:
+            table.add_row("Name", profile.name)
+        if hasattr(profile, "age") and profile.age:
+            table.add_row("Age", str(profile.age))
+        if hasattr(profile, "raw_city") and profile.raw_city:
+            table.add_row("Raw City", profile.raw_city)
+        if hasattr(profile, "normalized_city") and profile.normalized_city:
+            table.add_row("Normalized City", profile.normalized_city)
+        if hasattr(profile, "filter_result"):
+            color = "green" if profile.filter_result == "FILTER_MATCH" else "red"
+            table.add_row("Filter", f"[{color}]{profile.filter_result}[/{color}]")
+        if hasattr(profile, "description") and profile.description:
+            desc = profile.description[:300]
+            table.add_row("Description", desc)
+
+        console.print(Panel(table, title="[bold yellow]PROFILE[/bold yellow]", border_style="yellow"))
+
+    def _print_match(self, match: object) -> None:
+        """Красивый вывод сообщения о матче."""
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold green", width=18)
+        table.add_column("Value")
+
+        if hasattr(match, "name"):
+            table.add_row("Name", match.name)
+        if hasattr(match, "telegram_username"):
+            table.add_row("Telegram", f"@{match.telegram_username}")
+        if hasattr(match, "telegram_url"):
+            table.add_row("URL", match.telegram_url)
+        table.add_row("Action", "[yellow]NONE — OBSERVE MODE[/yellow]")
+
+        console.print(Panel(table, title="[bold green]MATCH DETECTED[/bold green]", border_style="green"))
+
+    def _print_filter_result(self, profile: object, result: object) -> None:
+        """Красивый вывод результата фильтрации."""
+        if result is None:
+            return
+
+        decision = result.decision if hasattr(result, "decision") else "UNKNOWN"
+        reasons = result.reasons if hasattr(result, "reasons") else []
+
+        color_map = {
+            "PASS": "green",
+            "REJECT": "red",
+            "REVIEW": "yellow",
+        }
+        color = color_map.get(str(decision), "white")
+
+        reason_icons = {
+            "AGE_OK": "[green]✓[/green]",
+            "CITY_OK": "[green]✓[/green]",
+            "AGE_OUT_OF_RANGE": "[red]✗[/red]",
+            "CITY_OUT_OF_RANGE": "[red]✗[/red]",
+            "AGE_UNKNOWN": "[yellow]?[/yellow]",
+            "CITY_UNKNOWN": "[yellow]?[/yellow]",
+            "INSUFFICIENT_DATA": "[yellow]?[/yellow]",
+        }
+
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold cyan", width=18)
+        table.add_column("Value")
+
+        if hasattr(profile, "id"):
+            table.add_row("Profile", f"#{profile.id}")
+        if hasattr(profile, "name"):
+            table.add_row("Name", profile.name)
+        if hasattr(profile, "age") and profile.age:
+            table.add_row("Age", str(profile.age))
+        if hasattr(profile, "normalized_city") and profile.normalized_city:
+            table.add_row("City", profile.normalized_city)
+
+        table.add_row("Decision", f"[{color}]{decision}[/{color}]")
+
+        reasons_text = []
+        for r in reasons:
+            icon = reason_icons.get(str(r), "?")
+            reasons_text.append(f"  {icon} {r}")
+        if reasons_text:
+            table.add_row("Reasons", "\n".join(reasons_text))
+
+        console.print(Panel(
+            table,
+            title=f"[bold {color}]FILTER RESULT[/]",
+            border_style=color,
+        ))
+
+    def _print_ai_score(self, profile: object, ai_score: AIScore) -> None:
+        """Красивый вывод результата AI-анализа."""
+        rec = ai_score.recommendation.value
+        color_map = {
+            "LIKE": "green",
+            "DISLIKE": "red",
+            "REVIEW": "yellow",
+        }
+        color = color_map.get(rec, "white")
+
+        conf_color_map = {
+            "HIGH": "green",
+            "MEDIUM": "yellow",
+            "LOW": "red",
+        }
+        conf_color = conf_color_map.get(ai_score.confidence.value, "white")
+
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold magenta", width=18)
+        table.add_column("Value")
+
+        if hasattr(profile, "id"):
+            table.add_row("Profile", f"#{profile.id}")
+        if hasattr(profile, "name"):
+            table.add_row("Name", profile.name)
+
+        table.add_row("Combined", f"{ai_score.combined_score:.2f}")
+        table.add_row("Recommendation", f"[{color}]{rec}[/{color}]")
+        table.add_row("Confidence", f"[{conf_color}]{ai_score.confidence.value}[/{conf_color}] ({ai_score.confidence_score:.2f})")
+
+        if ai_score.clip_score is not None:
+            table.add_row("CLIP", f"{ai_score.clip_score:.2f}")
+        if ai_score.llm_score is not None:
+            table.add_row("LLM", f"{ai_score.llm_score:.2f}")
+
+        if ai_score.reasons:
+            reasons_text = "\n".join(f"  • {r}" for r in ai_score.reasons)
+            table.add_row("Reasons", reasons_text)
+
+        table.add_row("Model", ai_score.model_version)
+
+        console.print(Panel(
+            table,
+            title=f"[bold {color}]AI SCORE[/]",
+            border_style=color,
+        ))
+
+    def _print_ai_decision(self, profile: object, decision: object) -> None:
+        """Красивый вывод решения Decision Engine (Stage 5, только OBSERVE)."""
+        color_map = {
+            "LIKE": "green",
+            "REVIEW": "yellow",
+            "DISLIKE": "red",
+        }
+        color = color_map.get(decision.decision.value, "white")
+
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold magenta", width=18)
+        table.add_column("Value")
+
+        if hasattr(profile, "id"):
+            table.add_row("Profile", f"#{profile.id}")
+        if hasattr(profile, "name"):
+            table.add_row("Name", profile.name)
+
+        table.add_row("Filter", "PASS")
+        if decision.llm_score is not None:
+            table.add_row("LLM", f"{decision.llm_score:.2f}")
+        if decision.clip_score is not None:
+            table.add_row("CLIP", f"{decision.clip_score:.2f}")
+        table.add_row("Combined", f"{decision.combined_score:.2f}")
+        table.add_row("Confidence", f"{decision.confidence:.2f}")
+        table.add_row(
+            "Decision",
+            f"[bold {color}]{decision.decision.value}[/bold {color}]",
+        )
+        table.add_row("Mode", "OBSERVE (действий нет)")
+
+        if decision.reasons:
+            reasons_text = "\n".join(f"  • {r}" for r in decision.reasons)
+            table.add_row("Reasons", reasons_text)
+        if decision.scoring_version:
+            table.add_row("Version", decision.scoring_version)
+
+        console.print(Panel(
+            table,
+            title=f"[bold {color}]AI DECISION[/]",
+            border_style=color,
+        ))

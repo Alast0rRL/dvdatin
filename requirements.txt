@@ -1,0 +1,10 @@
+# DvAI Dependencies
+telethon>=1.36.0
+aiosqlite>=0.20.0
+pyyaml>=6.0.1
+pydantic>=2.7.0
+rich>=13.7.0
+loguru>=0.7.2
+pysocks>=1.7.1
+python-socks>=3.0.0
+httpx>=0.27.0

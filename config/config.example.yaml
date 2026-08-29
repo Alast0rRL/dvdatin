@@ -1,0 +1,81 @@
+# ============================================
+# DvAI Configuration
+# ============================================
+
+telegram:
+  api_id: 0
+  api_hash: ""
+  phone: ""
+
+  proxy:
+    enabled: false
+    type: socks5
+    host: ""
+    port: 0
+    username: ""
+    password: ""
+
+project:
+  mode: OBSERVE
+
+dvinchik:
+  enabled: true
+  chat_id: 1234060895   # Дайвинчик (Leo)
+
+# Allowlist источников. Сообщения из любых других чатов игнорируются ДО обработки.
+sources:
+  allowed_chat_ids:
+    - 1234060895        # Дайвинчик (Leo) — единственный разрешённый источник
+
+filters:
+  age:
+    min: 18
+    max: 19
+  city:
+    allowed:
+      - "Санкт-Петербург"
+
+ai:
+  enabled: false
+  backend: "local"           # "local" (stubs) или "remote" (Ubuntu AI Server через прокладку)
+  clip:
+    enabled: false
+    model: "openai/clip-vit-base-patch32"
+  llm:
+    enabled: false
+    provider: "ollama"
+    model: "qwen3:8b"
+    api_key: ""
+    timeout: 90
+    max_retries: 1
+  scoring:
+    clip_weight: 0.5
+    llm_weight: 0.5
+    like_threshold: 0.75
+    dislike_threshold: 0.35
+  decision:
+    like_threshold: 0.75
+    review_threshold: 0.50
+    min_confidence: 0.60
+    scoring_version: "v1"
+    weights:
+      llm: 0.7
+      clip: 0.3
+  remote:
+    base_url: "http://144.31.139.206:8000"   # пример: внешний порт прокладки на Ubuntu AI Server
+    timeout: 90
+    max_retries: 1
+    api_key: ""                                # API-ключ для аутентификации (X-API-Key); реальный секрет — только в live config.yaml / env
+  images:
+    enabled: true
+    max_images: 5
+    max_size_mb: 10
+    timeout: 60
+
+limits:
+  max_likes_per_day: 40
+  min_delay_minutes: 90
+  max_delay_minutes: 240
+
+logging:
+  level: INFO

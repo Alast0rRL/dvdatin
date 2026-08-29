@@ -1,0 +1,26 @@
+[Unit]
+Description=DvAI Telegram Collector (OBSERVE mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dvai
+Group=dvai
+WorkingDirectory=/opt/dvai
+# UTF-8 для корректной работы с кириллицей в логах/консоли
+Environment=PYTHONUTF8=1
+Environment=PYTHONIOENCODING=utf-8
+# Быстрая проверка валидности конфига перед запуском (fail-fast)
+ExecStartPre=/opt/dvai/venv/bin/python -c "import yaml; yaml.safe_load(open('/opt/dvai/config/config.yaml'))"
+ExecStart=/opt/dvai/venv/bin/python /opt/dvai/main.py
+Restart=on-failure
+RestartSec=5
+# Не уходим в crash-loop при штатном выходе (Ctrl+C / disconnect)
+SuccessExitStatus=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dvai
+
+[Install]
+WantedBy=multi-user.target

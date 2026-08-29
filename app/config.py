@@ -1,0 +1,335 @@
+# Pydantic-модели конфигурации и загрузчик YAML-файла.
+# Валидирует все поля при старте и выдаёт понятные ошибки.
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel, field_validator, model_validator
+
+from core.types import LogLevel, Mode
+
+
+class ProxyConfig(BaseModel):
+    """Настройки прокси для подключения к Telegram."""
+
+    enabled: bool = False
+    type: str = "socks5"
+    host: str = ""
+    port: int = 0
+    username: str = ""
+    password: str = ""
+
+
+class TelegramConfig(BaseModel):
+    """Параметры подключения к Telegram API."""
+
+    api_id: int
+    api_hash: str
+    phone: str = ""
+    proxy: ProxyConfig = ProxyConfig()
+
+    @field_validator("api_id")
+    @classmethod
+    def api_id_must_be_positive(cls, v: int) -> int:
+        if v <= 0:
+            msg = "api_id должен быть положительным числом"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("api_hash")
+    @classmethod
+    def api_hash_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            msg = "api_hash не может быть пустым"
+            raise ValueError(msg)
+        return v
+
+
+class AgeFilterConfig(BaseModel):
+    """Настройки фильтра возраста."""
+
+    min: int = 18
+    max: int = 19
+
+    @field_validator("min", "max")
+    @classmethod
+    def age_in_range(cls, v: int) -> int:
+        if not (14 <= v <= 100):
+            msg = "Возраст должен быть от 14 до 100"
+            raise ValueError(msg)
+        return v
+
+
+class CityFilterConfig(BaseModel):
+    """Настройки фильтра города."""
+
+    allowed: list[str] = ["Санкт-Петербург"]
+
+
+class FiltersConfig(BaseModel):
+    """Фильтры для отбора анкет."""
+
+    age: AgeFilterConfig = AgeFilterConfig()
+    city: CityFilterConfig = CityFilterConfig()
+
+    city_allowed: list[str] = []
+    age_min: int = 18
+    age_max: int = 19
+
+    def model_post_init(self, __context: object) -> None:
+        """Инициализирует compat-поля из основных."""
+        if not self.city_allowed:
+            self.city_allowed = self.city.allowed
+        if self.age_min == 18 and self.age.max != 19:
+            self.age_min = self.age.min
+        if self.age_max == 19 and self.age.max != 19:
+            self.age_max = self.age.max
+        self.age_min = self.age.min
+        self.age_max = self.age.max
+        self.city_allowed = self.city.allowed
+
+
+class LimitsConfig(BaseModel):
+    """Лимиты действий."""
+
+    max_likes_per_day: int = 40
+    min_delay_minutes: int = 90
+    max_delay_minutes: int = 240
+
+    @field_validator("max_likes_per_day")
+    @classmethod
+    def likes_positive(cls, v: int) -> int:
+        if v < 0:
+            msg = "max_likes_per_day не может быть отрицательным"
+            raise ValueError(msg)
+        return v
+
+
+class CLIPConfig(BaseModel):
+    """Настройки CLIP-анализа фото."""
+
+    enabled: bool = False
+    model: str = "clip-vit-base-patch32"
+
+
+class LLMConfig(BaseModel):
+    """Настройки LLM-оценки анкет."""
+
+    enabled: bool = False
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    api_key: str = ""
+    timeout: int = 30
+    max_retries: int = 2
+
+
+class RemoteAIConfig(BaseModel):
+    """Настройки удалённого AI-сервера."""
+
+    base_url: str = "http://localhost:8000"
+    timeout: int = 60
+    max_retries: int = 2
+    api_key: str = ""
+
+    def api_key_or_none(self) -> str | None:
+        """Возвращает API key или None, если он пуст."""
+        return self.api_key.strip() or None
+
+
+class DecisionWeightsConfig(BaseModel):
+    """Веса источников для объединённого скора Decision Engine."""
+
+    llm: float = 0.70
+    clip: float = 0.30
+
+    @field_validator("llm", "clip")
+    @classmethod
+    def weight_in_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            msg = "Вес должен быть от 0.0 до 1.0"
+            raise ValueError(msg)
+        return v
+
+    @model_validator(mode="after")
+    def weights_not_all_zero(self) -> DecisionWeightsConfig:
+        """Хотя бы один вес должен быть больше нуля."""
+        if self.llm == 0.0 and self.clip == 0.0:
+            msg = "Хотя бы один вес (llm/clip) должен быть больше нуля"
+            raise ValueError(msg)
+        return self
+
+
+class DecisionConfig(BaseModel):
+    """Настройки AI Decision Engine (Stage 5)."""
+
+    like_threshold: float = 0.75
+    review_threshold: float = 0.50
+    min_confidence: float = 0.60
+    scoring_version: str = "v1"
+    weights: DecisionWeightsConfig = DecisionWeightsConfig()
+
+    @field_validator("like_threshold", "review_threshold", "min_confidence")
+    @classmethod
+    def threshold_in_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            msg = "Порог должен быть от 0.0 до 1.0"
+            raise ValueError(msg)
+        return v
+
+    @model_validator(mode="after")
+    def validate_thresholds_order(self) -> DecisionConfig:
+        """review_threshold должен быть строго меньше like_threshold."""
+        if self.review_threshold >= self.like_threshold:
+            msg = (
+                f"review_threshold ({self.review_threshold}) должен быть "
+                f"строго меньше like_threshold ({self.like_threshold})"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class ImagesConfig(BaseModel):
+    """Настройки скачивания изображений для CLIP."""
+
+    enabled: bool = True
+    max_images: int = 5
+    max_size_mb: int = 10
+    timeout: int = 30
+
+
+class ScoringConfig(BaseModel):
+    """Настройки объединённого скоринга."""
+
+    clip_weight: float = 0.5
+    llm_weight: float = 0.5
+    like_threshold: float = 0.75
+    dislike_threshold: float = 0.35
+
+    @field_validator("clip_weight", "llm_weight")
+    @classmethod
+    def weight_in_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            msg = "Вес должен быть от 0.0 до 1.0"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("like_threshold", "dislike_threshold")
+    @classmethod
+    def threshold_in_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            msg = "Порог должен быть от 0.0 до 1.0"
+            raise ValueError(msg)
+        return v
+
+    @model_validator(mode="after")
+    def validate_thresholds_order(self) -> ScoringConfig:
+        """dislike_threshold должен быть строго меньше like_threshold."""
+        if self.dislike_threshold >= self.like_threshold:
+            msg = (
+                f"dislike_threshold ({self.dislike_threshold}) должен быть "
+                f"строго меньше like_threshold ({self.like_threshold})"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class AIConfig(BaseModel):
+    """Настройки AI Scoring."""
+
+    enabled: bool = False
+    backend: str = "local"
+    clip: CLIPConfig = CLIPConfig()
+    llm: LLMConfig = LLMConfig()
+    scoring: ScoringConfig = ScoringConfig()
+    decision: DecisionConfig = DecisionConfig()
+    remote: RemoteAIConfig = RemoteAIConfig()
+    images: ImagesConfig = ImagesConfig()
+
+    @field_validator("backend")
+    @classmethod
+    def backend_valid(cls, v: str) -> str:
+        allowed = {"local", "remote"}
+        if v not in allowed:
+            msg = f"backend должен быть {allowed}, получено: {v}"
+            raise ValueError(msg)
+        return v
+
+
+class LoggingConfig(BaseModel):
+    """Настройки логирования."""
+
+    level: LogLevel = LogLevel.INFO
+
+
+class ProjectConfig(BaseModel):
+    """Общие настройки проекта."""
+
+    mode: Mode = Mode.OBSERVE
+
+
+class DvinchikConfig(BaseModel):
+    """Настройки определения Дайвинчика."""
+
+    enabled: bool = True
+    chat_id: int = 1234060895
+
+
+class SourcesConfig(BaseModel):
+    """Allowlist источников, из которых принимаются сообщения.
+
+    Если список пуст, разрешённым считается только dvinchik.chat_id
+    (см. AppConfig.model_post_init).
+    """
+
+    allowed_chat_ids: list[int] = []
+
+
+class AppConfig(BaseModel):
+    """Корневая модель конфигурации приложения."""
+
+    telegram: TelegramConfig
+    project: ProjectConfig = ProjectConfig()
+    dvinchik: DvinchikConfig = DvinchikConfig()
+    sources: SourcesConfig = SourcesConfig()
+    filters: FiltersConfig = FiltersConfig()
+    ai: AIConfig = AIConfig()
+    limits: LimitsConfig = LimitsConfig()
+    logging: LoggingConfig = LoggingConfig()
+
+    def model_post_init(self, __context: object) -> None:
+        """Seeds sources.allowed_chat_ids из dvinchik.chat_id, если список пуст."""
+        if not self.sources.allowed_chat_ids and self.dvinchik.chat_id:
+            self.sources.allowed_chat_ids = [self.dvinchik.chat_id]
+
+    @classmethod
+    def load(cls, path: Path) -> AppConfig:
+        """Загружает и валидирует YAML-конфиг.
+
+        Args:
+            path: Путь к YAML-файлу конфигурации.
+
+        Returns:
+            Валидированный AppConfig.
+
+        Raises:
+            FileNotFoundError: Если файл не найден.
+            ValueError: Если конфиг невалиден.
+        """
+        if not path.exists():
+            msg = f"Файл конфигурации не найден: {path}"
+            raise FileNotFoundError(msg)
+
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+
+        if raw is None:
+            msg = "Файл конфигурации пуст"
+            raise ValueError(msg)
+
+        try:
+            return cls(**raw)
+        except Exception as e:
+            msg = f"Ошибка валидации конфигурации: {e}"
+            raise ValueError(msg) from e
