@@ -1523,3 +1523,45 @@ class TestAuditMediumFixes:
             assert len(enqueued) == 1
         finally:
             asyncio.get_event_loop().run_until_complete(db.close())
+
+
+# ==================== MULTI-ACCOUNT ====================
+
+class TestMultiAccount:
+    def test_registers_handler_on_all_clients(self) -> None:
+        c1, c2 = MagicMock(), MagicMock()
+        collector = DvinchikCollector([c1, c2], make_db_mock(), make_config())
+        collector.register()
+        assert c1.add_event_handler.called
+        assert c2.add_event_handler.called
+        assert len(collector._clients) == 2
+
+    def test_accepts_single_client_for_backward_compat(self) -> None:
+        c1 = MagicMock()
+        collector = DvinchikCollector(c1, make_db_mock(), make_config())
+        collector.register()
+        assert c1.add_event_handler.called
+        assert len(collector._clients) == 1
+
+    def test_same_message_from_two_accounts_enqueued_once(self) -> None:
+        db = make_db_mock()
+        # message_id одинаковый для обоих аккаунтов (один и тот же пост в чате)
+        c1, c2 = MagicMock(), MagicMock()
+        worker = DvinchikRawWorker(process=AsyncMock())
+        collector = DvinchikCollector([c1, c2], db, make_config())
+        collector.attach_worker(worker)
+
+        ev1 = make_event(
+            text="wimx, 18, Санкт-Петербург", chat_id=1234060895, msg_id=1
+        )
+        ev2 = make_event(
+            text="wimx, 18, Санкт-Петербург", chat_id=1234060895, msg_id=1
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(collector._handle_new_message(ev1))
+        loop.run_until_complete(collector._handle_new_message(ev2))
+        loop.run_until_complete(collector.stop())
+
+        # Один и тот же пост, увиденный двумя аккаунтами, ставится в очередь
+        # ровно один раз (in-memory dedup + UNIQUE в БД).
+        assert worker.qsize == 1

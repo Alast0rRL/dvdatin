@@ -16,17 +16,24 @@ SESSION_DIR = Path("data/sessions")
 SESSION_NAME = "dvai"
 
 
-def create_client(config: TelegramConfig) -> TelegramClient:
+def create_client(
+    config: TelegramConfig, session_name: str | None = None,
+) -> TelegramClient:
     """Создаёт TelegramClient с session-файлом в data/sessions/.
 
     Args:
-        config: Конфигурация Telegram API.
+        config: Конфигурация Telegram API (один аккаунт).
+        session_name: Имя session-файла. Если не задано — берётся
+            ``config.session``, иначе дефолт ``dvai``. Для нескольких
+            аккаунтов имена должны быть уникальными, чтобы не делить один
+            .session-файл.
 
     Returns:
         Экземпляр TelegramClient.
     """
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    session_path = SESSION_DIR / SESSION_NAME
+    name = session_name or config.session or SESSION_NAME
+    session_path = SESSION_DIR / name
 
     proxy = None
     if config.proxy.enabled and config.proxy.host:

@@ -1,10 +1,10 @@
 # DvAI Test Baseline (FROZEN)
-# count=374
-# generated=2026-08-29 13:25:34
+# count=377
+# generated=2026-08-29 16:29:20
 # python=Python 3.12.10
 # pytest=pytest 9.1.1
 # command=python -m pytest tests/ -q
-# status=374 passed (OBSERVE/REVIEW, no code changes)
+# status=377 passed (OBSERVE/REVIEW, no code changes)
 # usage: diff <(grep '::' tests/baseline/baseline_tests.txt | sort) <(pytest tests/ --collect-only -q | grep '::' | sort)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
@@ -206,6 +206,9 @@ tests/test_collector.py::TestMediaLinkingPersistent::test_media_after_restart_re
 tests/test_collector.py::TestMediaLinkingPersistent::test_multiple_media_linked_to_same_profile
 tests/test_collector.py::TestMediaLinkingPersistent::test_profile_then_media_linked
 tests/test_collector.py::TestMediaLinkingPersistent::test_unknown_media_without_context
+tests/test_collector.py::TestMultiAccount::test_accepts_single_client_for_backward_compat
+tests/test_collector.py::TestMultiAccount::test_registers_handler_on_all_clients
+tests/test_collector.py::TestMultiAccount::test_same_message_from_two_accounts_enqueued_once
 tests/test_collector.py::TestProfileMediaOrderingAndDedup::test_concurrent_profile_then_media_links
 tests/test_collector.py::TestProfileMediaOrderingAndDedup::test_no_double_enqueue_live_and_recovery
 tests/test_collector.py::TestRateLimiter::test_can_act_initially

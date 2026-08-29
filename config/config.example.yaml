@@ -3,17 +3,37 @@
 # ============================================
 
 telegram:
-  api_id: 0
-  api_hash: ""
-  phone: ""
+  # Один или несколько аккаунтов. Каждый аккаунт — отдельная Telegram-сессия
+  # (файл data/sessions/<session>.session). Один и тот же чат, увиденный
+  # разными аккаунтами, дедуплицируется (in-memory + UNIQUE в БД) и
+  # обрабатывается ровно один раз.
+  # Допускается и старый формат — одиночный словарь без ключа `accounts:`.
+  accounts:
+    - api_id: 0
+      api_hash: ""
+      phone: ""
+      session: dvai_1          # имя session-файла (без расширения)
 
-  proxy:
-    enabled: false
-    type: socks5
-    host: ""
-    port: 0
-    username: ""
-    password: ""
+      proxy:
+        enabled: false
+        type: socks5
+        host: ""
+        port: 0
+        username: ""
+        password: ""
+
+    - api_id: 0
+      api_hash: ""
+      phone: ""
+      session: dvai_2
+
+      proxy:
+        enabled: false
+        type: socks5
+        host: ""
+        port: 0
+        username: ""
+        password: ""
 
 project:
   mode: OBSERVE

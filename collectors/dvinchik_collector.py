@@ -80,7 +80,7 @@ class DvinchikCollector:
 
     def __init__(
         self,
-        client: TelegramClient,
+        client: TelegramClient | list[TelegramClient],
         db: Database,
         config: AppConfig,
         profile_service: ProfileService | None = None,
@@ -90,7 +90,15 @@ class DvinchikCollector:
         stats: object | None = None,
         worker: DvinchikRawWorker | None = None,
     ) -> None:
-        self._client = client
+        # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
+        # регистрируются на каждом клиенте. Один и тот же message из одного
+        # чата, увиденный разными аккаунтами, дедуплицируется (in-memory
+        # Dedup + UNIQUE(chat_id, telegram_message_id) в БД) — обрабатывается
+        # ровно один раз.
+        self._clients: list[TelegramClient] = (
+            [client] if not isinstance(client, list) else list(client)
+        )
+        self._client = self._clients[0]
         self._db = db
         self._dedup: Dedup = Dedup()
         self._config = config
@@ -221,12 +229,16 @@ class DvinchikCollector:
         return total
 
     def register(self) -> None:
-        """Регистрирует обработчик новых сообщений."""
-        self._client.add_event_handler(
-            self._handle_new_message,
-            events.NewMessage(incoming=True),
+        """Регистрирует обработчик новых сообщений на всех аккаунтах."""
+        for client in self._clients:
+            client.add_event_handler(
+                self._handle_new_message,
+                events.NewMessage(incoming=True),
+            )
+        logger.info(
+            f"Collector registered ({len(self._clients)} account(s)): "
+            f"listening for new messages"
         )
-        logger.info("Collector registered: listening for new messages")
 
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
         """Обработчик: сохраняет RAW потом парсит."""
@@ -592,10 +604,16 @@ class DvinchikCollector:
         if not hasattr(msg, "media") or msg.media is None:
             return []
 
+        # Скачиваем через клиент, привязанный к самому сообщению (msg
+        # принадлежит тому аккаунту, который его получил), чтобы не зависеть
+        # от того, какой из нескольких клиентов коллектора вызвал обработку.
+        if msg is None or not hasattr(msg, "download_media"):
+            return []
+
         max_bytes = images_config.max_size_mb * 1024 * 1024
 
         try:
-            data = await self._client.download_media(msg, file=bytes)  # type: ignore[union-attr]
+            data = await msg.download_media(file=bytes)  # type: ignore[union-attr]
             if data and len(data) <= max_bytes:
                 logger.info(
                     f"Скачано изображение для CLIP: {len(data)} bytes"

@@ -74,29 +74,34 @@ async def main() -> None:
     await db.connect()
     db_ok = await db.check()
 
-    client = create_client(config.telegram)
-    authorized = False
+    # === Авторизация всех аккаунтов (multi-account) ===
+    clients: list = []
+    statuses: list[str] = []
+    for idx, acc in enumerate(config.telegram.accounts):
+        session_name = acc.session or (
+            "dvai" if len(config.telegram.accounts) == 1 else f"dvai_{idx}"
+        )
+        client = create_client(acc, session_name=session_name)
+        name = None
+        if acc.phone:
+            try:
+                name = await authorize(client, acc.phone)
+            except Exception as e:
+                logger.error(f"Ошибка Telegram (аккаунт #{idx + 1}): {e}")
+                name = None
+        if name:
+            clients.append(client)
+            statuses.append(f"acc{idx + 1}:[green]{name}[/green]")
+        else:
+            statuses.append(f"acc{idx + 1}:[yellow]Not Authorized[/yellow]")
+            if client.is_connected():
+                await client.disconnect()
 
-    if config.telegram.phone:
-        try:
-            name = await authorize(client, config.telegram.phone)
-            if name:
-                session_status = f"[green]{name}[/green]"
-                authorized = True
-            else:
-                session_status = "[yellow]Not Authorized[/yellow]"
-        except Exception as e:
-            logger.error(f"Ошибка Telegram: {e}")
-            session_status = "[red]Connection Error[/red]"
-    else:
-        session_status = "[yellow]Phone not set[/yellow]"
-
+    session_status = "; ".join(statuses) if statuses else "[yellow]No accounts[/yellow]"
     print_banner(config, db_ok, session_status)
 
-    if not authorized:
-        logger.info("Telegram не авторизован. Выход...")
-        if client.is_connected():
-            await client.disconnect()
+    if not clients:
+        logger.info("Нет авторизованных аккаунтов. Выход...")
         await db.close()
         return
 
@@ -141,14 +146,14 @@ async def main() -> None:
     review_service = ReviewService(db, profile_service)
     analytics_service = AnalyticsService(db, config)
     review_bot = ReviewBot(
-        client, config,
+        clients[0], config,
         review_service=review_service,
         analytics_service=analytics_service,
     )
     review_bot.register()
 
     collector = DvinchikCollector(
-        client, db, config,
+        clients, db, config,
         profile_service=profile_service,
         filter_service=filter_service,
         ai_scoring_service=ai_scoring_service,
@@ -171,10 +176,13 @@ async def main() -> None:
         collector.recover_backlog()
     )
 
-    logger.info("Приложение запущено в режиме OBSERVE. Ctrl+C для выхода.")
+    logger.info(
+        f"Приложение запущено ({len(clients)} аккаунт(ов)) "
+        f"в режиме OBSERVE. Ctrl+C для выхода."
+    )
 
     try:
-        await client.run_until_disconnected()
+        await asyncio.gather(*(c.run_until_disconnected() for c in clients))
     except KeyboardInterrupt:
         pass
     finally:
@@ -193,7 +201,9 @@ async def main() -> None:
                 await clip.close()
             if hasattr(llm, "close"):
                 await llm.close()
-        await client.disconnect()
+        for c in clients:
+            if c.is_connected():
+                await c.disconnect()
         await db.close()
         logger.info("Приложение остановлено")
 

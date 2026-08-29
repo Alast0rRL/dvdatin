@@ -23,11 +23,12 @@ class ProxyConfig(BaseModel):
 
 
 class TelegramConfig(BaseModel):
-    """Параметры подключения к Telegram API."""
+    """Параметры подключения к Telegram API (один аккаунт)."""
 
     api_id: int
     api_hash: str
     phone: str = ""
+    session: str = ""
     proxy: ProxyConfig = ProxyConfig()
 
     @field_validator("api_id")
@@ -45,6 +46,38 @@ class TelegramConfig(BaseModel):
             msg = "api_hash не может быть пустым"
             raise ValueError(msg)
         return v
+
+
+class TelegramAccountsConfig(BaseModel):
+    """Один или несколько Telegram-аккаунтов.
+
+    Принимает как явный список ``accounts``, так и одиночный словарь
+    (обратная совместимость со старым форматом ``telegram: {api_id, ...}``).
+    """
+
+    accounts: list[TelegramConfig] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_accounts(cls, data: object) -> object:
+        """Нормализует разные формы задания аккаунтов в ``{accounts: [...]}``.
+
+        Args:
+            data: Сырое значение поля ``telegram`` (dict / list / TelegramConfig).
+
+        Returns:
+            Словарь с ключом ``accounts`` или исходное значение.
+        """
+        if isinstance(data, TelegramConfig):
+            return {"accounts": [data]}
+        if isinstance(data, list):
+            return {"accounts": data}
+        if isinstance(data, dict):
+            if "accounts" in data:
+                return data
+            if "api_id" in data:
+                return {"accounts": [data]}
+        return data
 
 
 class AgeFilterConfig(BaseModel):
@@ -289,7 +322,7 @@ class SourcesConfig(BaseModel):
 class AppConfig(BaseModel):
     """Корневая модель конфигурации приложения."""
 
-    telegram: TelegramConfig
+    telegram: TelegramAccountsConfig
     project: ProjectConfig = ProjectConfig()
     dvinchik: DvinchikConfig = DvinchikConfig()
     sources: SourcesConfig = SourcesConfig()
