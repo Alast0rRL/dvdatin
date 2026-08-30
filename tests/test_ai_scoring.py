@@ -15,6 +15,7 @@ from models.profile import Profile
 from services.ai_scoring_service import AIScoringService
 from services.clip_service import BaseCLIPService
 from services.llm_service import BaseLLMService
+from services.remote_llm_client import PROMPT_VERSION
 
 
 # ── Mock AI клиенты (offline) ────────────────────────────────────────
@@ -44,7 +45,7 @@ class MockLLMClient(BaseLLMService):
             confidence=self._confidence,
             reasons=self._reasons,
             model_version="mock-llm",
-            prompt_version="llm-v1",
+            prompt_version=PROMPT_VERSION,
         )
 
 
@@ -161,7 +162,7 @@ class TestAIScoringServiceStage5:
         )
         assert result is not None
         assert result.score == 0.82
-        assert result.prompt_version == "llm-v1"
+        assert result.prompt_version == PROMPT_VERSION
 
     def test_score_text_none_when_llm_disabled(self, tmp_db: Database) -> None:
         config = make_config()

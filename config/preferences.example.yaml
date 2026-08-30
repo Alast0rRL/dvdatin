@@ -62,6 +62,10 @@ skip:
       - "под каре"
       - "короткая стрижка"
       - "короче каре"
+  - label: "instagram"
+    match:
+      - "instagram"
+      - "инстаграм"
 
 # SIGNALS → подъём (like-факторы)
 like:

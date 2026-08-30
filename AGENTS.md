@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (231 total, no linter/formatter configured)
+# Run all tests (387 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -85,3 +85,16 @@ Currently at **Stage 6 complete** (Human Review & Analytics). See `PROJECT.md` f
 ## Empty Placeholder Packages
 
 `dialogs/`, `utils/`, `prompts/`, `managers/`, `filters/` — all contain only `__init__.py`. Reserved for future stages.
+
+## Documentation Rule (IMPORTANT)
+
+**Правило документирования:** Любые новые фичи, измененные архитектурные решения,
+новые модули, эндпоинты или изменения в структуре базы данных/данных **обязательно**
+должны сразу же документироваться и отражаться в актуальном состоянии в файле
+`README.md`. Ни одно изменение не считается завершенным, пока документация не обновлена.
+
+Практика применения:
+- Каждый завершённый PR/коммит, добавляющий что-то из перечисленного, обновляет `README.md`.
+- Сверяй `PROJECT.md` (roadmap/этапы) — при переходе на новый Stage обнови раздел «Roadmap».
+- Если меняется схема БД — обнови блок «База данных» и «Связи» в README.
+- Если меняются конфиг/эндпоинты — обнови соответствующие секции README.

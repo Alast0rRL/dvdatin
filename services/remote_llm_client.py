@@ -16,7 +16,7 @@ from services.llm_service import BaseLLMService
 if TYPE_CHECKING:
     from app.config import LLMConfig, RemoteAIConfig
 
-PROMPT_VERSION = "llm-v1"
+PROMPT_VERSION = "llm-v2"
 
 
 class RemoteLLMClient(BaseLLMService):

@@ -22,6 +22,7 @@ from services.filter_engine import FilterEngine
 from services.filter_service import FilterService
 from services.llm_service import BaseLLMService
 from services.profile_service import ProfileService
+from services.remote_llm_client import PROMPT_VERSION
 
 
 # ── Mock AI клиенты (offline) ────────────────────────────────────────
@@ -41,7 +42,7 @@ class MockLLMClient(BaseLLMService):
         return LLMScore(
             score=self._score, confidence=self._confidence,
             reasons=self._reasons, model_version="mock-llm",
-            prompt_version="llm-v1",
+            prompt_version=PROMPT_VERSION,
         )
 
 
@@ -511,7 +512,7 @@ class TestDecisionDB:
     def test_prompt_version_in_llm(self) -> None:
         llm = MockLLMClient(score=0.8, confidence=0.9)
         result = run(llm.evaluate_profile("A", 19, "СПб", "d"))
-        assert result.prompt_version == "llm-v1"
+        assert result.prompt_version == PROMPT_VERSION
 
     def test_foreign_key_cascade(self, tmp_db: Database) -> None:
         config = make_config()

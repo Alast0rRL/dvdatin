@@ -92,7 +92,7 @@ sudo journalctl -u dvai -f
 
 Сверка тестов после soak (regression):
 ```bash
-./venv/bin/python -m pytest tests/ -q   # ожидается 374 passed
+./venv/bin/python -m pytest tests/ -q   # ожидается 387 passed
 diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
      <(./venv/bin/python -m pytest tests/ --collect-only -q | grep '::' | sort)
 ```
@@ -107,4 +107,4 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - `deploy/dvai.service` — systemd unit
 - `deploy/run.sh` — ручной запуск (UTF-8)
 - `requirements.txt` / `requirements-dev.txt` — зависимости
-- `tests/baseline/` — frozen baseline (374 tests)
+- `tests/baseline/` — frozen baseline (387 tests)
