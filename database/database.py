@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     message_date TEXT NOT NULL,
     text TEXT DEFAULT '',
     raw_entities TEXT DEFAULT '[]',
+    reply_markup TEXT DEFAULT '[]',
     media_type TEXT DEFAULT '',
     reply_to_message_id INTEGER,
     received_at TEXT NOT NULL,
@@ -193,6 +194,8 @@ class Database:
         await self._ensure_raw_unique_index()
         # W3: флаг обработки RAW для startup-backlog recovery.
         await self._ensure_raw_processed_column()
+        # Кнопки сообщения (reply_markup) — read-only разведка слоя действий.
+        await self._ensure_raw_reply_markup_column()
 
     async def _ensure_raw_unique_index(self) -> None:
         """Создаёт UNIQUE-индекс на (chat_id, telegram_message_id).
@@ -250,6 +253,23 @@ class Database:
         )
         await self._connection.commit()
 
+    async def _ensure_raw_reply_markup_column(self) -> None:
+        """Добавляет reply_markup (кнопки сообщения) для существующих БД.
+
+        Read-only сбор данных для разведки слоя действий (кнопка LIKE/далее):
+        сериализованный JSON кнопок (текст + callback_data/url) сохраняется в
+        RAW ПЕРВЫМ, до любого разбора. Обратная совместимость — DEFAULT '[]'.
+        """
+        cursor = await self._connection.execute("PRAGMA table_info(raw_messages)")
+        rows = await cursor.fetchall()
+        columns = {row[1] for row in rows}
+        if "reply_markup" not in columns:
+            await self._connection.execute(
+                "ALTER TABLE raw_messages ADD COLUMN reply_markup TEXT DEFAULT '[]'"
+            )
+            await self._connection.commit()
+            logger.info("Миграция: raw_messages.reply_markup добавлен")
+
     async def mark_raw_processed(self, raw_id: int) -> None:
         """Помечает RAW-сообщение обработанным (pipeline завершён)."""
         now = datetime.now(timezone.utc).isoformat()
@@ -304,9 +324,10 @@ class Database:
         message_date: str,
         text: str,
         raw_entities: str,
-        media_type: str,
-        reply_to_message_id: int | None,
-        received_at: str,
+        reply_markup: str = "[]",
+        media_type: str = "",
+        reply_to_message_id: int | None = None,
+        received_at: str = "",
         retry_attempts: int = _RAW_SAVE_MAX_RETRIES,
     ) -> int | None:
         """Сохраняет сырое сообщение в БД с ограниченным retry при транзитных сбоях.
@@ -329,13 +350,13 @@ class Database:
                 cursor = await self._connection.execute(
                     """INSERT OR IGNORE INTO raw_messages
                     (telegram_message_id, chat_id, sender_id, sender_username,
-                     sender_name, message_date, text, raw_entities, media_type,
-                     reply_to_message_id, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     sender_name, message_date, text, raw_entities, reply_markup,
+                     media_type, reply_to_message_id, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         telegram_message_id, chat_id, sender_id, sender_username,
-                        sender_name, message_date, text, raw_entities, media_type,
-                        reply_to_message_id, received_at,
+                        sender_name, message_date, text, raw_entities,
+                        reply_markup, media_type, reply_to_message_id, received_at,
                     ),
                 )
                 await self._connection.commit()

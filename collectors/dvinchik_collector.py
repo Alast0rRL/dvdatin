@@ -203,6 +203,7 @@ class DvinchikCollector:
                     text=row.get("text") or "",
                     media_type=row.get("media_type") or "",
                     entities_json=row.get("raw_entities") or "[]",
+                    reply_markup_json=row.get("reply_markup") or "[]",
                     reply_to=row.get("reply_to_message_id"),
                     received_at=row["received_at"],
                     msg_date=row["message_date"],
@@ -276,6 +277,7 @@ class DvinchikCollector:
         text = msg.text or ""
         media_type = _detect_media_type(msg)
         entities_json = self._serialize_entities(msg)
+        reply_markup_json = self._serialize_reply_markup(msg)
         reply_to = msg.reply_to_msg_id if msg.reply_to else None
         now = datetime.now(timezone.utc).isoformat()
         msg_date = msg.date.isoformat() if msg.date else now
@@ -306,6 +308,7 @@ class DvinchikCollector:
                     message_date=msg_date,
                     text=text,
                     raw_entities=entities_json,
+                    reply_markup=reply_markup_json,
                     media_type=media_type,
                     reply_to_message_id=reply_to,
                     received_at=now,
@@ -367,6 +370,7 @@ class DvinchikCollector:
                 text=text,
                 media_type=media_type,
                 entities_json=entities_json,
+                reply_markup_json=reply_markup_json,
                 reply_to=reply_to,
                 received_at=now,
                 msg_date=msg_date,
@@ -421,6 +425,7 @@ class DvinchikCollector:
                 msg_date=msg_date,
                 media_type=media_type,
                 msg_type=msg_type,
+                buttons=task.reply_markup_json,
             )
 
             if msg_type == MessageType.PROFILE:
@@ -642,6 +647,41 @@ class DvinchikCollector:
             })
         return json.dumps(entities, ensure_ascii=False)
 
+    def _serialize_reply_markup(self, msg: object) -> str:
+        """Сериализует кнопки сообщения (reply_markup) в JSON.
+
+        Read-only разведка слоя действий: наличие inline-кнопок с callback_data
+        на анкете говорит о том, как ставится LIKE (кнопка на сообщении).
+        Никаких действий не вызывается. Ошибки/отсутствие разметки → "[]",
+        чтобы RAW-save никогда не падал из-за незнакомой разметки.
+        """
+        markup = getattr(msg, "reply_markup", None)
+        rows = getattr(markup, "rows", None) if markup is not None else None
+        if not rows:
+            return "[]"
+        result: list[list[dict[str, str]]] = []
+        for row in rows:
+            buttons = getattr(row, "buttons", None) or []
+            row_items = []
+            for btn in buttons:
+                item: dict[str, str] = {
+                    "text": str(getattr(btn, "text", "") or ""),
+                    "type": type(btn).__name__,
+                }
+                cb = getattr(btn, "callback_data", None)
+                if cb:
+                    if isinstance(cb, bytes):
+                        item["callback_data"] = cb.decode("utf-8", errors="replace")
+                    else:
+                        item["callback_data"] = str(cb)
+                url = getattr(btn, "url", None)
+                if url:
+                    item["url"] = str(url)
+                row_items.append(item)
+            if row_items:
+                result.append(row_items)
+        return json.dumps(result, ensure_ascii=False)
+
     def _print_message(
         self,
         chat_id: int,
@@ -652,6 +692,7 @@ class DvinchikCollector:
         msg_date: str,
         media_type: str,
         msg_type: MessageType,
+        buttons: str = "[]",
     ) -> None:
         """Красивый вывод нового сообщения в консоль."""
         is_dvinchik = (
@@ -684,8 +725,36 @@ class DvinchikCollector:
         if text:
             preview = text[:200] + ("..." if len(text) > 200 else "")
             table.add_row("Text", preview)
+        if buttons and buttons != "[]":
+            table.add_row("Buttons", self._render_buttons(buttons))
 
         console.print(Panel(table, title="[bold]NEW MESSAGE[/bold]", border_style="blue"))
+
+    def _render_buttons(self, buttons_json: str) -> str:
+        """Читаемое представление кнопок: 'текст(callback) | текст(url)'.
+
+        Demo-формат для разведки: callback_data может быть любым байтовым
+        payload, поэтому показываем как есть (полезно для реверса кнопки LIKE).
+        """
+        try:
+            rows = json.loads(buttons_json)
+        except (ValueError, TypeError):
+            return buttons_json
+        lines = []
+        for row in rows or []:
+            cells = []
+            for btn in row or []:
+                text = btn.get("text", "")
+                cb = btn.get("callback_data")
+                url = btn.get("url")
+                if cb:
+                    cells.append(f"{text} ({cb})")
+                elif url:
+                    cells.append(f"{text} [{url}]")
+                else:
+                    cells.append(text)
+            lines.append(" | ".join(cells))
+        return " / ".join(lines)
 
     def _print_profile_stored(self, profile: object, is_new: bool = True) -> None:
         """Красивый вывод сохранённого профиля (Stage 2 format)."""

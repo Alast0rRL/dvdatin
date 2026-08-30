@@ -38,6 +38,7 @@ class RawMessage(BaseModel):
     message_date: datetime
     text: str = ""
     raw_entities: str = "[]"
+    reply_markup: str = "[]"
     media_type: str = ""
     reply_to_message_id: int | None = None
 

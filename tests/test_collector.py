@@ -1565,3 +1565,220 @@ class TestMultiAccount:
         # Один и тот же пост, увиденный двумя аккаунтами, ставится в очередь
         # ровно один раз (in-memory dedup + UNIQUE в БД).
         assert worker.qsize == 1
+
+
+# ==================== REPLY MARKUP (кнопки — read-only разведка) ====================
+
+class TestReplyMarkupSerialize:
+    """Сериализация кнопок сообщения для разведки слоя действий."""
+
+    def _collector(self) -> DvinchikCollector:
+        return DvinchikCollector(AsyncMock(), make_db_mock(), make_config())
+
+    def _markup_msg(self) -> MagicMock:
+        like = MagicMock()
+        like.text = "LIKE"
+        like.callback_data = b"like_1881"
+        like.url = None
+        next_ = MagicMock()
+        next_.text = "NEXT"
+        next_.callback_data = b"\x00\x01\x02"
+        next_.url = None
+        web = MagicMock()
+        web.text = "Open"
+        web.callback_data = None
+        web.url = "https://example.com"
+        markup = MagicMock()
+        markup.rows = [MagicMock(buttons=[like, next_]), MagicMock(buttons=[web])]
+        msg = MagicMock()
+        msg.reply_markup = markup
+        return msg
+
+    def test_missing_markup_yields_empty_json(self) -> None:
+        msg = MagicMock()
+        msg.reply_markup = None
+        assert self._collector()._serialize_reply_markup(msg) == "[]"
+
+    def test_no_rows_yields_empty_json(self) -> None:
+        msg = MagicMock()
+        msg.reply_markup = MagicMock()
+        msg.reply_markup.rows = None
+        assert self._collector()._serialize_reply_markup(msg) == "[]"
+
+    def test_inline_buttons_text_callback_and_url(self) -> None:
+        data = json.loads(
+            self._collector()._serialize_reply_markup(self._markup_msg())
+        )
+        assert len(data) == 2
+        like, next_ = data[0]
+        assert like["text"] == "LIKE"
+        assert like["callback_data"] == "like_1881"
+        assert "url" not in like
+        assert next_["callback_data"] == "\x00\x01\x02"
+        web = data[1][0]
+        assert web["text"] == "Open"
+        assert web["url"] == "https://example.com"
+        assert "callback_data" not in web
+
+    def test_render_buttons_readable(self) -> None:
+        collector = self._collector()
+        out = collector._render_buttons(
+            collector._serialize_reply_markup(self._markup_msg())
+        )
+        assert "LIKE (like_1881)" in out
+        assert "NEXT" in out
+        assert "Open [https://example.com]" in out
+
+
+class TestReplyMarkupStorage:
+    """RAW-сохранение кнопок и миграция колонки reply_markup."""
+
+    def _real_db(self, tmp_path: Path, name: str = "rm.db") -> Database:
+        db = Database(path=tmp_path / name)
+        asyncio.get_event_loop().run_until_complete(db.connect())
+        return db
+
+    def test_save_and_readback(self, tmp_path: Path) -> None:
+        db = self._real_db(tmp_path)
+        loop = asyncio.get_event_loop()
+        try:
+            markup = (
+                '[ [{"text": "LIKE", "type": "InlineKeyboardButton", '
+                '"callback_data": "like_1881"}] ]'
+            )
+            raw_id = loop.run_until_complete(db.save_raw_message(
+                telegram_message_id=10,
+                chat_id=1234060895,
+                sender_id=1,
+                sender_username="",
+                sender_name="",
+                message_date="2026-01-01",
+                text="wimx, 18, Санкт-Петербург",
+                raw_entities="[]",
+                reply_markup=markup,
+                media_type="",
+                reply_to_message_id=None,
+                received_at="2026-01-01",
+            ))
+            cur = loop.run_until_complete(db._connection.execute(
+                "SELECT raw_entities, reply_markup FROM raw_messages WHERE id=?",
+                (raw_id,),
+            ))
+            row = loop.run_until_complete(cur.fetchone())
+            assert row[0] == "[]"
+            assert row[1] == markup
+        finally:
+            loop.run_until_complete(db.close())
+
+    def test_default_empty_when_not_passed(self, tmp_path: Path) -> None:
+        db = self._real_db(tmp_path)
+        loop = asyncio.get_event_loop()
+        try:
+            raw_id = loop.run_until_complete(db.save_raw_message(
+                telegram_message_id=11,
+                chat_id=1234060895,
+                sender_id=1,
+                sender_username="",
+                sender_name="",
+                message_date="2026-01-01",
+                text="x",
+                raw_entities="[]",
+                media_type="",
+                reply_to_message_id=None,
+                received_at="2026-01-01",
+            ))
+            cur = loop.run_until_complete(db._connection.execute(
+                "SELECT reply_markup FROM raw_messages WHERE id=?", (raw_id,)
+            ))
+            row = loop.run_until_complete(cur.fetchone())
+            assert row[0] == "[]"
+        finally:
+            loop.run_until_complete(db.close())
+
+    def test_migration_adds_column_to_existing_db(self, tmp_path: Path) -> None:
+        path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(path))
+        conn.execute("""CREATE TABLE raw_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_message_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            sender_id INTEGER NOT NULL,
+            sender_username TEXT DEFAULT '',
+            sender_name TEXT DEFAULT '',
+            message_date TEXT NOT NULL,
+            text TEXT DEFAULT '',
+            raw_entities TEXT DEFAULT '[]',
+            media_type TEXT DEFAULT '',
+            reply_to_message_id INTEGER,
+            received_at TEXT NOT NULL,
+            processed_at TEXT
+        );""")
+        conn.execute(
+            "INSERT INTO raw_messages (telegram_message_id, chat_id, sender_id, "
+            "message_date, text, received_at) VALUES "
+            "(1, 1234060895, 1, '2026-01-01', 'old profile', '2026-01-01')"
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(path=path)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(db.connect())
+        try:
+            cur = loop.run_until_complete(
+                db._connection.execute("PRAGMA table_info(raw_messages)")
+            )
+            columns = {row[1] for row in loop.run_until_complete(cur.fetchall())}
+            assert "reply_markup" in columns
+            cur2 = loop.run_until_complete(
+                db._connection.execute("SELECT reply_markup FROM raw_messages")
+            )
+            row = loop.run_until_complete(cur2.fetchone())
+            assert row[0] == "[]"
+        finally:
+            loop.run_until_complete(db.close())
+
+
+class TestReplyMarkupHandler:
+    """Хендлер передаёт кнопки в RAW-save и в RawTask (read-only)."""
+
+    def test_forwarded_to_raw_and_task(self) -> None:
+        db = make_db_mock()
+        worker = DvinchikRawWorker(process=AsyncMock())
+        collector = DvinchikCollector(AsyncMock(), db, make_config())
+        collector.attach_worker(worker)
+        ev = make_event(text="wimx, 18, Санкт-Петербург")
+
+        like = MagicMock()
+        like.text = "LIKE"
+        like.callback_data = b"like_1881"
+        like.url = None
+        markup = MagicMock()
+        markup.rows = [MagicMock(buttons=[like])]
+        ev.message.reply_markup = markup
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(collector._handle_new_message(ev))
+
+        expected = collector._serialize_reply_markup(ev.message)
+        kwargs = db.save_raw_message.call_args.kwargs
+        assert kwargs["reply_markup"] == expected
+        assert worker.qsize == 1
+        task = loop.run_until_complete(worker._queue.get())
+        assert task.reply_markup_json == expected
+
+    def test_no_buttons_passes_empty(self) -> None:
+        db = make_db_mock()
+        worker = DvinchikRawWorker(process=AsyncMock())
+        collector = DvinchikCollector(AsyncMock(), db, make_config())
+        collector.attach_worker(worker)
+        ev = make_event(text="нет кнопок")
+        ev.message.reply_markup = None
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(collector._handle_new_message(ev))
+
+        kwargs = db.save_raw_message.call_args.kwargs
+        assert kwargs["reply_markup"] == "[]"
+        task = loop.run_until_complete(worker._queue.get())
+        assert task.reply_markup_json == "[]"

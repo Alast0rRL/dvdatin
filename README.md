@@ -116,7 +116,7 @@ Telegram NewMessage (входящее)
 
 | Таблица | Назначение |
 |---|---|
-| `raw_messages` | Сырые сообщения Telegram (append-only, никогда не удаляются) |
+| `raw_messages` | Сырые сообщения Telegram (append-only, никогда не удаляются; включает `raw_entities` и `reply_markup` = кнопки) |
 | `profiles` | Профили (name/age/city/description/fingerprint/status…) |
 | `profile_messages` | Связь профиль ↔ сообщения (в т.ч. MEDIA_ONLY) |
 | `chat_context` | Контекст «последняя анкета чата» (переживает restart) |
@@ -233,7 +233,7 @@ dvdatin/
 │
 ├── filters/  dialogs/  managers/  prompts/  utils/   # 🅡 ЗАРЕЗЕРВИРОВАНЫ (только __init__.py)
 │
-├── tests/                       # Тесты (387, без pytest-asyncio)
+├── tests/                       # Тесты (396, без pytest-asyncio)
 │   ├── test_*.py                #   Unit/integration для модулей
 │   ├── e2e_ai.py                #   REAL_E2E против живого шлюза (не в обычном pytest)
 │   └── baseline/                #   Frozen baseline тестов (diff-сверка)
@@ -429,7 +429,7 @@ sudo journalctl -u dvai -f
 ### Тесты
 
 ```bash
-python -m pytest tests/ -v                  # все 387
+python -m pytest tests/ -v                  # все 396
 python -m pytest tests/test_ai.py -v        # AI (105)
 python -m pytest tests/test_preferences.py -v   # предпочтения (10)
 python -m pytest tests/test_decision.py -v  # Decision Engine (27)
@@ -459,8 +459,9 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Multi-account** — несколько Telegram-аккаунтов с общим pipeline и дедупликацией.
 - [x] **Preferences layer (SKIP/LIKE)** — `config/preferences.yaml`, `app/preferences.py`, интеграция в DecisionService.
 - [x] **Серверный LLM-промпт `llm-v2`** — `deploy/llm-v2_prompt.md` (SKIP/LIKE-правила для семантической оценки), клиент помечает `prompt_version=llm-v2`.
+- [x] **Захват кнопок (reply_markup)** — read-only разведка слоя действий: `raw_messages.reply_markup`, сериализация в коллекторе, вывод в консоль. Кнопка LIKE ставится по inline-кнопке на анкете (callback_data).
 
-Проверено: **387 тестов проходят** (baseline в `tests/baseline/`).
+Проверено: **396 тестов проходят** (baseline в `tests/baseline/`).
 
 ### В разработке / планируется
 

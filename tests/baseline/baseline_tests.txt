@@ -1,10 +1,10 @@
 ﻿# DvAI Test Baseline (FROZEN)
-# count=387
-# generated=2026-08-30 21:12:10
+# count=396
+# generated=2026-08-30 23:13:24
 # python=Python 3.12.10
 # pytest=pytest 9.1.1
 # command=python -m pytest tests/ -q
-# status=387 passed (preferences layer added)
+# status=396 passed (reply_markup capture added)
 # usage: diff <(grep '::' tests/baseline/baseline_tests.txt | sort) <(pytest tests/ --collect-only -q | grep '::' | sort)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
@@ -232,6 +232,15 @@ tests/test_collector.py::TestRawWorker::test_message_enqueued
 tests/test_collector.py::TestRawWorker::test_worker_error_does_not_kill
 tests/test_collector.py::TestRawWorker::test_worker_graceful_shutdown
 tests/test_collector.py::TestRawWorker::test_worker_processes_queue
+tests/test_collector.py::TestReplyMarkupHandler::test_forwarded_to_raw_and_task
+tests/test_collector.py::TestReplyMarkupHandler::test_no_buttons_passes_empty
+tests/test_collector.py::TestReplyMarkupSerialize::test_inline_buttons_text_callback_and_url
+tests/test_collector.py::TestReplyMarkupSerialize::test_missing_markup_yields_empty_json
+tests/test_collector.py::TestReplyMarkupSerialize::test_no_rows_yields_empty_json
+tests/test_collector.py::TestReplyMarkupSerialize::test_render_buttons_readable
+tests/test_collector.py::TestReplyMarkupStorage::test_default_empty_when_not_passed
+tests/test_collector.py::TestReplyMarkupStorage::test_migration_adds_column_to_existing_db
+tests/test_collector.py::TestReplyMarkupStorage::test_save_and_readback
 tests/test_collector.py::TestSourceFilter::test_authorized_chat_is_processed
 tests/test_collector.py::TestSourceFilter::test_config_sources_seeded_from_dvinchik
 tests/test_collector.py::TestSourceFilter::test_unauthorized_ignored_before_db

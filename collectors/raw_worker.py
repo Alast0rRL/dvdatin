@@ -36,6 +36,7 @@ class RawTask:
     msg_date: str
     msg: object | None
     raw_id: int
+    reply_markup_json: str = "[]"
 
 
 #: Сигнатура функции обработки одного задания.
