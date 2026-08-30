@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from app.preferences import PreferencesEngine
 from models.decision import AIDecision, AIDecisionResult
 from models.filter import FilterDecision
 
@@ -37,6 +38,7 @@ class DecisionService:
         profile_service: ProfileService,
         filter_service: FilterService,
         ai_scoring_service: AIScoringService,
+        preferences: PreferencesEngine | None = None,
     ) -> None:
         self._db = db
         self._config = config
@@ -44,6 +46,9 @@ class DecisionService:
         self._filter_service = filter_service
         self._ai = ai_scoring_service
         self._decision_cfg: DecisionConfig = config.ai.decision
+        # Предпочтения пользователя (SKIP/LIKE) — отдельный файл config/preferences.yaml.
+        # Если engine не передан — пустые правила (поведение не меняется).
+        self._prefs = preferences if preferences is not None else PreferencesEngine()
 
     async def evaluate(
         self,
@@ -98,6 +103,7 @@ class DecisionService:
             clip_score=ai_score.clip_score,
             confidence=ai_score.confidence_score,
             ai_reasons=ai_score.reasons,
+            text=profile.description or "",
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -154,8 +160,16 @@ class DecisionService:
         clip_score: float | None,
         confidence: float,
         ai_reasons: list[str],
+        text: str = "",
     ) -> tuple[AIDecision, float, list[str]]:
-        """Вычисляет решение на основе hard filters + порогов.
+        """Вычисляет решение на основе hard filters + порогов + правил пользователя.
+
+        Данные о предпочтениях пользователя (SKIP/LIKE) приходят из
+        preferences-файла (config/preferences.yaml) и применяются как
+        последний слой поверх порогов:
+          - SKIP-сигнал (hard) → DISLIKE (CLIP не переворачивает).
+          - LIKE-фактор → потенциальный DISLIKE подтягивается до REVIEW
+            (анкета не теряется), при достижении порога — LIKE.
 
         Returns:
             (decision, combined_score, reasons)
@@ -163,6 +177,19 @@ class DecisionService:
         combined = self._combine(llm_score, clip_score)
         reasons = list(ai_reasons)
         cfg = self._decision_cfg
+
+        # Предпочтения пользователя — оценка текста анкеты.
+        skip_labels, like_labels = (), ()
+        scoring = self._prefs.scoring
+        if self._prefs.enabled and text:
+            skip_labels, like_labels = self._prefs.evaluate(text)
+
+        # HARD USER SKIP: явный негатив → всегда DISLIKE. Самый высокий
+        # приоритет: высокий CLIP / high combined не может перевернуть.
+        if skip_labels and scoring.skip_is_hard:
+            return AIDecision.DISLIKE, combined, [
+                f"USER_SKIP:{skip_labels[0]}", *reasons,
+            ]
 
         # HARD FILTER: REJECT → всегда DISLIKE
         if filter_decision == FilterDecision.REJECT:
@@ -175,6 +202,11 @@ class DecisionService:
             if combined >= cfg.review_threshold:
                 return AIDecision.REVIEW, combined, [
                     "FILTER_REVIEW", *reasons,
+                ]
+            # LIKE-фактор не даёт потерять анкету, попавшую в REVIEW-фильтр.
+            if like_labels and scoring.like_lifts_review:
+                return AIDecision.REVIEW, combined, [
+                    "FILTER_REVIEW", f"USER_LIKE:{like_labels[0]}", *reasons,
                 ]
             return AIDecision.DISLIKE, combined, [
                 "FILTER_REVIEW", *reasons,
@@ -199,6 +231,14 @@ class DecisionService:
         if combined >= cfg.review_threshold:
             return AIDecision.REVIEW, combined, [
                 "REVIEW_THRESHOLD", *reasons,
+            ]
+
+        # BELOW_THRESHOLDS → DISLIKE, НО не теряем LIKE-факторы пользователя
+        # (например «играет в игры» / «аниме» / «переехала в СПб») — они идут
+        # в очередь REVIEW на подтверждение, а не в мусор.
+        if like_labels and scoring.like_lifts_review:
+            return AIDecision.REVIEW, combined, [
+                "USER_LIKE", f"USER_LIKE:{like_labels[0]}", *reasons,
             ]
 
         return AIDecision.DISLIKE, combined, [

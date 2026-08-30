@@ -1,10 +1,10 @@
-# DvAI Test Baseline (FROZEN)
-# count=377
-# generated=2026-08-29 16:29:20
+﻿# DvAI Test Baseline (FROZEN)
+# count=387
+# generated=2026-08-30 21:12:10
 # python=Python 3.12.10
 # pytest=pytest 9.1.1
 # command=python -m pytest tests/ -q
-# status=377 passed (OBSERVE/REVIEW, no code changes)
+# status=387 passed (preferences layer added)
 # usage: diff <(grep '::' tests/baseline/baseline_tests.txt | sort) <(pytest tests/ --collect-only -q | grep '::' | sort)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
@@ -359,6 +359,16 @@ tests/test_parser.py::TestParseProfile::test_wrong_age
 tests/test_parser.py::TestServiceMessages::test_service[\u0412\u0430\u043c \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u043b\u0438 \u043b\u0430\u0439\u043a!]
 tests/test_parser.py::TestServiceMessages::test_service[\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0435\u0439 \u043f\u0435\u0440\u0432\u044b\u043c!]
 tests/test_parser.py::TestServiceMessages::test_service[\u0423 \u0432\u0430\u0441 \u043e\u0431\u043e\u044e\u0434\u043d\u043e\u0435 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u0435!]
+tests/test_preferences.py::TestDecisionHardRules::test_like_factor_does_not_override_filter_reject
+tests/test_preferences.py::TestDecisionHardRules::test_like_factor_lifts_below_threshold_to_review
+tests/test_preferences.py::TestDecisionHardRules::test_no_prefs_behavior_unchanged
+tests/test_preferences.py::TestDecisionHardRules::test_skip_hard_overrides_high_clip
+tests/test_preferences.py::TestDecisionHardRules::test_skip_smoking_hard
+tests/test_preferences.py::TestDecisionIntegration::test_observed_fn_gamer_is_not_lost
+tests/test_preferences.py::TestDecisionIntegration::test_observed_fp_gamer_friend_is_disliked
+tests/test_preferences.py::TestPreferencesEngine::test_disabled_engine_hits_nothing
+tests/test_preferences.py::TestPreferencesEngine::test_evaluate_skip_and_like
+tests/test_preferences.py::TestPreferencesEngine::test_no_text_no_rules
 tests/test_profile.py::TestBackwardCompatibility::test_raw_messages_table_intact
 tests/test_profile.py::TestCreateProfile::test_creates_profile
 tests/test_profile.py::TestDescriptionUpdate::test_description_updates

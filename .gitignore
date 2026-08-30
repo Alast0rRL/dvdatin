@@ -32,6 +32,9 @@ data/database.db-shm
 # Config (secrets)
 config/config.yaml
 
+# Personal AI-scoring preferences (live, editable — not committed)
+config/preferences.yaml
+
 # Proxy (vendored xray-core + real VLESS credentials — NEVER commit)
 proxy/
 

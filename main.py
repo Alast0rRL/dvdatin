@@ -19,6 +19,7 @@ from loguru import logger
 from app.banner import print_banner
 from app.config import AppConfig
 from app.logging import setup_logging
+from app.preferences import load_preferences
 from collectors.dvinchik_collector import DvinchikCollector
 from collectors.raw_worker import DvinchikRawWorker
 from collectors.stats import CollectorStats
@@ -132,6 +133,13 @@ async def main() -> None:
         ai_scoring_service = AIScoringService(db, config, clip_service, llm_service)
 
     # AI Decision Engine (Stage 5) — только OBSERVE, никаких Telegram-действий
+    # Предпочтения пользователя (SKIP/LIKE) подгружаются из отдельного файла.
+    preferences = load_preferences()
+    if preferences.enabled:
+        logger.info(
+            "Предпочтения AI scoring загружены: "
+            f"skip={len(preferences._prefs.skip)} like={len(preferences._prefs.like)}"
+        )
     decision_service = None
     if config.ai.enabled and ai_scoring_service is not None:
         decision_service = DecisionService(
@@ -140,6 +148,7 @@ async def main() -> None:
             profile_service,
             filter_service,
             ai_scoring_service,
+            preferences=preferences,
         )
 
     # Human Review + Analytics (Stage 6) — только OBSERVE/REVIEW

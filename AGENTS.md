@@ -21,6 +21,7 @@ python -m pytest tests/test_ai.py -v
 - **Remote AI clients are Telegram-free**: `services/remote_llm_client.py`, `services/remote_clip_client.py` never import Telethon.
 - **AI scoring gated by PASS**: In the collector, AI scoring only runs when `FilterDecision == PASS`. REJECT/REVIEW → skip AI.
 - **AI errors must not break Collector**: All AI calls are wrapped in try/except. RAW messages are never lost.
+- **Preferences layer (SKIP/LIKE)**: User's calibration rules (`app/preferences.py` → `PreferencesEngine`) live ONLY in `config/preferences.yaml` (live, gitignored) / `config/preferences.example.yaml` (committed), plus the server-side LLM prompt. Never hardcode rules in `services/decision_service.py` — it only applies them. SKIP → hard DISLIKE (CLIP can't override); LIKE-factor → BELOW_THRESHOLDS/FILTER_REVIEW DISLIKE is lifted to REVIEW (profile not lost). Thresholds 0.75/0.50 unchanged.
 - **`filters/` package is empty** — a reserved placeholder. Actual filter logic lives in `services/filter_engine.py` and `services/filter_service.py`. Do not confuse the two.
 - **`config/config.yaml` is gitignored** (contains API keys, phone, proxy creds). Only `config/config.example.yaml` is committed. Never commit real secrets.
 
@@ -57,7 +58,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_parser (41), test_collector (18), test_profile (19), test_audit (29), test_filter (25), test_ai (54), test_ai_scoring (10), test_decision (20), test_human_review (29), test_analytics (20), test_review_ui (5) → 315 total. Reset the exact counts from the real file when editing them; the summary here is indicative.
+- Current counts: test_ai (105), test_collector (65), test_parser (46), test_decision (27), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (10), test_preferences (10), test_review_ui (5) → 387 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
