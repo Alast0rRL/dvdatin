@@ -702,9 +702,24 @@ class DvinchikCollector:
                                                 is self._auto_engine.client
                                             ):
                                                 try:
-                                                    await self._auto_engine.maybe_act(
-                                                        decision.decision
-                                                    )
+                                                    if await self._db.has_auto_action(profile.id):
+                                                        logger.info(
+                                                            f"AutoAction: profile={profile.id} уже есть в журнале"
+                                                        )
+                                                    else:
+                                                        action = await self._auto_engine.maybe_act(
+                                                            decision.decision, profile.id
+                                                        )
+                                                        if action in ("LIKE", "DISLIKE"):
+                                                            try:
+                                                                await self._db.record_auto_action(
+                                                                    profile.id, action,
+                                                                    decision.decision.value, chat_id,
+                                                                )
+                                                            except Exception as e:
+                                                                logger.error(
+                                                                    f"AutoAction: действие отправлено, но не записано: {e}"
+                                                                )
                                                 except Exception as e:
                                                     logger.error(
                                                         f"AutoAction error: {e}"

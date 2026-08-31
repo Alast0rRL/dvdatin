@@ -59,6 +59,7 @@ class AutoActionEngine:
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
+        self._processed_profile_ids: set[int] = set()
 
     @property
     def mode(self) -> Mode:
@@ -90,7 +91,9 @@ class AutoActionEngine:
     def mode_label(self) -> str:
         return self._mode.value
 
-    async def maybe_act(self, decision: AIDecision | None) -> str:
+    async def maybe_act(
+        self, decision: AIDecision | None, profile_id: int | None = None,
+    ) -> str:
         """Выполняет действие по решению (LIKE/DISLIKE), если он enabled.
 
         Возвращает строку-описание совершённого действия ("SKIP", "LIKE",
@@ -106,8 +109,14 @@ class AutoActionEngine:
 
         text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
         action = decision.value
-        await self._rate_limit()
-        await self._send(text)
+        async with self._lock:
+            if profile_id is not None and profile_id in self._processed_profile_ids:
+                logger.warning(f"AutoAction: profile={profile_id} уже обработан")
+                return "DUPLICATE"
+            await self._rate_limit_locked()
+            await self._send(text)
+            if profile_id is not None:
+                self._processed_profile_ids.add(profile_id)
         logger.info(f"AutoAction: отправил {text!r} ({action}) на chat={self._chat_id}")
         self._print_action(action, text)
         return action
@@ -134,15 +143,19 @@ class AutoActionEngine:
     async def _rate_limit(self) -> None:
         """Интервальный rate-limiter: ждёт, пока не пройдёт interval_sec."""
         async with self._lock:
-            now = time.time()
-            if self._last_action_at:
-                elapsed = now - self._last_action_at
-                if elapsed < self._config.interval_sec:
-                    wait = self._config.interval_sec - elapsed
-                    logger.info(f"AutoAction: rate-limit, жду {wait:.1f} сек")
-                    await asyncio.sleep(wait)
-            self._last_action_at = time.time()
-            self._actions.append(self._last_action_at)
+            await self._rate_limit_locked()
+
+    async def _rate_limit_locked(self) -> None:
+        """Применяет rate-limit при уже взятой блокировке движка."""
+        now = time.time()
+        if self._last_action_at:
+            elapsed = now - self._last_action_at
+            if elapsed < self._config.interval_sec:
+                wait = self._config.interval_sec - elapsed
+                logger.info(f"AutoAction: rate-limit, жду {wait:.1f} сек")
+                await asyncio.sleep(wait)
+        self._last_action_at = time.time()
+        self._actions.append(self._last_action_at)
 
     def _print_action(self, action: str, text: str) -> None:
         color = "green" if action == "LIKE" else "red"

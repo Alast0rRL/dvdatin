@@ -127,6 +127,19 @@ CREATE TABLE IF NOT EXISTS ai_decisions (
 CREATE INDEX IF NOT EXISTS idx_ad_profile_id ON ai_decisions(profile_id);
 CREATE INDEX IF NOT EXISTS idx_ad_evaluated_at ON ai_decisions(evaluated_at);
 
+CREATE TABLE IF NOT EXISTS auto_actions_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    sent_at TEXT NOT NULL,
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+    UNIQUE(profile_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_aal_sent_at ON auto_actions_log(sent_at);
+
 CREATE TABLE IF NOT EXISTS human_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     profile_id INTEGER NOT NULL,
@@ -196,6 +209,25 @@ class Database:
         await self._ensure_raw_processed_column()
         # Кнопки сообщения (reply_markup) — read-only разведка слоя действий.
         await self._ensure_raw_reply_markup_column()
+        await self._ensure_auto_actions_log()
+
+    async def _ensure_auto_actions_log(self) -> None:
+        """Добавляет журнал успешных авто-действий для старых БД."""
+        await self._connection.execute(
+            """CREATE TABLE IF NOT EXISTS auto_actions_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                sent_at TEXT NOT NULL,
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+                UNIQUE(profile_id)
+            )"""
+        )
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_aal_sent_at ON auto_actions_log(sent_at)"
+        )
 
     async def _ensure_raw_unique_index(self) -> None:
         """Создаёт UNIQUE-индекс на (chat_id, telegram_message_id).
@@ -489,7 +521,10 @@ class Database:
         """Обновляет last_seen_at и переводит статус в SEEN."""
         await self._connection.execute(
             """UPDATE profiles
-            SET last_seen_at = ?, status = 'SEEN'
+            SET last_seen_at = ?, status = CASE
+                WHEN status IN ('LIKED', 'DISLIKED') THEN status
+                ELSE 'SEEN'
+            END
             WHERE id = ?""",
             (last_seen_at, profile_id),
         )
@@ -514,6 +549,35 @@ class Database:
             (status, profile_id),
         )
         await self._connection.commit()
+
+    async def has_auto_action(self, profile_id: int) -> bool:
+        """Проверяет, было ли для анкеты успешно отправлено авто-действие."""
+        cursor = await self._connection.execute(
+            "SELECT 1 FROM auto_actions_log WHERE profile_id = ?", (profile_id,)
+        )
+        return await cursor.fetchone() is not None
+
+    async def record_auto_action(
+        self, profile_id: int, action: str, decision: str, chat_id: int,
+    ) -> None:
+        """Атомарно фиксирует успешное действие и итоговый статус анкеты."""
+        sent_at = datetime.now(timezone.utc).isoformat()
+        status = "LIKED" if action == "LIKE" else "DISLIKED"
+        try:
+            await self._connection.execute(
+                """INSERT INTO auto_actions_log
+                (profile_id, action, decision, chat_id, sent_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (profile_id, action, decision, chat_id, sent_at),
+            )
+            await self._connection.execute(
+                "UPDATE profiles SET status = ? WHERE id = ?",
+                (status, profile_id),
+            )
+            await self._connection.commit()
+        except Exception:
+            await self._connection.rollback()
+            raise
 
     async def update_profile_raw_city(
         self, profile_id: int, raw_city: str,

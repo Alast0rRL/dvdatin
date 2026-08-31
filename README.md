@@ -126,6 +126,7 @@ Telegram NewMessage (входящее)
 | `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
 | `ai_scores` | Скоры CLIP/LLM/combined + рекомендация скоринга |
 | `ai_decisions` | Итоговые решения Decision Engine (LIKE/REVIEW/DISLIKE) |
+| `auto_actions_log` | Успешно отправленные Telegram LIKE/DISLIKE; один action на профиль |
 | `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
 
 Связи (FK ON DELETE CASCADE): `profiles ← profile_messages / filter_results / ai_scores /
@@ -177,6 +178,10 @@ ai_decisions ← human_decisions`.
   `auto_actions.enabled: true` И найден клиент по `account_session`. Решение↔аккаунт:
   действие отправляется только если анкета пришла на авто-аккаунт
   (`task.msg.client is auto_engine.client`).
+- **Журнал и идемпотентность:** действие пишется в `auto_actions_log` только после
+  успешной отправки; запись и статус профиля `LIKED`/`DISLIKED` фиксируются атомарно.
+  Уже записанный профиль, а также повтор после ошибки записи в рамках процесса, не
+  отправляет кнопку повторно.
 - **Активный поток:** `collector.start_auto_stream()` отправляет `start_command`
   (default `✨🔍`) один раз при старте — бот сам начинает присылать анкеты.
 - **Конфиг (`config/auto_actions`):**

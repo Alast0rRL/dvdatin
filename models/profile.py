@@ -14,6 +14,8 @@ class ProfileStatus(StrEnum):
 
     NEW = "NEW"
     SEEN = "SEEN"
+    LIKED = "LIKED"
+    DISLIKED = "DISLIKED"
     MATCHED = "MATCHED"
     ARCHIVED = "ARCHIVED"
 

@@ -41,6 +41,8 @@ def make_config(**overrides) -> AppConfig:
 def make_db_mock() -> Database:
     db = AsyncMock(spec=Database)
     db.save_raw_message = AsyncMock(return_value=1)
+    db.has_auto_action = AsyncMock(return_value=False)
+    db.record_auto_action = AsyncMock()
     return db
 
 
@@ -1995,6 +1997,57 @@ class TestCollectorAutoActions:
         auto_client.send_message.assert_called_once()
         args, _ = auto_client.send_message.call_args
         assert args[1] == "\u2764\ufe0f"  # ❤️
+        collector._db.record_auto_action.assert_awaited_once_with(
+            1, "LIKE", "LIKE", 1234060895
+        )
+
+    def test_logged_profile_is_not_sent_twice(self) -> None:
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), self._make_decision(AIDecision.DISLIKE),
+            auto_client, other_client,
+        )
+        collector._db.has_auto_action = AsyncMock(side_effect=[False, True])
+        task = RawTask(
+            chat_id=1234060895, message_id=903, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=4,
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(collector._process_message(task))
+        loop.run_until_complete(collector._process_message(task))
+        auto_client.send_message.assert_called_once()
+
+    def test_log_failure_does_not_resend_action(self) -> None:
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), self._make_decision(AIDecision.LIKE),
+            auto_client, other_client,
+        )
+        collector._db.record_auto_action = AsyncMock(side_effect=RuntimeError("db"))
+        task = RawTask(
+            chat_id=1234060895, message_id=904, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=5,
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(collector._process_message(task))
+        loop.run_until_complete(collector._process_message(task))
+        auto_client.send_message.assert_called_once()
 
     def test_no_action_when_message_on_other_account(self) -> None:
         from models.decision import AIDecision
