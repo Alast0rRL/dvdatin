@@ -51,40 +51,37 @@ class ControlBot:
         self._allowed = set(config.control.allowed_user_ids)
 
     def register(self) -> None:
-        """Регистрирует обработчики команд и callback-запросов."""
-        self._client.add_event_handler(self._on_any_message, events.NewMessage())
-        self._client.add_event_handler(
-            self._cmd_status, events.NewMessage(pattern=r"/status\s*$"),
-        )
-        self._client.add_event_handler(
-            self._cmd_mode, events.NewMessage(pattern=r"/mode\s+(\w+)"),
-        )
-        self._client.add_event_handler(
-            self._cmd_stream, events.NewMessage(pattern=r"/stream\s*$"),
-        )
-        self._client.add_event_handler(
-            self._cmd_recent, events.NewMessage(pattern=r"/recent\s*$"),
-        )
-        self._client.add_event_handler(
-            self._cmd_help, events.NewMessage(pattern=r"/help\s*$"),
-        )
-        self._client.add_event_handler(
-            self._cmd_start, events.NewMessage(pattern=r"/start\s*$"),
-        )
+        """Регистрирует обработчики команд и callback-запросов.
+
+        Используем единый роутер вместо нескольких pattern-хендлеров,
+        чтобы избежать конфликтов event-обработчиков на одном клиенте.
+        """
+        self._client.add_event_handler(self._on_message, events.NewMessage())
         self._client.add_event_handler(self._on_callback, events.CallbackQuery())
         logger.info("ControlBot registered: /status /mode /stream /recent /help")
 
-    # ── Авторизация ──────────────────────────────────────────────────
+    # ── Роутер ────────────────────────────────────────────────────────
 
-    async def _on_any_message(self, event: events.NewMessage.Event) -> None:
-        """Диагностика: логируем любое входящее сообщение на этом клиенте."""
-        try:
-            logger.info(
-                f"ControlBot sees msg: chat_id={event.chat_id} "
-                f"sender_id={event.sender_id} text={event.message.text or ''!r}"
-            )
-        except Exception as e:  # pragma: no cover
-            logger.debug(f"ControlBot diag log failed: {e}")
+    async def _on_message(self, event: events.NewMessage.Event) -> None:
+        """Единый обработчик входящих сообщений: разбор команды и вызов."""
+        if not self._is_authorized(event.sender_id):
+            return
+        text = (event.message.text or "").strip()
+        if not text:
+            return
+        logger.info(f"ControlBot command from {event.sender_id}: {text!r}")
+        parts = text.split()
+        cmd = parts[0].lower()
+        if cmd == "/status" or cmd == "/start":
+            await self._send_status(event)
+        elif cmd == "/mode" and len(parts) >= 2:
+            await self._cmd_mode(event, parts[1])
+        elif cmd == "/stream":
+            await self._cmd_stream(event)
+        elif cmd == "/recent":
+            await self._cmd_recent(event)
+        elif cmd == "/help":
+            await self._cmd_help(event)
 
     def _is_authorized(self, sender_id: int | None) -> bool:
         return sender_id in self._allowed
@@ -123,10 +120,12 @@ class ControlBot:
             logger.error(f"ControlBot error (/help): {e}")
             await event.respond("Ошибка.")
 
-    async def _cmd_mode(self, event: events.NewMessage.Event) -> None:
+    async def _cmd_mode(self, event: events.NewMessage.Event, raw: str | None = None) -> None:
         if not self._is_authorized(event.sender_id):
             return
-        raw = event.pattern_match.group(1).strip().lower()
+        if raw is None:
+            return
+        raw = raw.strip().lower()
         try:
             mode = _CMD_SHORTCUTS.get(raw)
             if mode is None:

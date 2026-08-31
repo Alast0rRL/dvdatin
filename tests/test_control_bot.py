@@ -58,6 +58,8 @@ def _event(sender_id: int, text: str = "") -> MagicMock:
     ev.pattern_match = MagicMock()
     match = MagicMock()
     ev.pattern_match.group.return_value = text
+    ev.message = MagicMock()
+    ev.message.text = text
     ev.respond = AsyncMock()
     ev.edit = AsyncMock()
     ev.answer = AsyncMock()
@@ -87,9 +89,8 @@ class TestControlBotActions:
     def test_mode_set_helper(self) -> None:
         bot, client, collector = make_bot()
         ev = _event(sender_id=8525808108, text="on")
-        ev.pattern_match.group.return_value = "on"
         asyncio.get_event_loop().run_until_complete(
-            bot._cmd_mode(ev)
+            bot._cmd_mode(ev, "on")
         )
         collector.set_mode.assert_called_once_with(Mode.SEMI_AUTO)
 
@@ -144,3 +145,31 @@ class TestControlBotStream:
         )
         collector.start_auto_stream.assert_not_awaited()
         ev.respond.assert_awaited_once()  # ответ «выключено»
+
+
+class TestControlBotRouter:
+    """Единый роутер _on_message: маршрутизация команд."""
+
+    def test_router_status(self) -> None:
+        bot, client, collector = make_bot()
+        ev = _event(sender_id=8525808108, text="/status")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        ev.respond.assert_awaited_once()
+
+    def test_router_mode_on(self) -> None:
+        bot, client, collector = make_bot()
+        ev = _event(sender_id=8525808108, text="/mode on")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        collector.set_mode.assert_called_once_with(Mode.SEMI_AUTO)
+
+    def test_router_stream(self) -> None:
+        bot, client, collector = make_bot()
+        ev = _event(sender_id=8525808108, text="/stream")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        collector.start_auto_stream.assert_awaited_once()
+
+    def test_router_denies_unauthorized(self) -> None:
+        bot, client, collector = make_bot()
+        ev = _event(sender_id=999999999, text="/status")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        ev.respond.assert_not_awaited()
