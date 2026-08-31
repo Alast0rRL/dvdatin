@@ -230,15 +230,30 @@ class DvinchikCollector:
         return total
 
     def register(self) -> None:
-        """Регистрирует обработчик новых сообщений на всех аккаунтах."""
+        """Регистрирует обработчики на всех аккаунтах.
+
+        - incoming=True  — входящие сообщения (парсинг, фильтрация, AI).
+        - outgoing=True   — исходящие сообщения (actions пользователя) только
+          в чате бота: сохраняются в raw_messages, pipeline пропускается.
+        - CallbackQuery   — inline-кнопки (callback_data): логируются для
+          разведки механики LIKE.
+        """
         for client in self._clients:
             client.add_event_handler(
                 self._handle_new_message,
                 events.NewMessage(incoming=True),
             )
+            client.add_event_handler(
+                self._handle_outgoing_message,
+                events.NewMessage(outgoing=True),
+            )
+            client.add_event_handler(
+                self._handle_callback_query,
+                events.CallbackQuery(),
+            )
         logger.info(
             f"Collector registered ({len(self._clients)} account(s)): "
-            f"listening for new messages"
+            f"listening for new messages + outgoing + callbacks"
         )
 
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
@@ -387,6 +402,114 @@ class DvinchikCollector:
 
             # Fallback (без worker — тесты/отладка): обрабатываем синхронно.
             await self._process_message(task)
+
+    # ------------------------------------------------------------------
+    # Outgoing messages (действия пользователя: лайки/дизлайки эмодзи)
+    # ------------------------------------------------------------------
+
+    async def _handle_outgoing_message(self, event: events.NewMessage.Event) -> None:
+        """Перехват исходящих сообщений (actions пользователя) в чате бота.
+
+        Сохраняет RAW в raw_messages и помечает processed_at — pipeline
+        (парсинг/фильтр/AI) НЕ запускается. Единственная цель — ground truth
+        для реверса механики LIKE: что именно отправляет пользователь.
+        """
+        chat_id = event.chat_id
+        if chat_id != self._dvinchik_chat_id:
+            return
+
+        msg = event.message
+        text = msg.text or ""
+        if not text.strip():
+            return
+
+        sender_id = msg.sender_id if getattr(msg, "sender_id", None) else 0
+        msg_date = msg.date.isoformat() if msg.date else datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # === RAW сохраняется ПЕРВЫМ ===
+        try:
+            raw_id = await self._db.save_raw_message(
+                telegram_message_id=msg.id,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                sender_username="",
+                sender_name="",
+                message_date=msg_date,
+                text=text,
+                raw_entities="[]",
+                reply_markup="[]",
+                media_type="",
+                reply_to_message_id=None,
+                received_at=now,
+            )
+        except Exception as e:
+            logger.error(f"Outgoing RAW save failed: {e}")
+            return
+        if raw_id is None:
+            return
+
+        # Помечаем обработанным — pipeline пропускается.
+        try:
+            await self._db.mark_raw_processed(raw_id)
+        except Exception as e:
+            logger.error(f"Outgoing mark processed failed: {e}")
+
+        self._print_outgoing_message(chat_id, msg.id, text, msg_date)
+
+    def _print_outgoing_message(
+        self, chat_id: int, message_id: int, text: str, msg_date: str,
+    ) -> None:
+        """Красивый вывод исходящего сообщения (action пользователя)."""
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold magenta", width=14)
+        table.add_column("Value")
+        table.add_row("Source", "[bold magenta]USER ACTION[/bold magenta]")
+        table.add_row("Chat ID", str(chat_id))
+        table.add_row("Message ID", str(message_id))
+        table.add_row("Date", msg_date[:19])
+        preview = text[:200] + ("..." if len(text) > 200 else "")
+        table.add_row("Text", preview)
+        console.print(Panel(
+            table,
+            title="[bold magenta]OUTGOING[/bold magenta]",
+            border_style="magenta",
+        ))
+
+    # ------------------------------------------------------------------
+    # Callback queries (inline-кнопки — разведка механики LIKE)
+    # ------------------------------------------------------------------
+
+    async def _handle_callback_query(self, event: events.CallbackQuery.Event) -> None:
+        """Логирование callback queries для разведки кнопок LIKE.
+
+        Read-only: данные neither сохраняются в БД, ни вызывают действия.
+        Если лайк ставится через inline-кнопку — callback_data будет виден
+        в логе.
+        """
+        data = event.data
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
+
+        sender_id = event.sender_id if getattr(event, "sender_id", None) else 0
+
+        logger.info(
+            f"CALLBACK QUERY: chat_id={event.chat_id}, "
+            f"sender_id={sender_id}, data={data}"
+        )
+
+        table = Table(show_header=False, border_style="dim", padding=(0, 1))
+        table.add_column("Key", style="bold cyan", width=14)
+        table.add_column("Value")
+        table.add_row("Source", "[bold cyan]CALLBACK QUERY[/bold cyan]")
+        table.add_row("Chat ID", str(event.chat_id))
+        table.add_row("Sender ID", str(sender_id))
+        table.add_row("Data", data)
+        console.print(Panel(
+            table,
+            title="[bold cyan]CALLBACK QUERY[/bold cyan]",
+            border_style="cyan",
+        ))
 
     async def _process_message(self, task: RawTask) -> None:
         """Выполняет pipeline: parse → filter → AI → decision.

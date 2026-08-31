@@ -183,7 +183,7 @@ class TestCollectorIntegration:
         stats = CollectorStats()
         collector = DvinchikCollector(client, db, config, stats=stats)
         collector.register()
-        client.add_event_handler.assert_called_once()
+        assert client.add_event_handler.call_count == 3
 
     def test_handle_profile(self) -> None:
         client = AsyncMock()
@@ -1782,3 +1782,96 @@ class TestReplyMarkupHandler:
         assert kwargs["reply_markup"] == "[]"
         task = loop.run_until_complete(worker._queue.get())
         assert task.reply_markup_json == "[]"
+
+
+# ==================== OUTGOING MESSAGES (actions пользователя) ====================
+
+class TestOutgoingCapture:
+    """Исходящие сообщения пользователя (лайки/дизлайки эмодзи) в чате бота.
+
+    Сохраняются в raw_messages и помечаются processed_at — pipeline
+    НЕ запускается (это не анкета, а действие пользователя).
+    """
+
+    def _collector(self) -> DvinchikCollector:
+        db = make_db_mock()
+        collector = DvinchikCollector(AsyncMock(), db, make_config())
+        return collector
+
+    def test_outgoing_saved_and_processed(self) -> None:
+        collector = self._collector()
+        event = make_event(text="❤️", msg_id=500, sender_id=1234060895)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.save_raw_message.assert_called_once()
+        kwargs = collector._db.save_raw_message.call_args.kwargs
+        assert kwargs["text"] == "❤️"
+        assert kwargs["chat_id"] == 1234060895
+        # Помечен обработанным — pipeline не запускается.
+        collector._db.mark_raw_processed.assert_called_once_with(1)
+
+    def test_outgoing_outside_dvinchik_ignored(self) -> None:
+        collector = self._collector()
+        # Исходящее в группу (не чат бота) — игнорируется.
+        event = make_event(text="❤️", chat_id=-1001225291649, msg_id=501)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.save_raw_message.assert_not_called()
+
+    def test_outgoing_empty_text_ignored(self) -> None:
+        collector = self._collector()
+        event = make_event(text="", msg_id=502)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.save_raw_message.assert_not_called()
+
+    def test_outgoing_blank_whitespace_ignored(self) -> None:
+        collector = self._collector()
+        event = make_event(text="   ", msg_id=503)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.save_raw_message.assert_not_called()
+
+
+# ==================== CALLBACK QUERY (inline-кнопки/разведка LIKE) ====================
+
+class TestCallbackQueryCapture:
+    """Логирование callback queries для разведки механики LIKE.
+
+    Read-only: данные только логируются, действия не вызываются.
+    """
+
+    def test_callback_logs_data(self) -> None:
+        client = AsyncMock()
+        db = make_db_mock()
+        collector = DvinchikCollector(client, db, make_config())
+
+        event = MagicMock()
+        event.data = b"like_123"
+        event.chat_id = 1234060895
+        event.sender_id = 1234060895
+
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_callback_query(event)
+        )
+        # Callback query не сохраняется в БД (read-only логирование).
+        db.save_raw_message.assert_not_called()
+
+    def test_callback_data_bytes_decoded(self) -> None:
+        client = AsyncMock()
+        db = make_db_mock()
+        collector = DvinchikCollector(client, db, make_config())
+
+        event = MagicMock()
+        event.data = "like_456".encode()
+        event.chat_id = 1234060895
+        event.sender_id = 0
+
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_callback_query(event)
+        )
+        db.save_raw_message.assert_not_called()

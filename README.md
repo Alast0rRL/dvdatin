@@ -221,7 +221,7 @@ dvdatin/
 │   └── review_export.py         #   CSV-экспорт рецензий
 │
 ├── collectors/                  # Сбор данных
-│   ├── dvinchik_collector.py    #   Перехват, RAW-first, per-chat locks, W3-recovery
+│   ├── dvinchik_collector.py    #   Перехват, RAW-first, per-chat locks, W3-recovery, outgoing+callback
 │   ├── dvinchik_parser.py       #   Классификация и парсинг анкет
 │   ├── raw_worker.py            #   Фоновый worker (parse→filter→AI вне хендлера)
 │   ├── raw_queue.py             #   Async-буфер (RawQueue)
@@ -233,7 +233,7 @@ dvdatin/
 │
 ├── filters/  dialogs/  managers/  prompts/  utils/   # 🅡 ЗАРЕЗЕРВИРОВАНЫ (только __init__.py)
 │
-├── tests/                       # Тесты (396, без pytest-asyncio)
+├── tests/                       # Тесты (402, без pytest-asyncio)
 │   ├── test_*.py                #   Unit/integration для модулей
 │   ├── e2e_ai.py                #   REAL_E2E против живого шлюза (не в обычном pytest)
 │   └── baseline/                #   Frozen baseline тестов (diff-сверка)
@@ -460,8 +460,10 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Preferences layer (SKIP/LIKE)** — `config/preferences.yaml`, `app/preferences.py`, интеграция в DecisionService.
 - [x] **Серверный LLM-промпт `llm-v2`** — `deploy/llm-v2_prompt.md` (SKIP/LIKE-правила для семантической оценки), клиент помечает `prompt_version=llm-v2`.
 - [x] **Захват кнопок (reply_markup)** — read-only разведка слоя действий: `raw_messages.reply_markup`, сериализация в коллекторе, вывод в консоль. Кнопка LIKE ставится по inline-кнопке на анкете (callback_data).
+- [x] **Захват исходящих (outgoing capture)** — read-only перехват действий пользователя: `events.NewMessage(outgoing=True)` в чате бота (1234060895). Исходящие эмодзи (лайки/дизлайки) сохраняются в `raw_messages` и помечаются `processed_at` (pipeline пропускается). ground truth для реверса механики LIKE.
+- [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.
 
-Проверено: **396 тестов проходят** (baseline в `tests/baseline/`).
+Проверено: **402 теста проходят** (baseline в `tests/baseline/`).
 
 ### В разработке / планируется
 
