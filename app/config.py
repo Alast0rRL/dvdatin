@@ -154,8 +154,9 @@ class AutoActionsConfig(BaseModel):
     account_session: str = ""
     # Интервал между действиями в секундах (6/мин ≈ 10 сек).
     interval_sec: float = 10.0
-    # Команда запуска потока анкет (активный режим). "✨🔍" открывает анкеты.
-    start_command: str = "\U00002728\U0001F50D"  # ✨🔍
+    # Команда запуска потока отключена по умолчанию: бот принимает её только
+    # в определённом состоянии, которое клиент достоверно не определяет.
+    start_command: str = ""
 
     @field_validator("interval_sec")
     @classmethod

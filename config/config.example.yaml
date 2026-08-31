@@ -105,7 +105,8 @@ auto_actions:
   enabled: false
   account_session: "dvai_2"
   interval_sec: 10.0
-  start_command: "✨🔍"
+  # Оставьте пустым: клиент не определяет безопасное состояние для команды.
+  start_command: ""
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.

@@ -182,8 +182,9 @@ ai_decisions ← human_decisions`.
   успешной отправки; запись и статус профиля `LIKED`/`DISLIKED` фиксируются атомарно.
   Уже записанный профиль, а также повтор после ошибки записи в рамках процесса, не
   отправляет кнопку повторно.
-- **Активный поток:** `collector.start_auto_stream()` отправляет `start_command`
-  (default `✨🔍`) один раз при старте — бот сам начинает присылать анкеты.
+- **Автозапуск потока отключён:** клиент не может надёжно определить состояние,
+  в котором Leo принимает команду запуска. Поэтому `start_command` по умолчанию
+  пуст; приложение не посылает `✨🔍` ни при старте, ни через ControlBot.
 - **Конфиг (`config/auto_actions`):**
   ```yaml
   project:
@@ -192,7 +193,7 @@ ai_decisions ← human_decisions`.
     enabled: true
     account_session: dvai_2  # сессия авто-аккаунта (acc2, Бармалей)
     interval_sec: 10.0       # rate-limit ~6 действий/мин
-    start_command: "✨🔍"     # команда открытия потока анкет (unicode-escape)
+    start_command: ""         # безопасно: не отправлять команду запуска
   ```
 - Полный AUTO / диалог-менеджер не реализуются до явной команды (см. Roadmap).
 
@@ -516,7 +517,7 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Захват кнопок (reply_markup)** — read-only разведка слоя действий: `raw_messages.reply_markup`, сериализация в коллекторе, вывод в консоль. Кнопка LIKE ставится по inline-кнопке на анкете (callback_data).
 - [x] **Захват исходящих (outgoing capture)** — read-only перехват действий пользователя: `events.NewMessage(outgoing=True)` в чате бота (1234060895). Исходящие эмодзи (лайки/дизлайки) сохраняются в `raw_messages` и помечаются `processed_at` (pipeline пропускается). ground truth для реверса механики LIKE.
 - [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.
-- [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW/None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`; активный старт потока анкет `start_auto_stream()` (отправляет `start_command` при старте). Финальный реверс механики LIKE/👎 как plain-text reply-кнопок.
+- [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW/None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`. Автозапуск потока отключён, так как `✨🔍` невалидна вне определённого состояния Leo. Финальный реверс механики LIKE/👎 как plain-text reply-кнопок.
 - [x] **Stage 7.5 — контрольная панель** — `ControlBot` (`telegram/control_bot.py`): /status /mode on|off /stream /recent /help + inline-кнопки; runtime-переключение режима (`collector.set_mode`) с персистентностью в `config.yaml`; авторизация по `control.allowed_user_ids`.
 
 Проверено: **434 теста проходят** (baseline в `tests/baseline/`).

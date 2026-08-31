@@ -223,18 +223,19 @@ class DvinchikCollector:
         if self._worker is not None:
             await self._worker.stop()
 
-    async def start_auto_stream(self) -> None:
-        """Запускает активный поток анкет на авто-аккаунте (SEMI_AUTO).
+    async def start_auto_stream(self) -> bool:
+        """Запускает явно настроенный поток анкет на авто-аккаунте.
 
-        Отправляет команду открытия анкет один раз при старте, если
-        авто-действия включены. Ошибки не роняют приложение.
+        По умолчанию команда отсутствует: нельзя достоверно определить,
+        находится ли бот в состоянии, где она допустима.
         """
         if not self._auto_engine.enabled:
-            return
+            return False
         try:
-            await self._auto_engine.start_stream()
+            return await self._auto_engine.start_stream()
         except Exception as e:
             logger.error(f"AutoAction: ошибка запуска потока: {e}")
+            return False
 
     async def recover_backlog(self, batch_size: int = 200) -> int:
         """Восстанавливает необработанные RAW из БД в очередь worker'а (W3).

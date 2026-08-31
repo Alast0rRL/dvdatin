@@ -143,8 +143,9 @@ class ControlBot:
                 engine = self._collector.auto_engine()
                 if engine is not None and engine.enabled:
                     try:
-                        await self._collector.start_auto_stream()
-                        text += "\nПоток анкет запущен."
+                        started = await self._collector.start_auto_stream()
+                        if started:
+                            text += "\nПоток анкет запущен."
                     except Exception as e:
                         logger.error(f"ControlBot error (stream on mode): {e}")
             await event.client.send_message(
@@ -167,10 +168,15 @@ class ControlBot:
             )
             return
         try:
-            await self._collector.start_auto_stream()
-            await event.respond(
-                f"Команда запуска потока отправлена ({engine.mode.value})."
-            )
+            started = await self._collector.start_auto_stream()
+            if started:
+                await event.respond(
+                    f"Команда запуска потока отправлена ({engine.mode.value})."
+                )
+            else:
+                await event.respond(
+                    "Автозапуск потока отключён: команда не настроена."
+                )
         except Exception as e:
             logger.error(f"ControlBot error (/stream): {e}")
             await event.respond("Ошибка запуска потока.")
@@ -202,8 +208,9 @@ class ControlBot:
                 self._collector.set_mode(Mode.SEMI_AUTO)
                 text = self._render_status()
                 if self._collector.auto_engine().enabled:
-                    await self._collector.start_auto_stream()
-                    text += "\nПоток анкет запущен."
+                    started = await self._collector.start_auto_stream()
+                    if started:
+                        text += "\nПоток анкет запущен."
                 await event.edit(text, buttons=self._toggle_buttons())
             elif action == "off":
                 self._collector.set_mode(Mode.OBSERVE)
@@ -217,8 +224,11 @@ class ControlBot:
                 if engine is None or not engine.enabled:
                     await event.answer("Авто-действия выключены", alert=True)
                     return
-                await self._collector.start_auto_stream()
-                await event.answer("Команда потока отправлена")
+                started = await self._collector.start_auto_stream()
+                if started:
+                    await event.answer("Команда потока отправлена")
+                else:
+                    await event.answer("Автозапуск потока отключён", alert=True)
             elif action == "recent":
                 text = await self._render_recent()
                 await event.edit(text)

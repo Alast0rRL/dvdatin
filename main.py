@@ -191,11 +191,6 @@ async def main() -> None:
     collector.attach_worker(worker)
     collector.start()
 
-    # Stage 7 (SEMI_AUTO): активный запуск потока анкет на авто-аккаунте.
-    auto_task = asyncio.get_event_loop().create_task(
-        collector.start_auto_stream()
-    )
-
     # W3: восстановление backlog'а (RAW сохранён, но не обработан) запускаем
     # фоном — не блокируем старт Telegram. Recovery сам дросселируется
     # очередью (maxsize), worker обрабатывает параллельно.
@@ -217,12 +212,6 @@ async def main() -> None:
             recovery_task.cancel()
         try:
             await recovery_task
-        except asyncio.CancelledError:
-            pass
-        if not auto_task.done():
-            auto_task.cancel()
-        try:
-            await auto_task
         except asyncio.CancelledError:
             pass
         await collector.stop()
