@@ -138,9 +138,18 @@ class ControlBot:
             return
         try:
             self._collector.set_mode(mode)
+            text = f"Режим установлен: {mode.value}"
+            if mode in (Mode.SEMI_AUTO, Mode.AUTO):
+                engine = self._collector.auto_engine()
+                if engine is not None and engine.enabled:
+                    try:
+                        await self._collector.start_auto_stream()
+                        text += "\nПоток анкет запущен."
+                    except Exception as e:
+                        logger.error(f"ControlBot error (stream on mode): {e}")
             await event.client.send_message(
                 event.chat_id,
-                f"Режим установлен: {mode.value}",
+                text,
                 buttons=self._toggle_buttons(),
             )
         except Exception as e:
@@ -192,6 +201,9 @@ class ControlBot:
             if action == "on":
                 self._collector.set_mode(Mode.SEMI_AUTO)
                 text = self._render_status()
+                if self._collector.auto_engine().enabled:
+                    await self._collector.start_auto_stream()
+                    text += "\nПоток анкет запущен."
                 await event.edit(text, buttons=self._toggle_buttons())
             elif action == "off":
                 self._collector.set_mode(Mode.OBSERVE)
