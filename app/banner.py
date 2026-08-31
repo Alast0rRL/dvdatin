@@ -8,7 +8,7 @@ from rich.table import Table
 from app.config import AppConfig
 
 APP_NAME = "DvAI"
-APP_VERSION = "0.6"
+APP_VERSION = "0.7"
 
 
 def print_banner(config: AppConfig, db_ok: bool, session_status: str) -> None:

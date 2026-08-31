@@ -97,5 +97,23 @@ limits:
   min_delay_minutes: 90
   max_delay_minutes: 240
 
+# Stage 7 (SEMI_AUTO): авто-действия на анкетах (отправка ❤️/👎).
+# Работает только при project.mode: SEMI_AUTO (или AUTO) + enabled: true.
+# account_session — сессия аккаунта, от имени которого шлём действия.
+# interval_sec — интервал между действиями (6/мин ≈ 10 сек).
+auto_actions:
+  enabled: false
+  account_session: "dvai_2"
+  interval_sec: 10.0
+  start_command: "✨🔍"
+
+# Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
+# Команды /status /on /off /stream /recent /help — только от allowed_user_ids.
+# Работает на telegram.accounts[0]; режим меняется на лету и сохраняется в config.yaml.
+control:
+  enabled: false
+  allowed_user_ids:
+    - 8525808108     # ваш собственный account-id (оператор)
+
 logging:
   level: INFO

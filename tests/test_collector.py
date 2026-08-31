@@ -1875,3 +1875,241 @@ class TestCallbackQueryCapture:
             collector._handle_callback_query(event)
         )
         db.save_raw_message.assert_not_called()
+
+
+# ==================== AUTO-ACTIONS (Stage 7, SEMI_AUTO) ====================
+
+class TestCollectorAutoActions:
+    """Авто-действия ❤️/👎 встраиваются в pipeline при SEMI_AUTO.
+
+    Проверяем:
+    - Анкета на авто-аккаунте с решением LIKE → отправляется ❤️.
+    - Анкета не на авто-аккаунте → никакого действия.
+    - OBSERVE-режим → никакого действия (даже если enabled).
+    Не используем реальный worker — вызываем _process_message напрямую.
+    """
+
+    def _make_config(self, mode: str = "SEMI_AUTO", enabled: bool = True) -> AppConfig:
+        cfg = make_config()
+        # Два аккаунта: acc1 (индекс 0), acc2/авто (индекс 1).
+        data = cfg.model_dump()
+        data["telegram"] = {
+            "accounts": [
+                {"api_id": 38219721, "api_hash": "a" * 32, "session": "dvai"},
+                {"api_id": 36266816, "api_hash": "b" * 32, "session": "dvai_2"},
+            ]
+        }
+        data["project"] = {"mode": mode}
+        data["auto_actions"] = {
+            "enabled": enabled,
+            "account_session": "dvai_2",
+            "interval_sec": 0.0,
+        }
+        # Отключаем скачивание images, чтобы не тянуть медиа в тесте.
+        data["ai"] = {"images": {"enabled": False}}
+        return AppConfig(**data)
+
+    def _make_collector(
+        self,
+        config: AppConfig,
+        decision: object | None,
+        auto_client: AsyncMock,
+        other_client: AsyncMock,
+    ) -> DvinchikCollector:
+        from models.profile import Profile, ProfileStatus
+
+        db = make_db_mock()
+        collector = DvinchikCollector(
+            [other_client, auto_client],  # acc1, acc2(auto)
+            db,
+            config,
+        )
+        if decision is not None:
+            ds = AsyncMock()
+            ds.evaluate = AsyncMock(return_value=decision)
+            collector._decision_service = ds
+        fs = AsyncMock()
+        from models.filter import FilterDecision, FilterResult
+        fs.evaluate = AsyncMock(
+            return_value=FilterResult(decision=FilterDecision.PASS, reasons=[])
+        )
+        collector._filter_service = fs
+        profile = Profile(
+            id=1, name="Anna", age=19,
+            normalized_city="Санкт-Петербург",
+            status=ProfileStatus.NEW,
+        )
+        ps = AsyncMock()
+        ps.upsert_profile = AsyncMock(return_value=profile)
+        collector._profile_service = ps
+        # AI-scoring включён (is_enabled=True), чтобы пройти в decision-блок.
+        ai = AsyncMock()
+        ai.is_enabled = True
+        collector._ai_scoring_service = ai
+        # Привязываем worker, чтобы хендлер ставил в очередь, а не
+        # обрабатывал синхронно — но для прямого вызова _process_message
+        # нам нужен синхронный путь. Здесь вызываем _process_message напрямую.
+        return collector
+
+    def _auto_event_on_client(self, auto_client: AsyncMock) -> MagicMock:
+        """PROFILE-сообщение, полученное авто-клиентом (task.msg.client is auto)."""
+        ev = make_event(text="Аня, 18, Санкт-Петербург", msg_id=900)
+        ev.message.client = auto_client
+        return ev
+
+    def _make_decision(self, decision: object) -> object:
+        """Реальный AIDecisionResult, который умеет рендерить вывод консоли."""
+        from models.decision import AIDecisionResult
+
+        return AIDecisionResult(
+            decision=decision,
+            combined_score=0.8,
+            llm_score=0.8,
+            clip_score=None,
+            confidence=0.7,
+            reasons=["test"],
+            scoring_version="v1",
+        )
+
+    def test_like_decision_sends_heart_on_auto_account(self) -> None:
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config()
+
+        decision = self._make_decision(AIDecision.LIKE)
+        collector = self._make_collector(config, decision, auto_client, other_client)
+
+        task = RawTask(
+            chat_id=1234060895, message_id=900, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=1,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_called_once()
+        args, _ = auto_client.send_message.call_args
+        assert args[1] == "\u2764\ufe0f"  # ❤️
+
+    def test_no_action_when_message_on_other_account(self) -> None:
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config()
+
+        decision = self._make_decision(AIDecision.LIKE)
+        collector = self._make_collector(config, decision, auto_client, other_client)
+
+        # Сообщение получено НЕ авто-аккаунтом (other_client).
+        ev = make_event(text="Аня, 18, Санкт-Петербург", msg_id=901)
+        ev.message.client = other_client
+        task = RawTask(
+            chat_id=1234060895, message_id=901, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=ev.message, raw_id=2,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_not_called()
+
+    def test_observe_mode_no_action_even_if_enabled(self) -> None:
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config(mode="OBSERVE", enabled=True)
+
+        decision = self._make_decision(AIDecision.LIKE)
+        collector = self._make_collector(config, decision, auto_client, other_client)
+
+        ev = make_event(text="Аня, 18, Санкт-Петербург", msg_id=902)
+        ev.message.client = auto_client
+        task = RawTask(
+            chat_id=1234060895, message_id=902, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=ev.message, raw_id=3,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_not_called()
+
+
+class TestCollectorSetMode:
+    """Динамическое переключение режима коллектора (Stage 7.5)."""
+
+    def _make_collector(self) -> DvinchikCollector:
+        cfg = self._make_config()
+        db = make_db_mock()
+        # acc1 (idx 0) + acc2/авто (idx 1) — account_session=dvai_2 → idx 1.
+        return DvinchikCollector([AsyncMock(), AsyncMock()], db, cfg)
+
+    def _make_config(self) -> AppConfig:
+        cfg = make_config()
+        data = cfg.model_dump()
+        data["telegram"] = {
+            "accounts": [
+                {"api_id": 38219721, "api_hash": "a" * 32, "session": "dvai"},
+                {"api_id": 36266816, "api_hash": "b" * 32, "session": "dvai_2"},
+            ]
+        }
+        data["project"] = {"mode": "OBSERVE"}
+        data["auto_actions"] = {
+            "enabled": True,
+            "account_session": "dvai_2",
+            "interval_sec": 0.0,
+        }
+        data["ai"] = {"images": {"enabled": False}}
+        return AppConfig(**data)
+
+    def test_set_mode_updates_engine(self, tmp_path) -> None:
+        from core.types import Mode
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "project:\n  mode: OBSERVE\n", encoding="utf-8",
+        )
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+        # Начинаем в OBSERVE.
+        assert collector.mode.value == "OBSERVE"
+        assert collector.auto_engine().enabled is False
+        # Включаем SEMI_AUTO на лету.
+        collector.set_mode(Mode.SEMI_AUTO)
+        assert collector.mode.value == "SEMI_AUTO"
+        assert collector.auto_engine().enabled is True
+
+    def test_set_mode_persists_to_config(self, tmp_path) -> None:
+        from core.types import Mode
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "project:\n  mode: OBSERVE\n", encoding="utf-8",
+        )
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+        collector.set_mode(Mode.SEMI_AUTO)
+        text = cfg_path.read_text(encoding="utf-8")
+        assert "SEMI_AUTO" in text
+
+    def test_turn_off_at_runtime(self) -> None:
+        from core.types import Mode
+
+        collector = self._make_collector()
+        collector.set_mode(Mode.SEMI_AUTO)
+        assert collector.auto_engine().enabled is True
+        collector.set_mode(Mode.OBSERVE)
+        assert collector.auto_engine().enabled is False

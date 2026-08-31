@@ -140,6 +140,45 @@ class LimitsConfig(BaseModel):
         return v
 
 
+class AutoActionsConfig(BaseModel):
+    """Настройки авто-действий (Stage 7, SEMI_AUTO).
+
+    Включает отправку ❤️/👎 на анкеты с решением LIKE/DISLIKE. Работает
+    только когда ``project.mode >= SEMI_AUTO`` и аккаунт указан в
+    ``account_session``. Rate-limiter — интервальный (6/мин по умолчанию),
+    без жёсткого дневного лимита (пользователь контролирует вручную).
+    """
+
+    enabled: bool = False
+    # Сессия аккаунта, от имени которого шлём действия (например "dvai_2").
+    account_session: str = ""
+    # Интервал между действиями в секундах (6/мин ≈ 10 сек).
+    interval_sec: float = 10.0
+    # Команда запуска потока анкет (активный режим). "✨🔍" открывает анкеты.
+    start_command: str = "\U00002728\U0001F50D"  # ✨🔍
+
+    @field_validator("interval_sec")
+    @classmethod
+    def interval_positive(cls, v: float) -> float:
+        if v < 0:
+            msg = "interval_sec не может быть отрицательным"
+            raise ValueError(msg)
+        return v
+
+
+class ControlConfig(BaseModel):
+    """Настройки управляющего Telegram-бота (Stage 7.5).
+
+    ``allowed_user_ids`` — только этим user_id разрешено отправлять команды
+    (по умолчанию собственный account-id оператора 8525808108). Реальный
+    бот-клиент — тот же ``telegram.accounts[0]``, что и у ReviewBot.
+    """
+
+    enabled: bool = False
+    # Разрешённые user_id (команды принимаются только от них).
+    allowed_user_ids: list[int] = [8525808108]
+
+
 class CLIPConfig(BaseModel):
     """Настройки CLIP-анализа фото."""
 
@@ -329,6 +368,8 @@ class AppConfig(BaseModel):
     filters: FiltersConfig = FiltersConfig()
     ai: AIConfig = AIConfig()
     limits: LimitsConfig = LimitsConfig()
+    auto_actions: AutoActionsConfig = AutoActionsConfig()
+    control: ControlConfig = ControlConfig()
     logging: LoggingConfig = LoggingConfig()
 
     def model_post_init(self, __context: object) -> None:
@@ -366,3 +407,23 @@ class AppConfig(BaseModel):
         except Exception as e:
             msg = f"Ошибка валидации конфигурации: {e}"
             raise ValueError(msg) from e
+
+    def persist_mode(self, path: Path, mode: "Mode") -> None:
+        """Сохраняет project.mode в YAML-файл (без перезаписи остального).
+
+        Используется ControlBot для персистентного переключения режима,
+        который переживает restart приложения.
+        """
+        from core.types import Mode as _Mode
+
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        else:
+            raw = {}
+        project = raw.get("project") or {}
+        project["mode"] = mode.value
+        raw["project"] = project
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+        self.project.mode = mode

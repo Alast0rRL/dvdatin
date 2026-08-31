@@ -1,7 +1,7 @@
 # DvAI — Система автоматизации знакомств в Telegram
 
-> **D**ayvinchik **AI** — умный коллектор + AI-скоринг + Human Review для сервиса знакомств «Дайвинчик» в Telegram.
-> Текущий этап: **v0.6 / Stage 6** (OBSERVE/REVIEW, без Telegram-действий).
+> **D**ayvinchik **AI** — умный коллектор + AI-скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» в Telegram.
+> Текущий этап: **v0.7 / Stage 7 (SEMI_AUTO)** — AI отправляет ❤️/👎 на анкеты с авто-аккаунта, управление через Telegram-панель.
 
 ---
 
@@ -23,8 +23,10 @@
 **DvAI автоматизирует весь цикл обработки анкет** — от перехвата сообщений до вынесения
 решения «подходит / на просмотр / не подходит» — оставляя человеку только самую
 ценную работу: ручную рецензию перспективных кандидатов. При этом система построена
-**безопасно по умолчанию**: на текущем этапе она только **наблюдает (OBSERVE)** и
-**рекомендует (REVIEW)** — *никогда не действует* в Telegram от вашего имени.
+**безопасно по умолчанию**: режим **OBSERVE** только **наблюдает (OBSERVE)** и
+**рекомендует (REVIEW)** — *никогда не действует* в Telegram от вашего имени. Начиная
+со **Stage 7 (SEMI_AUTO)** авто-действия (⚠️/👎) включаются только явно через
+`project.mode: SEMI_AUTO` + `auto_actions.enabled: true`.
 
 ### Концепция (поток данных)
 
@@ -45,8 +47,9 @@ Telegram (RAW)
 1. **RAW-first инвариант.** Каждое сообщение сохраняется в SQLite **до любого разбора**.
    Данные первичны — потеря RAW считается ошибкой, а не штатной ситуацией.
 2. **Telegram-действия — только по явной команде.** Архитектурно OBSERVE/REVIEW
-   не умеют нажимать/отправлять. Автоматика (Stage 7+) — отдельный слой, который
-   добавляется только когда человек готов его включить.
+   не умеют нажимать/отправлять. Автоматика (Stage 7) — отдельный слой (`AutoActionEngine`),
+   гейтируемый режимом `project.mode` и `auto_actions.enabled`, работает только на
+   сконфигурированном авто-аккаунте. Полный AUTO/диалог-менеджер — не раньше Stage 8.
 3. **AI — это советник, а не владелец.** Финальное решение остаётся за человеком
    через Human Review; AI калибруется по метрике согласия, а не «учится на угадывании».
 4. **«Свои правила» живут в файле, а не в коде.** Персональная калибровка
@@ -162,6 +165,50 @@ ai_decisions ← human_decisions`.
   `/disagreements [sort]` + inline-кнопки. Единственный Stage 6 компонент с Telethon.
 - **CSV:** `python main.py --export-review` → `data/exports/review_*.csv` (12 полей).
 
+### Auto-Actions (Stage 7, SEMI_AUTO)
+
+- **Механика:** лайк/дизлайк в «Дайвинчике» = текст `❤️`/`👎`, отправляемый при активной
+  reply-клавиатуре анкеты (`KeyboardButton`, не inline). Без активной анкеты бот отвечает
+  «Нет такого варианта ответа».
+- **`AutoActionEngine`** (`collectors/auto_action.py`): `maybe_act(decision)` →
+  LIKE→`❤️`, DISLIKE→`👎`, REVIEW/None→`SKIP`, выключено→`GATE`. Rate-limit
+  `interval_sec` (default 10s).
+- **Гейт:** авто-действия активны только при `project.mode ∈ {SEMI_AUTO, AUTO}` И
+  `auto_actions.enabled: true` И найден клиент по `account_session`. Решение↔аккаунт:
+  действие отправляется только если анкета пришла на авто-аккаунт
+  (`task.msg.client is auto_engine.client`).
+- **Активный поток:** `collector.start_auto_stream()` отправляет `start_command`
+  (default `✨🔍`) один раз при старте — бот сам начинает присылать анкеты.
+- **Конфиг (`config/auto_actions`):**
+  ```yaml
+  project:
+    mode: SEMI_AUTO          # OBSERVE → действий нет (безопасно по умолчанию)
+  auto_actions:
+    enabled: true
+    account_session: dvai_2  # сессия авто-аккаунта (acc2, Бармалей)
+    interval_sec: 10.0       # rate-limit ~6 действий/мин
+    start_command: "✨🔍"     # команда открытия потока анкет (unicode-escape)
+  ```
+- Полный AUTO / диалог-менеджер не реализуются до явной команды (см. Roadmap).
+
+### Контрольная панель (Stage 7.5)
+
+Управление ботом через Telegram-бота `ControlBot` (`telegram/control_bot.py`):
+- **Команды** (только от `control.allowed_user_ids`, default `8525808108`):
+  `/status` — текущий режим/статус, `/mode on|off` — SEMI_AUTO/OBSERVE,
+  `/stream` — запустить поток анкет сейчас, `/recent` — последние решения AI,
+  `/help` — справка. Плюс inline-кнопки (🟢 ON / ⭕ OFF / 📊 Статус / ▶ Поток).
+- **Переключение на лету:** `collector.set_mode(Mode)` меняет `AutoActionEngine.mode`
+  live (гейт `enabled` пересчитывается) и через `AppConfig.persist_mode()` пишет
+  `project.mode` в `config.yaml` — режим переживает restart.
+- Гейт: `config.control.enabled: true` регистрирует панель в `main.py` (на `accounts[0]`).
+- **Конфиг:**
+  ```yaml
+  control:
+    enabled: true
+    allowed_user_ids: [8525808108]   # ваш user_id — только от него принимаются команды
+  ```
+
 ---
 
 ## 3. Структура проекта
@@ -196,7 +243,8 @@ dvdatin/
 │
 ├── telegram/                    # Telethon-слой (единственный, кому можно Telethon)
 │   ├── client.py                #   create_client / authorize (multi-account)
-│   └── review_bot.py            #   Telegram UI: /review, /stats, inline-кнопки
+│   ├── review_bot.py            #   Telegram UI: /review, /stats, inline-кнопки
+│   └── control_bot.py           #   Панель управления: /status /mode /stream /recent (Stage 7.5)
 │
 ├── models/                      # Pydantic/dataclass-модели домена
 │   ├── raw.py                   #   RawMessage, ParsedProfile, MessageType, FilterResult(raw)
@@ -229,11 +277,12 @@ dvdatin/
 │   ├── city_normalizer.py       #   Нормализация городов (map + ASCII нормализация)
 │   ├── anti_block.py            #   Rate-limiter (защита от блокировки)
 │   ├── media_analyzer.py        #   Анализ фото (photo_count → CLIP/NSFW)
+│   ├── auto_action.py           #   Stage 7: AutoActionEngine (❤️/👎, rate-limit, start_stream)
 │   └── stats.py                 #   Статистика коллектора
 │
 ├── filters/  dialogs/  managers/  prompts/  utils/   # 🅡 ЗАРЕЗЕРВИРОВАНЫ (только __init__.py)
 │
-├── tests/                       # Тесты (402, без pytest-asyncio)
+├── tests/                       # Тесты (434, без pytest-asyncio)
 │   ├── test_*.py                #   Unit/integration для модулей
 │   ├── e2e_ai.py                #   REAL_E2E против живого шлюза (не в обычном pytest)
 │   └── baseline/                #   Frozen baseline тестов (diff-сверка)
@@ -446,7 +495,7 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 
 ## 6. Планы развития (Roadmap)
 
-### Завершено (текущее состояние — Stage 6)
+### Завершено (текущее состояние — Stage 7)
 
 - [x] **Stage 0** — конфиг (Pydantic), логирование (Loguru/Rich), БД, Telethon client, banner, `main.py`.
 - [x] **Stage 1 / 1.5** — парсер, классификатор, RAW-first, city-normalizer, MEDIA_ONLY, dedup, rate-limiter, stats.
@@ -462,24 +511,27 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Захват кнопок (reply_markup)** — read-only разведка слоя действий: `raw_messages.reply_markup`, сериализация в коллекторе, вывод в консоль. Кнопка LIKE ставится по inline-кнопке на анкете (callback_data).
 - [x] **Захват исходящих (outgoing capture)** — read-only перехват действий пользователя: `events.NewMessage(outgoing=True)` в чате бота (1234060895). Исходящие эмодзи (лайки/дизлайки) сохраняются в `raw_messages` и помечаются `processed_at` (pipeline пропускается). ground truth для реверса механики LIKE.
 - [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.
+- [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW/None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`; активный старт потока анкет `start_auto_stream()` (отправляет `start_command` при старте). Финальный реверс механики LIKE/👎 как plain-text reply-кнопок.
+- [x] **Stage 7.5 — контрольная панель** — `ControlBot` (`telegram/control_bot.py`): /status /mode on|off /stream /recent /help + inline-кнопки; runtime-переключение режима (`collector.set_mode`) с персистентностью в `config.yaml`; авторизация по `control.allowed_user_ids`.
 
-Проверено: **402 теста проходят** (baseline в `tests/baseline/`).
+Проверено: **434 теста проходят** (baseline в `tests/baseline/`).
 
 ### В разработке / планируется
 
 | | Этап / фича | Идея |
 |---|---|---|
-| 🔜 | **Stage 7: Dialog Manager** | автоматические сообщения, генерация реплик, управление диалогами (требует переключения `Mode` с OBSERVE) |
-| 🔜 | **Stage 8: Production** | мониторинг, алертинг, адаптация под изменения API Дайвинчика |
+| 🔜 | **Stage 8: Dialog Manager** | автоматические сообщения, генерация реплик, управление диалогами (требует переключения `Mode` в AUTO) |
+| 🔜 | **Stage 9: Production** | мониторинг, алертинг, адаптация под изменения API Дайвинчика |
 | 🔜 | **Docker-образ** | контейнеризация коллектора/клиента |
 | 🔜 | **Перенос `llm-v2` на сервер** | применить `deploy/llm-v2_prompt.md` в FastAPI `/v1/llm/evaluate` на Ubuntu AI Server и проверить live-запросами |
 | 🔜 | **Advanced AI scoring** | семантика вместо грубого текстового поиска, калибровка по Agreement Rate |
 
-### Категорически НЕ реализуется до Stage 7
+### Категорически НЕ реализуется до Stage 8
 
-Любые **Telegram-действия**: выполнение LIKE/DISLIKE, автоматический swipe, переход к
-следующей анкете, автоматические сообщения, Dialog/Message Generator. Сначала анализ
-согласия AI ↔ человек и явное решение пользователя.
+Любые **автоматические Telegram-действия за пределами Stage 7**: полный AUTO-режим со
+свайпом и переходом к следующей анкете без явного AI-решения, автоматические сообщения,
+Dialog/Message Generator. Stage 7 ограничен реакцией на конкретную анкету (❤️/👎) на
+сконфигурированном авто-аккаунте.
 
 ---
 
@@ -502,7 +554,7 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - Дайвинчик (Leo) chat_id по умолчанию: **`1234060895`**
 - Пороги решений: LIKE `0.75`, REVIEW `0.50`, min_confidence `0.60`
 - Веса Decision Engine: llm `0.7` / clip `0.3`
-- Версия баннера (`banner.py`): **`0.6`**
+- Версия баннера (`banner.py`): **`0.7`**
 
 ### Лицензия
 

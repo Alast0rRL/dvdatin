@@ -37,6 +37,7 @@ from services.review_service import ReviewService
 from services.analytics_service import AnalyticsService
 from services.review_export import EXPORTS_DIR, export_review_csv
 from telegram.review_bot import ReviewBot
+from telegram.control_bot import ControlBot
 from telegram.client import authorize, create_client
 
 CONFIG_PATH = Path("config/config.yaml")
@@ -168,8 +169,20 @@ async def main() -> None:
         ai_scoring_service=ai_scoring_service,
         decision_service=decision_service,
         stats=stats,
+        config_path=CONFIG_PATH,
     )
     collector.register()
+
+    # Stage 7.5: ControlBot — панель управления режимом (вкл/выкл авто).
+    # Команды принимаются только от allowed_user_ids (см. config.control).
+    if config.control.enabled:
+        control_bot = ControlBot(
+            clients[0], config,
+            collector=collector,
+            db=db,
+        )
+        control_bot.register()
+        logger.info("ControlBot: панель управления активна")
 
     # Stage 6.2: pipeline (parse → filter → AI) выполняется в фоновом worker.
     # Хендлер только сохраняет RAW и ставит задание в очередь — AI/сетевой I/O
@@ -177,6 +190,11 @@ async def main() -> None:
     worker = DvinchikRawWorker(process=collector._process_message)
     collector.attach_worker(worker)
     collector.start()
+
+    # Stage 7 (SEMI_AUTO): активный запуск потока анкет на авто-аккаунте.
+    auto_task = asyncio.get_event_loop().create_task(
+        collector.start_auto_stream()
+    )
 
     # W3: восстановление backlog'а (RAW сохранён, но не обработан) запускаем
     # фоном — не блокируем старт Telegram. Recovery сам дросселируется
@@ -187,7 +205,7 @@ async def main() -> None:
 
     logger.info(
         f"Приложение запущено ({len(clients)} аккаунт(ов)) "
-        f"в режиме OBSERVE. Ctrl+C для выхода."
+        f"в режиме {config.project.mode.value}. Ctrl+C для выхода."
     )
 
     try:
@@ -199,6 +217,12 @@ async def main() -> None:
             recovery_task.cancel()
         try:
             await recovery_task
+        except asyncio.CancelledError:
+            pass
+        if not auto_task.done():
+            auto_task.cancel()
+        try:
+            await auto_task
         except asyncio.CancelledError:
             pass
         await collector.stop()

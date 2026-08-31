@@ -58,7 +58,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_ai (105), test_collector (80), test_parser (46), test_decision (27), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (10), test_preferences (10), test_review_ui (5) → 402 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_ai (105), test_collector (86), test_parser (46), test_decision (27), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (10), test_preferences (10), test_review_ui (5), test_auto_action (18), test_control_bot (8) → 434 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -66,7 +66,7 @@ filters:
 - **`FilterResult` in `models/raw.py`** uses Pydantic `StrEnum` named `FilterResult` — do not confuse with `models/filter.py`'s `FilterResult` dataclass.
 - **SQLite WAL mode** + foreign keys explicitly enabled via PRAGMA. Schema is idempotent (`CREATE TABLE IF NOT EXISTS`).
 - **Windows-specific**: `run.bat` sets `chcp 65001`, `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8`. `main.py` also forces UTF-8 on stdout/stderr.
-- **Banner version** (`banner.py`) is synced to `"0.6"`.
+- **Banner version** (`banner.py`) is synced to `"0.7"`.
 - **Chat ID 1234060895** is the Dayvinchik bot default, hardcoded in `config/config.example.yaml`.
 - **AI backend selection**: `ai.backend` = `local` (stubs) or `remote` (Ubuntu AI Server). Remote clients use httpx, not requests.
 - **Remote CLIP contract**: server expects multipart field **`files`** (not `images`) and returns **`clip_score`**/`images_analyzed`/`images_failed`/`status` (not `aesthetic_score`). `remote_clip_client.py` maps `clip_score`→`CLIPScore.aesthetic_score`.
@@ -80,7 +80,25 @@ filters:
 
 ## Project Stage
 
-Currently at **Stage 6 complete** (Human Review & Analytics). See `PROJECT.md` for roadmap. DecisionService operates in OBSERVE mode only — it computes LIKE/REVIEW/DISLIKE but never performs Telegram actions; ReviewBot saves human decisions (APPROVE/REJECT/SKIP) but never performs Telegram actions either. Do not implement automatic likes/swipes/dialog manager until explicitly instructed.
+Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionService computes LIKE/REVIEW/DISLIKE; in SEMI_AUTO the collector sends autonomous Telegram actions via `AutoActionEngine` on the auto-account only: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→skip, rate-limited (default 10s). `config.project.mode` gates auto actions (OBSERVE → no actions, even if enabled). Active stream: `collector.start_auto_stream()` sends the start command once at startup. ReviewBot still saves human decisions (APPROVE/REJECT/SKIP). Do not implement full AUTO / dialog manager until explicitly instructed.
+
+## Auto-Actions (Stage 7)
+
+- Live in `collectors/auto_action.py`: `AutoActionEngine(client, config, mode, chat_id)`.
+- Gate: `enabled` only when mode ∈ {SEMI_AUTO, AUTO} AND `auto_actions.enabled` AND a client exists (matched via `account_session` to `telegram.accounts`/`self._clients` by index).
+- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW/None→`SKIP`, disabled→`GATE`.
+- Sent only when the profile arrived on the auto account (`task.msg.client is auto_engine.client`).
+- `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
+- `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape).
+- Active mode: `collector.start_auto_stream()` sends `start_command` once at startup (SEMI_AUTO).
+
+## Control Panel (Stage 7.5)
+
+- Live in `telegram/control_bot.py`: `ControlBot(client, config, collector, db)`.
+- Commands `/status /mode on|off /stream /recent /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (default `[8525808108]`).
+- Работает на `telegram.accounts[0]`; `config.control.enabled` гейтит регистрацию в `main.py`.
+- Runtime-переключение: `collector.set_mode(Mode)` → обновляет `AutoActionEngine.mode` на лету (гатег `enabled` пересчитывается) + `AppConfig.persist_mode()` записывает `project.mode` в `config.yaml` (переживает restart). `AutoActionEngine.mode` — сеттер.
+- `collector.auto_engine()` — доступ к движку для панели; `collector.mode` — текущий режим.
 
 ## Empty Placeholder Packages
 

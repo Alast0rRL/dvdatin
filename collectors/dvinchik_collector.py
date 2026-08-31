@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -21,9 +22,11 @@ from telethon.tl.types import (
     MessageMediaWebPage,
 )
 
+from collectors.auto_action import AutoActionEngine
 from collectors.dedup import Dedup
 from collectors.dvinchik_parser import DvinchikParser
 from collectors.raw_worker import DvinchikRawWorker, RawTask
+from core.types import Mode
 from models.raw import MessageType
 
 if TYPE_CHECKING:
@@ -89,6 +92,7 @@ class DvinchikCollector:
         decision_service: object | None = None,
         stats: object | None = None,
         worker: DvinchikRawWorker | None = None,
+        config_path: Path = Path("config/config.yaml"),
     ) -> None:
         # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
         # регистрируются на каждом клиенте. Один и тот же message из одного
@@ -127,10 +131,80 @@ class DvinchikCollector:
         self._filter_service = filter_service
         self._ai_scoring_service = ai_scoring_service
         self._decision_service = decision_service
+        # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
+        # (config.auto_actions.account_session) среди accounts/clients (они
+        # параллельны: main.py строит clients в том же порядке, что accounts).
+        self._auto_engine = self._build_auto_engine()
+        self._config_path = config_path
         # Worker потребляет RawQueue и выполняет pipeline вне Telegram-хендлера.
         # Если worker не задан (тесты/отладка) — обработка идёт синхронно в
         # хендлере (fallback). В проде всегда привязан worker.
         self._worker = worker
+
+    @property
+    def _mode_label(self) -> str:
+        """Дружелюбная строка текущего режима для вывода решений."""
+        eng = self._auto_engine
+        mode = eng.mode.value if eng is not None else self._config.project.mode.value
+        if eng is None or not eng.enabled:
+            return f"{mode} (действий нет)"
+        return f"{mode} (авто-действия ❤️/👎 активны)"
+
+    @property
+    def mode(self) -> Mode:
+        """Текущий режим работы (источник истины — AutoActionEngine)."""
+        if self._auto_engine is not None:
+            return self._auto_engine.mode
+        return self._config.project.mode
+
+    def set_mode(self, mode: Mode) -> None:
+        """Меняет режим на лету (ControlBot) и сохраняет в config.yaml.
+
+        Обновляет движок авто-действий и live-конфиг, чтобы переключение
+        пережило restart приложения.
+        """
+        if self._auto_engine is not None:
+            self._auto_engine.mode = mode
+        self._config.project.mode = mode
+        try:
+            self._config.persist_mode(self._config_path, mode)
+            logger.info(f"Режим изменён на {mode.value} (сохранён в config.yaml)")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить режим в config.yaml: {e}")
+
+    def auto_engine(self) -> AutoActionEngine | None:
+        """Доступ к движку авто-действий для ControlBot."""
+        return self._auto_engine
+
+    def _build_auto_engine(self) -> AutoActionEngine:
+        """Строит AutoActionEngine для сессии из config.auto_actions.
+
+        Ищет индекс аккаунта с session == account_session и берёт
+        соответствующий client (accounts/clients параллельны).
+        """
+        mode = self._config.project.mode
+        auto_cfg = self._config.auto_actions
+        target_session = auto_cfg.account_session
+
+        client = None
+        if target_session:
+            for i, acc in enumerate(self._config.telegram.accounts):
+                if acc.session == target_session and i < len(self._clients):
+                    client = self._clients[i]
+                    break
+
+        if auto_cfg.enabled and client is None:
+            logger.warning(
+                f"AutoAction: account_session={target_session!r} не найден среди "
+                f"accounts; авто-действия отключены"
+            )
+
+        return AutoActionEngine(
+            client=client,
+            config=auto_cfg,
+            mode=mode,
+            chat_id=self._dvinchik_chat_id,
+        )
 
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
         """Привязывает worker; хендлер начинает только ставить в очередь."""
@@ -148,6 +222,19 @@ class DvinchikCollector:
         """Плавно останавливает worker (если привязан)."""
         if self._worker is not None:
             await self._worker.stop()
+
+    async def start_auto_stream(self) -> None:
+        """Запускает активный поток анкет на авто-аккаунте (SEMI_AUTO).
+
+        Отправляет команду открытия анкет один раз при старте, если
+        авто-действия включены. Ошибки не роняют приложение.
+        """
+        if not self._auto_engine.enabled:
+            return
+        try:
+            await self._auto_engine.start_stream()
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка запуска потока: {e}")
 
     async def recover_backlog(self, batch_size: int = 200) -> int:
         """Восстанавливает необработанные RAW из БД в очередь worker'а (W3).
@@ -604,6 +691,24 @@ class DvinchikCollector:
                                                 )
                                             )
                                             self._print_ai_decision(profile, decision)
+                                            # Stage 7: авто-действие (SEMI_AUTO).
+                                            # Только если анкета пришла на авто-аккаунт
+                                            # (msg.client — аккаунт-получатель).
+                                            if (
+                                                self._auto_engine.enabled
+                                                and decision is not None
+                                                and msg is not None
+                                                and getattr(msg, "client", None)
+                                                is self._auto_engine.client
+                                            ):
+                                                try:
+                                                    await self._auto_engine.maybe_act(
+                                                        decision.decision
+                                                    )
+                                                except Exception as e:
+                                                    logger.error(
+                                                        f"AutoAction error: {e}"
+                                                    )
                                         else:
                                             ai_score = (
                                                 await self._ai_scoring_service.evaluate(
@@ -1078,7 +1183,10 @@ class DvinchikCollector:
             "Decision",
             f"[bold {color}]{decision.decision.value}[/bold {color}]",
         )
-        table.add_row("Mode", "OBSERVE (действий нет)")
+        table.add_row(
+            "Mode",
+            self._mode_label,
+        )
 
         if decision.reasons:
             reasons_text = "\n".join(f"  • {r}" for r in decision.reasons)
