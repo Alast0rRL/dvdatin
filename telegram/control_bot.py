@@ -52,6 +52,7 @@ class ControlBot:
 
     def register(self) -> None:
         """Регистрирует обработчики команд и callback-запросов."""
+        self._client.add_event_handler(self._on_any_message, events.NewMessage())
         self._client.add_event_handler(
             self._cmd_status, events.NewMessage(pattern=r"/status\s*$"),
         )
@@ -74,6 +75,16 @@ class ControlBot:
         logger.info("ControlBot registered: /status /mode /stream /recent /help")
 
     # ── Авторизация ──────────────────────────────────────────────────
+
+    async def _on_any_message(self, event: events.NewMessage.Event) -> None:
+        """Диагностика: логируем любое входящее сообщение на этом клиенте."""
+        try:
+            logger.info(
+                f"ControlBot sees msg: chat_id={event.chat_id} "
+                f"sender_id={event.sender_id} text={event.message.text or ''!r}"
+            )
+        except Exception as e:  # pragma: no cover
+            logger.debug(f"ControlBot diag log failed: {e}")
 
     def _is_authorized(self, sender_id: int | None) -> bool:
         return sender_id in self._allowed
