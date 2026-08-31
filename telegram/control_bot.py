@@ -106,7 +106,8 @@ class ControlBot:
             return
         try:
             text = self._render_help()
-            await event.respond(
+            await event.client.send_message(
+                event.chat_id,
                 text,
                 buttons=[[
                     Button.inline("🟢 ON", data=b"control:on"),
@@ -137,7 +138,8 @@ class ControlBot:
             return
         try:
             self._collector.set_mode(mode)
-            await event.respond(
+            await event.client.send_message(
+                event.chat_id,
                 f"Режим установлен: {mode.value}",
                 buttons=self._toggle_buttons(),
             )
@@ -259,7 +261,9 @@ class ControlBot:
     async def _send_status(self, event: events.NewMessage.Event) -> None:
         try:
             text = self._render_status()
-            await event.respond(text, buttons=self._toggle_buttons())
+            await event.client.send_message(
+                event.chat_id, text, buttons=self._toggle_buttons()
+            )
         except Exception as e:
             logger.error(f"ControlBot error (/status): {e}")
             await event.respond("Ошибка загрузки статуса.")

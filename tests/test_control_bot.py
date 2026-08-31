@@ -60,6 +60,9 @@ def _event(sender_id: int, text: str = "") -> MagicMock:
     ev.pattern_match.group.return_value = text
     ev.message = MagicMock()
     ev.message.text = text
+    ev.chat_id = sender_id
+    ev.client = AsyncMock()
+    ev.client.send_message = AsyncMock()
     ev.respond = AsyncMock()
     ev.edit = AsyncMock()
     ev.answer = AsyncMock()
@@ -82,7 +85,7 @@ class TestControlBotAuth:
         asyncio.get_event_loop().run_until_complete(
             bot._cmd_status(ev)
         )
-        ev.respond.assert_awaited_once()
+        ev.client.send_message.assert_awaited_once()
 
 
 class TestControlBotActions:
@@ -154,7 +157,7 @@ class TestControlBotRouter:
         bot, client, collector = make_bot()
         ev = _event(sender_id=8525808108, text="/status")
         asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
-        ev.respond.assert_awaited_once()
+        ev.client.send_message.assert_awaited_once()
 
     def test_router_mode_on(self) -> None:
         bot, client, collector = make_bot()
@@ -172,4 +175,5 @@ class TestControlBotRouter:
         bot, client, collector = make_bot()
         ev = _event(sender_id=999999999, text="/status")
         asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        ev.client.send_message.assert_not_awaited()
         ev.respond.assert_not_awaited()
