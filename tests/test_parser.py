@@ -88,6 +88,15 @@ class TestParseProfile:
         assert p.raw_city == "Санкт Петербург"
         assert p.normalized_city == "Санкт-Петербург"
 
+    def test_decor_prefix_with_comma(self, parser: DvinchikParser) -> None:
+        """Leo шлёт анкеты с декор-префиксом, в котором есть запятая."""
+        text = "\U0001A663, \u2014 \u2654, 18, Санкт-Петербург – мы расстались"
+        p = parser.parse_profile(text)
+        assert p.age == 18
+        assert p.normalized_city == "Санкт-Петербург"
+        assert "расстались" in p.description
+        assert parser.classify(text) == MessageType.PROFILE
+
     def test_real_simple_name(self, parser: DvinchikParser) -> None:
         text = "wimx, 18, Санкт-Петербург"
         p = parser.parse_profile(text)
