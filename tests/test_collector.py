@@ -2100,8 +2100,119 @@ class TestCollectorAutoActions:
 
         auto_client.send_message.assert_not_called()
 
-    def _iter_msg(self, auto_client: AsyncMock, mid: int, text: str,
-                  buttons: list[str] | None = None, out: bool = False) -> MagicMock:
+    def _make_collector_reject(
+        self,
+        config: AppConfig,
+        auto_client: AsyncMock,
+        other_client: AsyncMock,
+        decision_text: str,
+    ) -> DvinchikCollector:
+        """Коллектор, где фильтр возвращает не-PASS решение (REJECT/REVIEW)."""
+        from models.filter import FilterDecision, FilterResult
+        from models.profile import Profile, ProfileStatus
+
+        db = make_db_mock()
+        collector = DvinchikCollector(
+            [other_client, auto_client], db, config,
+        )
+        fs = AsyncMock()
+        fs.evaluate = AsyncMock(
+            return_value=FilterResult(
+                decision=FilterDecision(decision_text), reasons=[],
+            )
+        )
+        collector._filter_service = fs
+        profile = Profile(
+            id=7, name="Анютка", age=19,
+            normalized_city="",  # город не распознан → фильтр REJECT
+            status=ProfileStatus.NEW,
+        )
+        ps = AsyncMock()
+        ps.upsert_profile = AsyncMock(return_value=profile)
+        collector._profile_service = ps
+        ai = AsyncMock()
+        ai.is_enabled = True
+        collector._ai_scoring_service = ai
+        return collector
+
+    def test_filter_reject_sends_dislike_to_keep_stream_moving(self) -> None:
+        """Фильтровый REJECT на авто-аккаунте → 👎 (лента не замирает)."""
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector_reject(
+            self._make_config(), auto_client, other_client, "REJECT"
+        )
+
+        task = RawTask(
+            chat_id=1234060895, message_id=910, sender_id=1234060895,
+            sender_username="", sender_name="", text="Анютка, 18, Москва",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=6,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_called_once()
+        args, _ = auto_client.send_message.call_args
+        assert args[1] == "\U0001F44E"  # 👎
+        collector._db.record_auto_action.assert_awaited_once_with(
+            7, "DISLIKE", "REJECT", 1234060895
+        )
+
+    def test_filter_review_sends_dislike_to_keep_stream_moving(self) -> None:
+        """Фильтровый REVIEW на авто-аккаунте → 👎 (лента не замирает)."""
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector_reject(
+            self._make_config(), auto_client, other_client, "REVIEW"
+        )
+
+        task = RawTask(
+            chat_id=1234060895, message_id=911, sender_id=1234060895,
+            sender_username="", sender_name="", text="Анютка, 18, Москва",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=7,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_called_once()
+        args, _ = auto_client.send_message.call_args
+        assert args[1] == "\U0001F44E"  # 👎
+        collector._db.record_auto_action.assert_awaited_once_with(
+            7, "DISLIKE", "REVIEW", 1234060895
+        )
+
+    def test_filter_reject_no_action_on_other_account(self) -> None:
+        """REJECT на НЕ-авто-аккаунте → никакого действия."""
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector_reject(
+            self._make_config(), auto_client, other_client, "REJECT"
+        )
+
+        ev = make_event(text="Анютка, 18, Москва", msg_id=912)
+        ev.message.client = other_client
+        task = RawTask(
+            chat_id=1234060895, message_id=912, sender_id=1234060895,
+            sender_username="", sender_name="", text="Анютка, 18, Москва",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=ev.message, raw_id=8,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_not_called()
+
+    def _iter_msg(
+        self, auto_client: AsyncMock, mid: int, text: str,
+        buttons: list[str] | None = None, out: bool = False) -> MagicMock:
         """Мок Telegram-сообщения для сканирования активной анкеты."""
         m = MagicMock()
         m.id = mid

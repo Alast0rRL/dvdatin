@@ -31,6 +31,7 @@ from collectors.dedup import Dedup
 from collectors.dvinchik_parser import DvinchikParser
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from core.types import Mode
+from models.decision import AIDecision
 from models.raw import MessageType
 
 if TYPE_CHECKING:
@@ -901,6 +902,43 @@ class DvinchikCollector:
                                             self._print_ai_score(profile, ai_score)
                                     except Exception as e:
                                         logger.error(f"AI scoring error: {e}")
+                                elif (
+                                    str(filter_result.decision) != "PASS"
+                                    and self._auto_engine.enabled
+                                    and msg is not None
+                                    and getattr(msg, "client", None)
+                                    is self._auto_engine.client
+                                ):
+                                    # Фильтровые REJECT/REVIEW: AI не считается,
+                                    # но Leo всё равно ждёт реакцию на показанную
+                                    # анкету. Чтобы лента не замирала — 👎.
+                                    try:
+                                        if await self._db.has_auto_action(profile.id):
+                                            logger.info(
+                                                f"AutoAction: profile={profile.id} "
+                                                "уже есть в журнале"
+                                            )
+                                        else:
+                                            action = (
+                                                await self._auto_engine.maybe_act(
+                                                    AIDecision.DISLIKE, profile.id
+                                                )
+                                            )
+                                            if action in ("LIKE", "DISLIKE"):
+                                                try:
+                                                    await self._db.record_auto_action(
+                                                        profile.id,
+                                                        action,
+                                                        filter_result.decision.value,
+                                                        chat_id,
+                                                    )
+                                                except Exception as e:
+                                                    logger.error(
+                                                        "AutoAction: действие "
+                                                        f"отправлено, но не записано: {e}"
+                                                    )
+                                    except Exception as e:
+                                        logger.error(f"AutoAction error: {e}")
                             except Exception as e:
                                 logger.error(f"FilterService error: {e}")
                     except Exception as e:

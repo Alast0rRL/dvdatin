@@ -19,7 +19,7 @@ python -m pytest tests/test_ai.py -v
 - **FilterEngine is Telegram-free**: `services/filter_engine.py` takes only `Profile + AppConfig`. Never import Telethon types there.
 - **AI services are Telegram-free**: `services/clip_service.py`, `services/llm_service.py`, `services/ai_scoring_service.py`, `services/decision_service.py` never import Telethon. Work only with bytes, Profile, and Config.
 - **Remote AI clients are Telegram-free**: `services/remote_llm_client.py`, `services/remote_clip_client.py` never import Telethon.
-- **AI scoring gated by PASS**: In the collector, AI scoring only runs when `FilterDecision == PASS`. REJECT/REVIEW → skip AI.
+- **AI scoring gated by PASS**: In the collector, AI scoring only runs when `FilterDecision == PASS`. REJECT/REVIEW → skip AI. BUT on the auto account, filter-level REJECT/REVIEW still auto-sends `👎` (via `auto_engine.maybe_act(AIDecision.DISLIKE)`) so Leo's stream never blocks; the profile + filter result remain in DB. Mirror behavior in `collectors/dvinchik_collector.py`. This means: non-PASS filter results get `DISLIKE` recorded in `auto_actions_log` with the filter decision as reason.
 - **AI errors must not break Collector**: All AI calls are wrapped in try/except. RAW messages are never lost.
 - **Preferences layer (SKIP/LIKE)**: User's calibration rules (`app/preferences.py` → `PreferencesEngine`) live ONLY in `config/preferences.yaml` (live, gitignored) / `config/preferences.example.yaml` (committed), plus the server-side LLM prompt. Never hardcode rules in `services/decision_service.py` — it only applies them. SKIP → hard DISLIKE (CLIP can't override); LIKE-factor → BELOW_THRESHOLDS/FILTER_REVIEW DISLIKE is lifted to REVIEW (profile not lost). Thresholds 0.75/0.50 unchanged.
 - **`filters/` package is empty** — a reserved placeholder. Actual filter logic lives in `services/filter_engine.py` and `services/filter_service.py`. Do not confuse the two.
@@ -86,7 +86,7 @@ Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionServ
 
 - Live in `collectors/auto_action.py`: `AutoActionEngine(client, config, mode, chat_id)`.
 - Gate: `enabled` only when mode ∈ {SEMI_AUTO, AUTO} AND `auto_actions.enabled` AND a client exists (matched via `account_session` to `telegram.accounts`/`self._clients` by index).
-- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→`👎` (двигаем ленту), disabled→`GATE`.
+- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→`👎` (двигаем ленту), disabled→`GATE`. Фильтровые не-PASS (REJECT/REVIEW) на авто-аккаунте тоже шлют `👎` через `maybe_act(AIDecision.DISLIKE)` — иначе Leo ждёт реакцию и лента замирает; профиль и фильтр-решение остаются в БД.
 - Sent only when the profile arrived on the auto account (`task.msg.client is auto_engine.client`).
 - `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
 - `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape — не отправляется стартом).
