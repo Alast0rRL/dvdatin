@@ -191,9 +191,9 @@ async def main() -> None:
     collector.attach_worker(worker)
     collector.start()
 
-    # Stage 7 (SEMI_AUTO): авто-запуск потока анкет на авто-аккаунте.
-    # Безопасно: start_auto_stream() сам гейтится по enabled + start_command,
-    # не задана команда — тихо пропускает, ничего не шлётся вслепую.
+    # Stage 7 (SEMI_AUTO): обработка уже показанной в чате активной анкеты
+    # на авто-аккаунте (лайк/дизлайк). start_auto_stream() гейтится по enabled;
+    # ✨🔍 не отправляется. Если активной анкеты нет — тихо ничего не делает.
     auto_task = asyncio.get_event_loop().create_task(
         collector.start_auto_stream()
     )

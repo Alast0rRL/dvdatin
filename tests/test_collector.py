@@ -2101,7 +2101,7 @@ class TestCollectorAutoActions:
         auto_client.send_message.assert_not_called()
 
     def _iter_msg(self, auto_client: AsyncMock, mid: int, text: str,
-                  buttons: list[str] | None = None) -> MagicMock:
+                  buttons: list[str] | None = None, out: bool = False) -> MagicMock:
         """Мок Telegram-сообщения для сканирования активной анкеты."""
         m = MagicMock()
         m.id = mid
@@ -2110,6 +2110,7 @@ class TestCollectorAutoActions:
         m.sender_id = 1234060895
         m.sender = None
         m.client = auto_client
+        m.out = out
         if buttons:
             rows = []
             for btext in buttons:
@@ -2126,21 +2127,26 @@ class TestCollectorAutoActions:
         return m
 
     def test_start_stream_processes_active_profile_without_resync(self) -> None:
-        """Есть активная анкета — обрабатываем её, ✨🔍 повторно не шлём."""
+        """Есть активная анкета — обрабатываем её, ✨🔍 не шлём."""
         from models.decision import AIDecision
 
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config()
+        config.auto_actions.start_command = "\U00002728\U0001F50D"  # ✨🔍
         collector = self._make_collector(
             config, self._make_decision(AIDecision.DISLIKE), auto_client, other_client
         )
 
         async def iter_messages(*args, **kwargs):
-            yield self._iter_msg(auto_client, 700, "✨🔍", buttons=["❤️", "👎"])
+            # Новые→старые: активная анкета (PROFILE) ждёт реакции.
             yield self._iter_msg(
-                auto_client, 699, "Ульяна, 19, Санкт-Петербург – тест"
+                auto_client, 700, "Полина, 19, Санкт-Петербург"
+            )
+            yield self._iter_msg(auto_client, 699, "\U0001F44E", out=True)
+            yield self._iter_msg(
+                auto_client, 698, "Margo, 18, Санкт-Петербург"
             )
 
         auto_client.iter_messages = iter_messages
@@ -2154,8 +2160,8 @@ class TestCollectorAutoActions:
             1234060895, "\U0001F44E"  # 👎
         )
 
-    def test_start_stream_no_active_profile_sends_resync(self) -> None:
-        """Активной анкеты нет — отправляем ✨🔍 (повторный поиск)."""
+    def test_start_stream_no_active_profile_sends_nothing(self) -> None:
+        """Активной анкеты нет — ✨🔍 не отправляется, ничего не делаем."""
         from models.decision import AIDecision
 
         auto_client = AsyncMock()
@@ -2168,18 +2174,19 @@ class TestCollectorAutoActions:
         )
 
         async def iter_messages(*args, **kwargs):
-            yield self._iter_msg(auto_client, 700, "Нашел 9828 девушек рядом с тобой")
+            # Последняя анкета уже обработана (после неё 👎) — активной нет.
+            yield self._iter_msg(auto_client, 700, "\U0001F44E", out=True)
+            yield self._iter_msg(
+                auto_client, 699, "Margo, 18, Санкт-Петербург"
+            )
 
         auto_client.iter_messages = iter_messages
 
         ok = asyncio.get_event_loop().run_until_complete(
             collector.start_auto_stream()
         )
-        assert ok is True
-        # Нет активной анкеты → отправлена команда потока ✨🔍.
-        auto_client.send_message.assert_called_once_with(
-            1234060895, "\U00002728\U0001F50D"  # ✨🔍
-        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
 
 
 class TestCollectorSetMode:

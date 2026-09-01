@@ -171,11 +171,11 @@ class ControlBot:
             started = await self._collector.start_auto_stream()
             if started:
                 await event.respond(
-                    f"Команда запуска потока отправлена ({engine.mode.value})."
+                    "Активная анкета обработана (лайк/дизлайк отправлен)."
                 )
             else:
                 await event.respond(
-                    "Автозапуск потока отключён: команда не настроена."
+                    "Активной анкеты в чате нет — действовать нечего."
                 )
         except Exception as e:
             logger.error(f"ControlBot error (/stream): {e}")

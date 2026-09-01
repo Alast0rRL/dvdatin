@@ -22,7 +22,11 @@ from telethon.tl.types import (
     MessageMediaWebPage,
 )
 
-from collectors.auto_action import AutoActionEngine
+from collectors.auto_action import (
+    AutoActionEngine,
+    DISLIKE_TEXT,
+    LIKE_TEXT,
+)
 from collectors.dedup import Dedup
 from collectors.dvinchik_parser import DvinchikParser
 from collectors.raw_worker import DvinchikRawWorker, RawTask
@@ -224,66 +228,69 @@ class DvinchikCollector:
             await self._worker.stop()
 
     async def start_auto_stream(self) -> bool:
-        """Запускает поток анкет на авто-аккаунте.
+        """Обрабатывает уже показанную активную анкету, если она есть.
 
-        Если в чате уже показана активная анкета (карточка с кнопками
-        ❤️/👎 + текст анкеты) — обрабатываем её сразу (лайк/дизлайк) и НЕ
-        шлём повторно ✨🔍 (не начинаем поиск заново). Только если активной
-        анкеты нет — отправляем команду открытия потока.
+        ✨🔍 НЕ отправляется: команда не приводит новые анкеты, а показанная
+        (обычный текст "Имя, возраст, город") уже ждёт только лайк/дизлайк.
+        Если активной анкеты нет — ничего не делаем (возвращаем False).
         """
         if not self._auto_engine.enabled:
             return False
         try:
-            if await self._process_active_profile_if_any():
-                return True
-            return await self._auto_engine.start_stream()
+            return await self._process_active_profile_if_any()
         except Exception as e:
-            logger.error(f"AutoAction: ошибка запуска потока: {e}")
+            logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
             return False
 
     async def _process_active_profile_if_any(self) -> bool:
         """Обрабатывает уже показанную активную анкету, если она есть.
 
-        Сканирует последние сообщения чата Leo на авто-аккаунте: находит
-        самую свежую «карточку» с кнопками действий (❤️/👎) и ближайший
-        текст анкеты (PROFILE) до неё. Если такой анкеты нет — возвращает
-        False (запускаем ✨🔍). Прогоняет найденную анкету через штатный
-        pipeline (_process_message: parse → filter → AI → авто-действие),
-        т.е. лайк/дизлайк уходит на уже показанную карточку.
+        Механика Дайвинчика: анкета приходит обычным текстом
+        ("Имя, возраст, город – …") и ждёт реакции простым текстом ❤️/👎
+        (кнопок на анкете может не быть). Сканируем последние сообщения чата
+        на авто-аккаунте и берём самую свежую анкету (PROFILE), на которую
+        ещё не отправлена реакция (нет исходящего ❤️/👎 после неё). Прогоняем
+        её через штатный pipeline (_process_message: parse → filter → AI →
+        авто-действие). Если активной анкеты нет — возвращаем False.
         """
         client = self._auto_engine.client
         if client is None:
             return False
         try:
-            anchor: int | None = None
-            best_profile = None
+            latest_action_id: int | None = None
+            active = None
             async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
-                if anchor is None:
-                    if self._has_action_buttons(msg):
-                        anchor = msg.id
-                    continue
-                if msg.id > anchor:
+                text = (msg.text or "").strip()
+                if getattr(msg, "out", False) and text in (LIKE_TEXT, DISLIKE_TEXT):
+                    if latest_action_id is None:
+                        latest_action_id = msg.id
                     continue
                 if self._is_profile_text(msg):
-                    if best_profile is None or msg.id > best_profile.id:
-                        best_profile = msg
+                    if (
+                        latest_action_id is not None
+                        and msg.id < latest_action_id
+                    ):
+                        # на эту анкету уже отправлена реакция — не активна
+                        continue
+                    active = msg
+                    break
 
-            if best_profile is None:
+            if active is None:
                 logger.info("AutoAction: активная анкета в чате не найдена")
                 return False
 
-            text = (best_profile.text or "").strip()
+            text = (active.text or "").strip()
             if not text:
                 return False
 
             logger.info(
-                f"AutoAction: найдена активная анкета (card={anchor}, msg={best_profile.id}) — "
+                f"AutoAction: найдена активная анкета (msg={active.id}) — "
                 "обрабатываю без повторного ✨🔍"
             )
             task = RawTask(
                 chat_id=self._dvinchik_chat_id,
-                message_id=best_profile.id,
-                sender_id=best_profile.sender_id or 0,
+                message_id=active.id,
+                sender_id=active.sender_id or 0,
                 sender_username="",
                 sender_name="",
                 text=text,
@@ -291,10 +298,8 @@ class DvinchikCollector:
                 entities_json="[]",
                 reply_to=None,
                 received_at=datetime.now(timezone.utc).isoformat(),
-                msg_date=best_profile.date.isoformat()
-                if best_profile.date
-                else "",
-                msg=best_profile,
+                msg_date=active.date.isoformat() if active.date else "",
+                msg=active,
                 raw_id=0,
             )
             await self._process_message(task)
