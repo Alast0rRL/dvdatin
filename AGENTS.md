@@ -80,13 +80,13 @@ filters:
 
 ## Project Stage
 
-Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionService computes LIKE/REVIEW/DISLIKE; in SEMI_AUTO the collector sends autonomous Telegram actions via `AutoActionEngine` on the auto-account only: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→skip, rate-limited (default 10s). `config.project.mode` gates auto actions (OBSERVE → no actions, even if enabled). Active stream: `collector.start_auto_stream()` sends the start command once at startup. ReviewBot still saves human decisions (APPROVE/REJECT/SKIP). Do not implement full AUTO / dialog manager until explicitly instructed.
+Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionService computes LIKE/REVIEW/DISLIKE; in SEMI_AUTO the collector sends autonomous Telegram actions via `AutoActionEngine` on the auto-account only: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→`👎` (двигаем ленту Leo, т.к. он не продолжает поток без реакции; профиль и AI-результат остаются в БД для ReviewBot), rate-limited (default 10s). `config.project.mode` gates auto actions (OBSERVE → no actions, even if enabled). Active stream: `collector.start_auto_stream()` processes the already-displayed active profile or presses «Смотреть анкеты». ReviewBot still saves human decisions (APPROVE/REJECT/SKIP). Do not implement full AUTO / dialog manager until explicitly instructed.
 
 ## Auto-Actions (Stage 7)
 
 - Live in `collectors/auto_action.py`: `AutoActionEngine(client, config, mode, chat_id)`.
 - Gate: `enabled` only when mode ∈ {SEMI_AUTO, AUTO} AND `auto_actions.enabled` AND a client exists (matched via `account_session` to `telegram.accounts`/`self._clients` by index).
-- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW/None→`SKIP`, disabled→`GATE`.
+- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→`👎` (двигаем ленту), disabled→`GATE`.
 - Sent only when the profile arrived on the auto account (`task.msg.client is auto_engine.client`).
 - `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
 - `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape — не отправляется стартом).

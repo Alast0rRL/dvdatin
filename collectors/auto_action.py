@@ -42,7 +42,10 @@ class AutoActionEngine:
       без жёсткого дневного лимита.
     - Ошибки отправки не роняют pipeline: перехватываются и логируются,
       RAW-сообщения не теряются.
-    - REVIEW → пропуск (никакого действия).
+    - REVIEW → 👎 (двигаем ленту Leo): Leo не продолжает поток, пока на
+      показанную анкету не отправлена реакция. Чтобы лента не замирала,
+      неоднозначные REVIEW-анкеты получают 👎 (действие DISLIKE), при этом
+      сам AI-результат и сам профиль остаются в БД для ReviewBot.
     """
 
     def __init__(
@@ -104,11 +107,18 @@ class AutoActionEngine:
         if decision is None:
             return "SKIP"
         if decision == AIDecision.REVIEW:
-            logger.info("AutoAction: REVIEW — пропуск (никакого действия)")
-            return "SKIP"
+            # REVIEW → 👎: Leo не движет ленту, пока не получит реакцию.
+            # Шлём дизлайк, чтобы поток не замирал; сам REVIEW-результат и
+            # профиль остаются в БД (ReviewBot всё равно видит его).
+            logger.info(
+                "AutoAction: REVIEW → 👎 (двигаю ленту; профиль остаётся в БД)"
+            )
+            text = DISLIKE_TEXT
+            action = "DISLIKE"
+        else:
+            text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
+            action = decision.value
 
-        text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
-        action = decision.value
         async with self._lock:
             if profile_id is not None and profile_id in self._processed_profile_ids:
                 logger.warning(f"AutoAction: profile={profile_id} уже обработан")

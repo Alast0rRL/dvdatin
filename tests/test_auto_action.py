@@ -102,14 +102,15 @@ class TestAutoActionExec:
         args, _ = client.send_message.call_args
         assert args[1] == DISLIKE_TEXT
 
-    def test_review_skips(self) -> None:
+    def test_review_sends_dislike_to_keep_stream_moving(self) -> None:
         client = make_client()
         e = make_engine(client=client)
         result = asyncio.get_event_loop().run_until_complete(
             e.maybe_act(AIDecision.REVIEW)
         )
-        assert result == "SKIP"
-        client.send_message.assert_not_called()
+        assert result == "DISLIKE"
+        args, _ = client.send_message.call_args
+        assert args[1] == DISLIKE_TEXT
 
     def test_none_decision_skips(self) -> None:
         client = make_client()
