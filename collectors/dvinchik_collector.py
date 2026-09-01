@@ -224,18 +224,110 @@ class DvinchikCollector:
             await self._worker.stop()
 
     async def start_auto_stream(self) -> bool:
-        """Запускает явно настроенный поток анкет на авто-аккаунте.
+        """Запускает поток анкет на авто-аккаунте.
 
-        По умолчанию команда отсутствует: нельзя достоверно определить,
-        находится ли бот в состоянии, где она допустима.
+        Если в чате уже показана активная анкета (карточка с кнопками
+        ❤️/👎 + текст анкеты) — обрабатываем её сразу (лайк/дизлайк) и НЕ
+        шлём повторно ✨🔍 (не начинаем поиск заново). Только если активной
+        анкеты нет — отправляем команду открытия потока.
         """
         if not self._auto_engine.enabled:
             return False
         try:
+            if await self._process_active_profile_if_any():
+                return True
             return await self._auto_engine.start_stream()
         except Exception as e:
             logger.error(f"AutoAction: ошибка запуска потока: {e}")
             return False
+
+    async def _process_active_profile_if_any(self) -> bool:
+        """Обрабатывает уже показанную активную анкету, если она есть.
+
+        Сканирует последние сообщения чата Leo на авто-аккаунте: находит
+        самую свежую «карточку» с кнопками действий (❤️/👎) и ближайший
+        текст анкеты (PROFILE) до неё. Если такой анкеты нет — возвращает
+        False (запускаем ✨🔍). Прогоняет найденную анкету через штатный
+        pipeline (_process_message: parse → filter → AI → авто-действие),
+        т.е. лайк/дизлайк уходит на уже показанную карточку.
+        """
+        client = self._auto_engine.client
+        if client is None:
+            return False
+        try:
+            anchor: int | None = None
+            best_profile = None
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                if anchor is None:
+                    if self._has_action_buttons(msg):
+                        anchor = msg.id
+                    continue
+                if msg.id > anchor:
+                    continue
+                if self._is_profile_text(msg):
+                    if best_profile is None or msg.id > best_profile.id:
+                        best_profile = msg
+
+            if best_profile is None:
+                logger.info("AutoAction: активная анкета в чате не найдена")
+                return False
+
+            text = (best_profile.text or "").strip()
+            if not text:
+                return False
+
+            logger.info(
+                f"AutoAction: найдена активная анкета (card={anchor}, msg={best_profile.id}) — "
+                "обрабатываю без повторного ✨🔍"
+            )
+            task = RawTask(
+                chat_id=self._dvinchik_chat_id,
+                message_id=best_profile.id,
+                sender_id=best_profile.sender_id or 0,
+                sender_username="",
+                sender_name="",
+                text=text,
+                media_type="",
+                entities_json="[]",
+                reply_to=None,
+                received_at=datetime.now(timezone.utc).isoformat(),
+                msg_date=best_profile.date.isoformat()
+                if best_profile.date
+                else "",
+                msg=best_profile,
+                raw_id=0,
+            )
+            await self._process_message(task)
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
+            return False
+
+    def _has_action_buttons(self, msg: object) -> bool:
+        """Есть ли у сообщения кнопки действий (❤️/👎) — активная карточка."""
+        texts = self._extract_button_texts(msg)
+        return "\u2764" in texts or "\U0001F44E" in texts
+
+    def _extract_button_texts(self, msg: object) -> list[str]:
+        """Извлекает тексты reply-кнопок сообщения (пусто, если их нет)."""
+        rm = getattr(msg, "reply_markup", None)
+        rows = getattr(rm, "rows", None)
+        if not rows:
+            return []
+        out: list[str] = []
+        for row in rows:
+            for b in getattr(row, "buttons", []):
+                t = getattr(b, "text", "")
+                if t:
+                    out.append(t)
+        return out
+
+    def _is_profile_text(self, msg: object) -> bool:
+        """Является ли текст сообщения анкетой (PROFILE)."""
+        text = (getattr(msg, "text", None) or "").strip()
+        if not text:
+            return False
+        return self._parser.classify(text) == MessageType.PROFILE
 
     async def recover_backlog(self, batch_size: int = 200) -> int:
         """Восстанавливает необработанные RAW из БД в очередь worker'а (W3).
