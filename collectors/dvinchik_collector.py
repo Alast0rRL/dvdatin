@@ -870,9 +870,11 @@ class DvinchikCollector:
                                                 is self._auto_engine.client
                                             ):
                                                 try:
-                                                    if await self._db.has_auto_action(profile.id):
+                                                    if await self._db.has_auto_action_for_message(
+                                                        chat_id, task.message_id
+                                                    ):
                                                         logger.info(
-                                                            f"AutoAction: profile={profile.id} уже есть в журнале"
+                                                            f"AutoAction: карточка {task.message_id} уже в журнале"
                                                         )
                                                     else:
                                                         action = await self._auto_engine.maybe_act(
@@ -882,7 +884,9 @@ class DvinchikCollector:
                                                             try:
                                                                 await self._db.record_auto_action(
                                                                     profile.id, action,
-                                                                    decision.decision.value, chat_id,
+                                                                    decision.decision.value,
+                                                                    chat_id,
+                                                                    task.message_id,
                                                                 )
                                                             except Exception as e:
                                                                 logger.error(
@@ -905,6 +909,7 @@ class DvinchikCollector:
                                 elif (
                                     str(filter_result.decision) != "PASS"
                                     and self._auto_engine.enabled
+                                    and chat_id == self._dvinchik_chat_id
                                     and msg is not None
                                     and getattr(msg, "client", None)
                                     is self._auto_engine.client
@@ -913,10 +918,12 @@ class DvinchikCollector:
                                     # но Leo всё равно ждёт реакцию на показанную
                                     # анкету. Чтобы лента не замирала — 👎.
                                     try:
-                                        if await self._db.has_auto_action(profile.id):
+                                        if await self._db.has_auto_action_for_message(
+                                            chat_id, task.message_id
+                                        ):
                                             logger.info(
-                                                f"AutoAction: profile={profile.id} "
-                                                "уже есть в журнале"
+                                                f"AutoAction: карточка {task.message_id} "
+                                                "уже в журнале"
                                             )
                                         else:
                                             action = (
@@ -931,6 +938,7 @@ class DvinchikCollector:
                                                         action,
                                                         filter_result.decision.value,
                                                         chat_id,
+                                                        task.message_id,
                                                     )
                                                 except Exception as e:
                                                     logger.error(

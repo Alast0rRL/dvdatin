@@ -126,7 +126,7 @@ Telegram NewMessage (входящее)
 | `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
 | `ai_scores` | Скоры CLIP/LLM/combined + рекомендация скоринга |
 | `ai_decisions` | Итоговые решения Decision Engine (LIKE/REVIEW/DISLIKE) |
-| `auto_actions_log` | Успешно отправленные Telegram LIKE/DISLIKE; один action на профиль |
+| `auto_actions_log` | Успешно отправленные Telegram LIKE/DISLIKE; запись на карточку (по `telegram_message_id`) |
 | `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
 
 Связи (FK ON DELETE CASCADE): `profiles ← profile_messages / filter_results / ai_scores /
@@ -187,8 +187,12 @@ ai_decisions ← human_decisions`.
   (`task.msg.client is auto_engine.client`).
 - **Журнал и идемпотентность:** действие пишется в `auto_actions_log` только после
   успешной отправки; запись и статус профиля `LIKED`/`DISLIKED` фиксируются атомарно.
-  Уже записанный профиль, а также повтор после ошибки записи в рамках процесса, не
-  отправляет кнопку повторно.
+  Идемпотентность — **по конкретной карточке (`telegram_message_id`)**: каждая показанная
+  анкета получает реакцию ровно один раз, а повторная карточка той же личности (новый
+  `telegram_message_id` в ленте) — снова. Так лента не замирает, даже когда Leo повторяет
+  человека. `auto_actions_log` хранит `telegram_message_id` (partial unique index по
+  `chat_id`+`telegram_message_id`); `UNIQUE(profile_id)` убран — на один профиль может
+  быть несколько записей по разным карточкам.
 - **Автозапуск потока (безопасный):** `collector.start_auto_stream()` вызывается
   фоном при старте (`main.py`). Он сам гейтится по `enabled`.
 - **Обработка уже показанной анкеты:** перед запуском коллектор сканирует

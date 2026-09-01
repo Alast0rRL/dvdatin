@@ -23,14 +23,39 @@ class TestAutoActionAudit:
             await db.connect()
             try:
                 profile = await ProfileService(db).create_profile(self._profile())
-                await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895)
+                await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895, 100)
                 assert await db.has_auto_action(profile.id) is True
+                assert await db.has_auto_action_for_message(1234060895, 100) is True
+                assert await db.has_auto_action_for_message(1234060895, 200) is False
                 row = await db.get_profile_by_id(profile.id)
                 assert row["status"] == "DISLIKED"
                 cursor = await db._connection.execute(
                     "SELECT COUNT(*) FROM auto_actions_log WHERE profile_id = ?", (profile.id,)
                 )
                 assert (await cursor.fetchone())[0] == 1
+            finally:
+                await db.close()
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_repeat_show_of_same_profile_gets_another_action(self, tmp_path) -> None:
+        """Повторная карточка той же личности (новый telegram_message_id) —
+        получает новую реакцию: идемпотентность по карточке, а не по имени."""
+        async def run() -> None:
+            db = Database(tmp_path / "repeat.db")
+            await db.connect()
+            try:
+                profile = await ProfileService(db).create_profile(self._profile())
+                # Первая карточка 100.
+                await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895, 100)
+                assert await db.has_auto_action_for_message(1234060895, 100) is True
+                # Повторная карточка 200 той же личности — НЕ считается обработанной.
+                assert await db.has_auto_action_for_message(1234060895, 200) is False
+                await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895, 200)
+                assert await db.has_auto_action_for_message(1234060895, 200) is True
+                cursor = await db._connection.execute(
+                    "SELECT COUNT(*) FROM auto_actions_log WHERE profile_id = ?", (profile.id,)
+                )
+                assert (await cursor.fetchone())[0] == 2
             finally:
                 await db.close()
         asyncio.get_event_loop().run_until_complete(run())
@@ -72,7 +97,8 @@ class TestAutoActionAudit:
             try:
                 cursor = await db._connection.execute("PRAGMA table_info(auto_actions_log)")
                 assert {row[1] for row in await cursor.fetchall()} == {
-                    "id", "profile_id", "action", "decision", "chat_id", "sent_at"
+                    "id", "profile_id", "action", "decision", "chat_id", "sent_at",
+                    "telegram_message_id",
                 }
             finally:
                 await db.close()

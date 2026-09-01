@@ -134,8 +134,8 @@ CREATE TABLE IF NOT EXISTS auto_actions_log (
     decision TEXT NOT NULL,
     chat_id INTEGER NOT NULL,
     sent_at TEXT NOT NULL,
-    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
-    UNIQUE(profile_id)
+    telegram_message_id INTEGER,
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_aal_sent_at ON auto_actions_log(sent_at);
@@ -212,7 +212,14 @@ class Database:
         await self._ensure_auto_actions_log()
 
     async def _ensure_auto_actions_log(self) -> None:
-        """Добавляет журнал успешных авто-действий для старых БД."""
+        """Добавляет журнал успешных авто-действий для старых БД.
+
+        Идемпотентность теперь по конкретной карточке (telegram_message_id):
+        каждая показанная анкета получает реакцию ровно один раз, а повторная
+        карточка той же личности (новый telegram_message_id) — снова. Поэтому
+        UNIQUE(profile_id) убран; на один профиль может быть несколько записей
+        (по разным карточкам ленты).
+        """
         await self._connection.execute(
             """CREATE TABLE IF NOT EXISTS auto_actions_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,13 +228,70 @@ class Database:
                 decision TEXT NOT NULL,
                 chat_id INTEGER NOT NULL,
                 sent_at TEXT NOT NULL,
-                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
-                UNIQUE(profile_id)
+                telegram_message_id INTEGER,
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
             )"""
         )
-        await self._connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_aal_sent_at ON auto_actions_log(sent_at)"
+        # Миграция существующих БД (старая схема с UNIQUE(profile_id)
+        # и без telegram_message_id): пересоздаём таблицу, сохраняя записи.
+        cols = await self._connection.execute(
+            "PRAGMA table_info(auto_actions_log)"
         )
+        names = {row[1] for row in await cols.fetchall()}
+        if "telegram_message_id" not in names:
+            # Старая схема (UNIQUE(profile_id), без telegram_message_id):
+            # пересоздаём с правильной схемой, перенося записи. SQLite не
+            # поддерживает DROP CONSTRAINT, поэтому полная пересборка.
+            await self._connection.execute(
+                """ALTER TABLE auto_actions_log RENAME TO auto_actions_log_old"""
+            )
+            await self._connection.execute(
+                """CREATE TABLE auto_actions_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    sent_at TEXT NOT NULL,
+                    telegram_message_id INTEGER,
+                    FOREIGN KEY (profile_id) REFERENCES profiles(id)
+                    ON DELETE CASCADE
+                )"""
+            )
+            await self._connection.execute(
+                """INSERT INTO auto_actions_log
+                (id, profile_id, action, decision, chat_id, sent_at,
+                 telegram_message_id)
+                SELECT id, profile_id, action, decision, chat_id, sent_at, NULL
+                FROM auto_actions_log_old"""
+            )
+            await self._connection.execute(
+                "DROP TABLE auto_actions_log_old"
+            )
+            await self._connection.commit()
+            # Свежий индекс по времени после пересоздания.
+            try:
+                await self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_aal_sent_at "
+                    "ON auto_actions_log(sent_at)"
+                )
+                await self._connection.commit()
+            except Exception as e:
+                logger.warning(f"index aal_sent_at: {e}")
+        # Idempotency по конкретной карточке: одна реакция на telegram_message_id.
+        # Partial index (WHERE IS NOT NULL) не трогает старые записи (NULL).
+        try:
+            await self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_aal_telegram "
+                "ON auto_actions_log(chat_id, telegram_message_id) "
+                "WHERE telegram_message_id IS NOT NULL"
+            )
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_aal_sent_at ON auto_actions_log(sent_at)"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            logger.warning(f"Не удалось создать индекс авто-журнала: {e}")
 
     async def _ensure_raw_unique_index(self) -> None:
         """Создаёт UNIQUE-индекс на (chat_id, telegram_message_id).
@@ -557,8 +621,29 @@ class Database:
         )
         return await cursor.fetchone() is not None
 
+    async def has_auto_action_for_message(
+        self, chat_id: int, telegram_message_id: int,
+    ) -> bool:
+        """Идемпотентность по конкретной карточке (telegram_message_id).
+
+        Каждая показанная анкета получает реакцию ровно один раз. Повторная
+        карточка той же личности (новый telegram_message_id) считается новой —
+        реакция отправляется снова.
+        """
+        cursor = await self._connection.execute(
+            "SELECT 1 FROM auto_actions_log "
+            "WHERE chat_id = ? AND telegram_message_id = ?",
+            (chat_id, telegram_message_id),
+        )
+        return await cursor.fetchone() is not None
+
     async def record_auto_action(
-        self, profile_id: int, action: str, decision: str, chat_id: int,
+        self,
+        profile_id: int,
+        action: str,
+        decision: str,
+        chat_id: int,
+        telegram_message_id: int | None = None,
     ) -> None:
         """Атомарно фиксирует успешное действие и итоговый статус анкеты."""
         sent_at = datetime.now(timezone.utc).isoformat()
@@ -566,9 +651,9 @@ class Database:
         try:
             await self._connection.execute(
                 """INSERT INTO auto_actions_log
-                (profile_id, action, decision, chat_id, sent_at)
-                VALUES (?, ?, ?, ?, ?)""",
-                (profile_id, action, decision, chat_id, sent_at),
+                (profile_id, action, decision, chat_id, sent_at, telegram_message_id)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (profile_id, action, decision, chat_id, sent_at, telegram_message_id),
             )
             await self._connection.execute(
                 "UPDATE profiles SET status = ? WHERE id = ?",

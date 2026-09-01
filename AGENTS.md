@@ -91,6 +91,7 @@ Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionServ
 - `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
 - `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape — не отправляется стартом).
 - Active mode: `collector.start_auto_stream()` при старте (SEMI_AUTO) обрабатывает уже показанную активную анкету (без повторного `✨🔍`), а если активной нет — нажимает кнопку «🚀 Смотреть анкеты» (`VIEW_BUTTON_FRAGMENT`, идемпотентно через `AutoActionEngine.send_text`), продолжая ленту Leo.
+- Идемпотентность авто-действий — по **конкретной карточке** (`telegram_message_id`), НЕ по `profile_id`/имени: `has_auto_action_for_message(chat_id, tm_id)` / `record_auto_action(..., tm_id)`. Повторная карточка той же личности (новый `telegram_message_id` в ленте) получает реакцию снова, чтобы лента не замирала при повторах Leo. `auto_actions_log` хранит `telegram_message_id` (partial unique index `chat_id`+`telegram_message_id` WHERE `telegram_message_id IS NOT NULL`), `UNIQUE(profile_id)` убран; `record_auto_action` по-прежнему обновляет статус профиля `LIKED`/`DISLIKED`. Миграция старой схемы — полное пересоздание таблицы с переносом записей (SQLite не умеет DROP CONSTRAINT).
 
 ## Control Panel (Stage 7.5)
 

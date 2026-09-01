@@ -42,6 +42,7 @@ def make_db_mock() -> Database:
     db = AsyncMock(spec=Database)
     db.save_raw_message = AsyncMock(return_value=1)
     db.has_auto_action = AsyncMock(return_value=False)
+    db.has_auto_action_for_message = AsyncMock(return_value=False)
     db.record_auto_action = AsyncMock()
     return db
 
@@ -1998,7 +1999,7 @@ class TestCollectorAutoActions:
         args, _ = auto_client.send_message.call_args
         assert args[1] == "\u2764\ufe0f"  # ❤️
         collector._db.record_auto_action.assert_awaited_once_with(
-            1, "LIKE", "LIKE", 1234060895
+            1, "LIKE", "LIKE", 1234060895, 900
         )
 
     def test_logged_profile_is_not_sent_twice(self) -> None:
@@ -2012,7 +2013,9 @@ class TestCollectorAutoActions:
             self._make_config(), self._make_decision(AIDecision.DISLIKE),
             auto_client, other_client,
         )
-        collector._db.has_auto_action = AsyncMock(side_effect=[False, True])
+        collector._db.has_auto_action_for_message = AsyncMock(
+            side_effect=[False, True]
+        )
         task = RawTask(
             chat_id=1234060895, message_id=903, sender_id=1234060895,
             sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
@@ -2158,7 +2161,7 @@ class TestCollectorAutoActions:
         args, _ = auto_client.send_message.call_args
         assert args[1] == "\U0001F44E"  # 👎
         collector._db.record_auto_action.assert_awaited_once_with(
-            7, "DISLIKE", "REJECT", 1234060895
+            7, "DISLIKE", "REJECT", 1234060895, 910
         )
 
     def test_filter_review_sends_dislike_to_keep_stream_moving(self) -> None:
@@ -2184,7 +2187,7 @@ class TestCollectorAutoActions:
         args, _ = auto_client.send_message.call_args
         assert args[1] == "\U0001F44E"  # 👎
         collector._db.record_auto_action.assert_awaited_once_with(
-            7, "DISLIKE", "REVIEW", 1234060895
+            7, "DISLIKE", "REVIEW", 1234060895, 911
         )
 
     def test_filter_reject_no_action_on_other_account(self) -> None:
