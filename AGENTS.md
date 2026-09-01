@@ -89,8 +89,8 @@ Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionServ
 - `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW/None→`SKIP`, disabled→`GATE`.
 - Sent only when the profile arrived on the auto account (`task.msg.client is auto_engine.client`).
 - `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
-- `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape).
-- Active mode: `collector.start_auto_stream()` sends `start_command` once at startup (SEMI_AUTO).
+- `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape — не отправляется стартом).
+- Active mode: `collector.start_auto_stream()` при старте (SEMI_AUTO) обрабатывает уже показанную активную анкету (без повторного `✨🔍`), а если активной нет — нажимает кнопку «🚀 Смотреть анкеты» (`VIEW_BUTTON_FRAGMENT`, идемпотентно через `AutoActionEngine.send_text`), продолжая ленту Leo.
 
 ## Control Panel (Stage 7.5)
 

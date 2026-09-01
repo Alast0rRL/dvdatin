@@ -53,6 +53,11 @@ _MEDIA_TYPE_MAP: dict[type, str] = {
     MessageMediaPoll: "poll",
 }
 
+#: Кнопка Дайвинчика, которой продолжают показ анкет после исчерпания ленты:
+#: Leo присылает промо «🚀 Смотреть анкеты», нажатие = отправка текста кнопки.
+#: Парсим по частичному вхождению, т.к. эмодзи могут различаться.
+VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
+
 
 def _detect_media_type(msg: object) -> str:
     """Определяет тип media через MessageMedia объект."""
@@ -228,16 +233,21 @@ class DvinchikCollector:
             await self._worker.stop()
 
     async def start_auto_stream(self) -> bool:
-        """Обрабатывает уже показанную активную анкету, если она есть.
+        """Обрабатывает активную анкету или продолжает ленту Leo.
 
         ✨🔍 НЕ отправляется: команда не приводит новые анкеты, а показанная
         (обычный текст "Имя, возраст, город") уже ждёт только лайк/дизлайк.
-        Если активной анкеты нет — ничего не делаем (возвращаем False).
+        1) Есть активная анкета → обрабатываем (лайк/дизлайк).
+        2) Нет активной анкеты, но Leo показал «Смотреть анкеты» → нажимаем
+           кнопку, чтобы получить следующую партию.
+        3) Ничего из этого → False.
         """
         if not self._auto_engine.enabled:
             return False
         try:
-            return await self._process_active_profile_if_any()
+            if await self._process_active_profile_if_any():
+                return True
+            return await self._press_view_button_if_needed()
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
             return False
@@ -306,6 +316,65 @@ class DvinchikCollector:
             return True
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
+            return False
+
+    async def _press_view_button_if_needed(self) -> bool:
+        """Нажимает кнопку «Смотреть анкеты», если Leo её показал.
+
+        При исчерпании ленты Leo присылает промо-сообщение с reply-кнопкой
+        «🚀 Смотреть анкеты» — нажатие (отправка текста кнопки) продолжает
+        поток. Работает только если активной анкеты нет (иначе кнопка не
+        относится к продолжению). Сканируем последние сообщения чата на
+        авто-аккаунте; если найдено сообщение с такой кнопкой и после него
+        ещё не отправлен текст кнопки (идемпотентность) — отправляем.
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            card_msg = None
+            button_text = ""
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                texts = self._extract_button_texts(msg)
+                hit = next(
+                    (t for t in texts if VIEW_BUTTON_FRAGMENT in t), None
+                )
+                if hit:
+                    card_msg = msg
+                    button_text = hit
+                    break
+
+            if card_msg is None or not button_text:
+                return False
+
+            # Идемпотентность: если после карточки уже отправлен текст кнопки,
+            # не нажимаем повторно (тот же поток уже продолжен).
+            sent_at = card_msg.id
+            already_sent = False
+            async for msg in client.iter_messages(
+                self._dvinchik_chat_id, limit=15
+            ):
+                if msg.id <= sent_at:
+                    break
+                if (
+                    getattr(msg, "out", False)
+                    and (msg.text or "").strip() == button_text
+                ):
+                    already_sent = True
+                    break
+
+            if already_sent:
+                logger.info("AutoAction: кнопка «Смотреть анкеты» уже нажата")
+                return False
+
+            logger.info(
+                f"AutoAction: найдена кнопка «Смотреть анкеты» (msg={card_msg.id}) — "
+                "продолжаю ленту"
+            )
+            await self._auto_engine.send_text(button_text)
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия кнопки «Смотреть анкеты»: {e}")
             return False
 
     def _has_action_buttons(self, msg: object) -> bool:
@@ -864,6 +933,21 @@ class DvinchikCollector:
                 )
                 if self._stats:
                     self._stats.record_unknown()
+                # Stage 7: Leo при исчерпании ленты шлёт промо с кнопкой
+                # «Смотреть анкеты». Если это сообщение в чате Дайвинчика
+                # на авто-аккаунте — нажимаем кнопку (продолжаем ленту).
+                if (
+                    self._auto_engine.enabled
+                    and chat_id == self._dvinchik_chat_id
+                    and msg is not None
+                    and getattr(msg, "client", None) is self._auto_engine.client
+                ):
+                    try:
+                        texts = self._extract_button_texts(msg)
+                        if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
+                            await self._press_view_button_if_needed()
+                    except Exception as e:
+                        logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
 
             elif msg_type == MessageType.SERVICE:
                 if self._stats:

@@ -134,6 +134,19 @@ class AutoActionEngine:
         logger.info(f"AutoAction: запущен поток анкет ({self._config.start_command!r})")
         return True
 
+    async def send_text(self, text: str) -> bool:
+        """Отправляет произвольный текст в чат (нажатие reply-кнопки Leo).
+
+        Используется для кнопки «🚀 Смотреть анкеты»: Leo при исчерпании ленты
+        шлёт промо-сообщение с кнопкой, нажатие продолжает поток. Нажатие
+        reply-кнопки = отправка её текста обычным сообщением.
+        """
+        if not self.enabled:
+            return False
+        await self._send(text)
+        logger.info(f"AutoAction: нажата кнопка {text!r} на chat={self._chat_id}")
+        return True
+
     async def _send(self, text: str) -> None:
         """Отправляет текст в чат от имени сконфигурированного клиента."""
         if self._client is None:

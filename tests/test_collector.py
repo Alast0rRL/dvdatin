@@ -2188,6 +2188,57 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_start_stream_presses_view_button_when_promo(self) -> None:
+        """Активной анкеты нет, Leo прислал промо «Смотреть анкеты» — жмём кнопку."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        # Без active-профиля _process_active_profile_if_any вернёт False → кнопка.
+        button_text = "\U0001F680 Смотреть анкеты"  # 🚀 Смотреть анкеты
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: промо с кнопкой → старый 👎 → старая анкета.
+            yield self._iter_msg(
+                auto_client, 705, "твоя анкета может больше", buttons=[button_text]
+            )
+            yield self._iter_msg(auto_client, 704, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 703, "Margo, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, button_text)
+
+    def test_start_stream_no_button_press_when_already_sent(self) -> None:
+        """Кнопка уже нажата (после промо есть исходящий текст кнопки) — повторно нет."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        button_text = "\U0001F680 Смотреть анкеты"  # 🚀 Смотреть анкеты
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: уже отправленный текст кнопки (out) → промо с кнопкой.
+            yield self._iter_msg(auto_client, 706, button_text, out=True)
+            yield self._iter_msg(
+                auto_client, 705, "твоя анкета может больше", buttons=[button_text]
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
 
 class TestCollectorSetMode:
     """Динамическое переключение режима коллектора (Stage 7.5)."""
