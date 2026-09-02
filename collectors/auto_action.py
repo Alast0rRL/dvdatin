@@ -54,11 +54,19 @@ class AutoActionEngine:
         config: AutoActionsConfig,
         mode: Mode,
         chat_id: int,
+        notify_client: TelegramClient | None = None,
     ) -> None:
         self._client = client
         self._config = config
         self._mode = mode
         self._chat_id = chat_id
+        self._notify_chat_id = config.notify_chat_id
+        # Клиент «другого» аккаунта для авто-уведомлений (0 в конфиге): движок
+        # сам определяет его user_id и шлёт уведомления туда. Так пересылка
+        # идёт с Бармалея на Меланхолика и обратно, независимо от того, какой
+        # аккаунт — авто.
+        self._notify_client = notify_client
+        self._notify_user_id: int | None = None
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
@@ -95,7 +103,12 @@ class AutoActionEngine:
         return self._mode.value
 
     async def maybe_act(
-        self, decision: AIDecision | None, profile_id: int | None = None,
+        self,
+        decision: AIDecision | None,
+        profile_id: int | None = None,
+        *,
+        message_id: int | None = None,
+        reasons: list[str] | None = None,
     ) -> str:
         """Выполняет действие по решению (LIKE/DISLIKE), если он enabled.
 
@@ -129,6 +142,7 @@ class AutoActionEngine:
                 self._processed_profile_ids.add(profile_id)
         logger.info(f"AutoAction: отправил {text!r} ({action}) на chat={self._chat_id}")
         self._print_action(action, text)
+        await self._notify(action, message_id=message_id, reasons=reasons)
         return action
 
     async def start_stream(self) -> bool:
@@ -200,3 +214,101 @@ class AutoActionEngine:
             title=f"[bold {color}]AUTO ACTION[/]",
             border_style=color,
         ))
+
+    async def _notify(
+        self,
+        action: str,
+        message_id: int | None = None,
+        reasons: list[str] | None = None,
+    ) -> None:
+        """Пересылает карточку анкеты владельцу с объяснением причины.
+
+        Получатель: если ``notify_chat_id > 0`` — явный user_id; если 0 —
+        авто-режим: user_id «другого» аккаунта (``notify_client``), чтобы
+        уведомления шли с Бармалея на Меланхолика и обратно.
+        Ошибки пересылки не ломают основной пайплайн.
+        """
+        if self._client is None or message_id is None:
+            return
+        target = await self._resolve_notify_target()
+        if target is None:
+            return
+        try:
+            await self._client.forward_messages(
+                target, message_id, from_peer=self._chat_id,
+            )
+            text = self._format_reason(action, reasons)
+            if text:
+                await self._client.send_message(target, text)
+            logger.info(
+                f"AutoAction: уведомление отправлено в chat={target}"
+            )
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка уведомления: {e}")
+
+    async def _resolve_notify_target(self) -> int | None:
+        """Определяет chat_id получателя уведомления.
+
+        Приоритет:
+        1. ``notify_chat_id > 0`` — явный user_id из конфига.
+        2. ``notify_client`` — другой аккаунт: берём его ``get_me().id``
+           (кешируем, чтобы не дёргать сеть на каждое действие).
+        """
+        if self._notify_chat_id:
+            return self._notify_chat_id
+        if self._notify_user_id is not None:
+            return self._notify_user_id
+        if self._notify_client is None:
+            return None
+        try:
+            me = await self._notify_client.get_me()
+            if me is not None and getattr(me, "id", None):
+                self._notify_user_id = me.id
+                return self._notify_user_id
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось определить user_id получателя: {e}")
+        return None
+
+    @staticmethod
+    def _format_reason(action: str, reasons: list[str] | None) -> str:
+        """Формирует человеко-читаемое объяснение причины лайка/дизлайка.
+
+        Коды решений (LIKE_THRESHOLD, BELOW_THRESHOLDS и т.д.) пропускаются —
+        пользователю показываются только смысловые причины: результаты работы
+        фильтра (город, возраст) и AI-анализа (LLM-причины на русском).
+        """
+        if not reasons:
+            return ""
+
+        _FILTER_LABELS: dict[str, str] = {
+            "AGE_OUT_OF_RANGE": "Возраст не подходит",
+            "CITY_OUT_OF_RANGE": "Город не в списке",
+            "AGE_UNKNOWN": "Возраст неизвестен",
+            "CITY_UNKNOWN": "Город неизвестен",
+            "INSUFFICIENT_DATA": "Недостаточно данных",
+        }
+
+        _DECISION_CODES: set[str] = {
+            "LIKE_THRESHOLD", "LOW_CONFIDENCE", "REVIEW_THRESHOLD",
+            "BELOW_THRESHOLDS", "FILTER_REJECTED", "FILTER_REVIEW",
+            "USER_SKIP", "USER_LIKE", "AI_UNAVAILABLE",
+        }
+
+        label = "❤️ Лайк" if action == "LIKE" else "👎 Дизлайк"
+        lines = [label]
+
+        for reason in reasons:
+            if reason in _DECISION_CODES:
+                continue
+            if reason.startswith("USER_SKIP:"):
+                tag = reason.split(":", 1)[1]
+                lines.append(f"• Ваша стоп-метка: {tag}")
+            elif reason.startswith("USER_LIKE:"):
+                tag = reason.split(":", 1)[1]
+                lines.append(f"• Ваша метка интереса: {tag}")
+            elif reason in _FILTER_LABELS:
+                lines.append(f"• {_FILTER_LABELS[reason]}")
+            else:
+                lines.append(f"• {reason}")
+
+        return "\n".join(lines)

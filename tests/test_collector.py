@@ -1995,13 +1995,14 @@ class TestCollectorAutoActions:
         )
         asyncio.get_event_loop().run_until_complete(collector._process_message(task))
 
-        auto_client.send_message.assert_called_once()
-        args, _ = auto_client.send_message.call_args
+        # Одно — сама реакция (❤️), затем пересылка карточки Меланхолику.
+        assert auto_client.send_message.call_count >= 1
+        args, _ = auto_client.send_message.call_args_list[0]
         assert args[1] == "\u2764\ufe0f"  # ❤️
+        auto_client.forward_messages.assert_awaited_once()
         collector._db.record_auto_action.assert_awaited_once_with(
             1, "LIKE", "LIKE", 1234060895, 900
         )
-
     def test_logged_profile_is_not_sent_twice(self) -> None:
         from models.decision import AIDecision
 
@@ -2026,7 +2027,14 @@ class TestCollectorAutoActions:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(collector._process_message(task))
         loop.run_until_complete(collector._process_message(task))
-        auto_client.send_message.assert_called_once()
+        # Повторная карточка уже в журнале → действие НЕ переотправляется:
+        # одно действие (❤️/👎) + одна пересылка Меланхолику.
+        action_calls = [
+            c for c in auto_client.send_message.call_args_list
+            if c.args[1] in ("\u2764\ufe0f", "\U0001F44E")
+        ]
+        assert len(action_calls) == 1
+        auto_client.forward_messages.assert_awaited_once()
 
     def test_log_failure_does_not_resend_action(self) -> None:
         from models.decision import AIDecision
@@ -2050,7 +2058,14 @@ class TestCollectorAutoActions:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(collector._process_message(task))
         loop.run_until_complete(collector._process_message(task))
-        auto_client.send_message.assert_called_once()
+        # Действие отправлено один раз (второй проход пропускает действие,
+        # но уведомление-пересылка остаётся в логе).
+        auto_client.forward_messages.assert_awaited_once()
+        action_calls = [
+            c for c in auto_client.send_message.call_args_list
+            if c.args[1] in ("\u2764\ufe0f", "\U0001F44E")
+        ]
+        assert len(action_calls) == 1
 
     def test_no_action_when_message_on_other_account(self) -> None:
         from models.decision import AIDecision
@@ -2269,10 +2284,12 @@ class TestCollectorAutoActions:
             collector.start_auto_stream()
         )
         assert ok is True
-        # Активная анкета обработана → отправился 👎, а НЕ повторный ✨🔍.
-        auto_client.send_message.assert_called_once_with(
-            1234060895, "\U0001F44E"  # 👎
+        # Активная анкета обработана → отправился 👎 (первый вызов), а НЕ
+        # повторный ✨🔍. Второй вызов — пояснение при пересылке Меланхолику.
+        assert auto_client.send_message.call_args_list[0] == (
+            (1234060895, "\U0001F44E"),  # 👎
         )
+        auto_client.forward_messages.assert_awaited_once()
 
     def test_start_stream_no_active_profile_sends_nothing(self) -> None:
         """Активной анкеты нет — ✨🔍 не отправляется, ничего не делаем."""
@@ -2344,6 +2361,63 @@ class TestCollectorAutoActions:
             yield self._iter_msg(auto_client, 706, button_text, out=True)
             yield self._iter_msg(
                 auto_client, 705, "твоя анкета может больше", buttons=[button_text]
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_presses_right_button_on_captcha(self) -> None:
+        """Активной анкеты нет, но Leo показал капчу/проверку — жмём ПОСЛЕДНЮЮ кнопку."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        # Капча/сделка: кнопки «Меню»/«Сообщение …»/«Готово»/«Возможно позже»
+        # → нажимаем последнюю («Возможно позже»).
+        last_button = "Возможно позже"
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: капча с 4 кнопками → старый 👎 → старая анкета.
+            yield self._iter_msg(
+                auto_client, 710, "Бармалей, предлагаю тебе сделку",
+                buttons=["Меню", "Сообщение ...", "Готово", last_button],
+            )
+            yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 708, "Margo, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(
+            1234060895, last_button
+        )
+
+    def test_start_stream_no_captcha_press_when_already_sent(self) -> None:
+        """Последняя кнопка капчи уже нажата (после неё исходящий текст) — повторно нет."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        last_button = "Возможно позже"
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: уже нажатая последняя кнопка (out) → капча.
+            yield self._iter_msg(auto_client, 712, last_button, out=True)
+            yield self._iter_msg(
+                auto_client, 711, "Подтвердите, что вы человек",
+                buttons=["Готово", last_button],
             )
 
         auto_client.iter_messages = iter_messages

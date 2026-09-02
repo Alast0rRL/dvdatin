@@ -32,6 +32,7 @@ def make_client() -> AsyncMock:
     client = AsyncMock()
     client.is_connected.return_value = True
     client.send_message = AsyncMock(return_value=MagicMock())
+    client.forward_messages = AsyncMock(return_value=MagicMock())
     return client
 
 
@@ -39,12 +40,15 @@ def make_engine(
     mode: Mode = Mode.SEMI_AUTO,
     client: AsyncMock | None = None,
     config: AutoActionsConfig | None = None,
+    chat_id: int = 1234060895,
+    notify_client: AsyncMock | None = None,
 ) -> AutoActionEngine:
     return AutoActionEngine(
         client=client if client is not None else make_client(),
         config=config if config is not None else make_auto_config(),
         mode=mode,
-        chat_id=1234060895,
+        chat_id=chat_id,
+        notify_client=notify_client,
     )
 
 
@@ -163,6 +167,7 @@ class TestAutoActionConfig:
         assert c.enabled is False
         assert c.account_session == ""
         assert c.interval_sec == 10.0
+        assert c.notify_chat_id == 0
 
     def test_interval_positive(self) -> None:
         with pytest.raises(Exception):
@@ -191,3 +196,204 @@ class TestAutoActionRuntimeMode:
         e.mode = Mode.SEMI_AUTO
         assert e.mode == Mode.SEMI_AUTO
         assert e.mode_label == "SEMI_AUTO"
+
+
+class TestAutoActionNotify:
+    """Уведомления владельцу о лайке/дизлайке.
+
+    Два режима: явный ``notify_chat_id > 0`` и авто-режим (0 + notify_client),
+    когда уведомление уходит на «другой» аккаунт (Бармалей↔Меланхолик).
+    """
+
+    def _notify_engine(self, notify_chat_id: int = 8525808108) -> tuple[AsyncMock, AutoActionEngine]:
+        client = make_client()
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=notify_chat_id),
+        )
+        return client, e
+
+    def test_no_notify_when_disabled(self) -> None:
+        client, e = self._notify_engine(notify_chat_id=0)
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=900)
+        )
+        client.forward_messages.assert_not_called()
+        # Основное действие всё равно отправлено.
+        client.send_message.assert_called_once()
+        args, _ = client.send_message.call_args
+        assert args[1] == LIKE_TEXT
+
+    def test_no_notify_without_message_id(self) -> None:
+        client, e = self._notify_engine()
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1)
+        )
+        client.forward_messages.assert_not_called()
+
+    def test_like_forwards_and_explains(self) -> None:
+        client, e = self._notify_engine()
+        reasons = ["Фотографии выше среднего качества", "Проанализировано 2 фото"]
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=1,
+                message_id=900, reasons=reasons,
+            )
+        )
+        assert result == "LIKE"
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 900, from_peer=1234060895
+        )
+        # Одно сообщение — само действие (❤️), второе — объяснение.
+        assert client.send_message.call_count == 2
+        explain_call = client.send_message.call_args_list[1]
+        text = explain_call.args[1]
+        assert text.startswith("❤️ Лайк")
+        assert "Фотографии выше среднего качества" in text
+        assert "Проанализировано 2 фото" in text
+
+    def test_dislike_explains(self) -> None:
+        client, e = self._notify_engine()
+        reasons = ["CITY_OUT_OF_RANGE", "Возраст не подходит"]
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.DISLIKE, profile_id=1,
+                message_id=901, reasons=reasons,
+            )
+        )
+        assert result == "DISLIKE"
+        explain_call = client.send_message.call_args_list[1]
+        text = explain_call.args[1]
+        assert text.startswith("👎 Дизлайк")
+        assert "Город не в списке" in text
+        assert "Возраст не подходит" in text
+
+    def test_decision_codes_are_filtered_out(self) -> None:
+        client, e = self._notify_engine()
+        reasons = ["LIKE_THRESHOLD", "BELOW_THRESHOLDS", "Фото выше среднего"]
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=1,
+                message_id=902, reasons=reasons,
+            )
+        )
+        text = client.send_message.call_args_list[1].args[1]
+        assert "LIKE_THRESHOLD" not in text
+        assert "BELOW_THRESHOLDS" not in text
+        assert "Фото выше среднего" in text
+
+    def test_user_skip_label_humanized(self) -> None:
+        client, e = self._notify_engine()
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.DISLIKE, profile_id=1,
+                message_id=903, reasons=["USER_SKIP:курит"],
+            )
+        )
+        text = client.send_message.call_args_list[1].args[1]
+        assert "Ваша стоп-метка: курит" in text
+
+    def test_notify_error_does_not_break_action(self) -> None:
+        client, e = self._notify_engine()
+        client.forward_messages = AsyncMock(side_effect=RuntimeError("network"))
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=1,
+                message_id=904, reasons=["ok"],
+            )
+        )
+        # Действие не должно падать из-за ошибки уведомления.
+        assert result == "LIKE"
+
+    def test_empty_reasons_skips_explanation(self) -> None:
+        client, e = self._notify_engine()
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=905)
+        )
+        # Пересылка есть, но пояснение не отправляется (нет причин).
+        client.forward_messages.assert_awaited_once()
+        assert client.send_message.call_count == 1
+
+    def _notify_client_with_me(self, user_id: int = 1753676469) -> AsyncMock:
+        nc = make_client()
+        me = MagicMock()
+        me.id = user_id
+        nc.get_me = AsyncMock(return_value=me)
+        return nc
+
+    def test_auto_notify_goes_to_other_account(self) -> None:
+        """notify_chat_id=0 + notify_client → уведомление на другой аккаунт."""
+        client = make_client()
+        notify_client = self._notify_client_with_me(user_id=1753676469)
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=0),
+            notify_client=notify_client,
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=1,
+                message_id=910, reasons=["ok"],
+            )
+        )
+        assert result == "LIKE"
+        notify_client.get_me.assert_awaited_once()
+        client.forward_messages.assert_awaited_once_with(
+            1753676469, 910, from_peer=1234060895
+        )
+        # Второе сообщение — объяснение, отправлено на Меланхолика.
+        assert client.send_message.call_count == 2
+        explain_call = client.send_message.call_args_list[1]
+        assert explain_call.args[0] == 1753676469
+
+    def test_auto_notify_me_is_cached(self) -> None:
+        """user_id другого аккаунта кешируется (get_me не дёргается повторно)."""
+        client = make_client()
+        notify_client = self._notify_client_with_me(user_id=1753676469)
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=0, interval_sec=0.0),
+            notify_client=notify_client,
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=911, reasons=["a"])
+        )
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=2, message_id=912, reasons=["b"])
+        )
+        # get_me вызывается один раз (кеш).
+        assert notify_client.get_me.await_count == 1
+
+    def test_auto_notify_skipped_without_notify_client(self) -> None:
+        """notify_chat_id=0 и нет notify_client → уведомление пропускается."""
+        client = make_client()
+        e = make_engine(client=client, config=make_auto_config(notify_chat_id=0))
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=913)
+        )
+        client.forward_messages.assert_not_called()
+        # Основное действие отправлено.
+        assert client.send_message.call_count == 1
+
+
+class TestFormatReason:
+    def test_formats_filter_and_ai_reasons(self) -> None:
+        text = AutoActionEngine._format_reason(
+            "DISLIKE", ["CITY_OUT_OF_RANGE", "Фото низкого качества"],
+        )
+        assert text == "👎 Дизлайк\n• Город не в списке\n• Фото низкого качества"
+
+    def test_filters_decision_codes(self) -> None:
+        text = AutoActionEngine._format_reason("LIKE", ["LIKE_THRESHOLD"])
+        assert text == "❤️ Лайк"
+
+    def test_filters_prefix_labels(self) -> None:
+        text = AutoActionEngine._format_reason(
+            "DISLIKE", ["USER_SKIP:алкоголь"],
+        )
+        assert "• Ваша стоп-метка: алкоголь" in text
+
+    def test_returns_empty_for_none(self) -> None:
+        assert AutoActionEngine._format_reason("LIKE", None) == ""
+        assert AutoActionEngine._format_reason("LIKE", []) == ""

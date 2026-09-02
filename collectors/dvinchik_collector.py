@@ -59,6 +59,12 @@ _MEDIA_TYPE_MAP: dict[type, str] = {
 #: Парсим по частичному вхождению, т.к. эмодзи могут различаться.
 VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 
+#: На любые "проверки"/капчи Leo (сделка, подписка, подтверждение и т.п.)
+#: авто-аккаунт всегда нажимает ПОСЛЕДНЮЮ reply-кнопку — это сбрасывает
+#: диалог и продолжает ленту (в конкретном случае «Возможно позже»).
+#: Срабатывает на UNKNOWN-сообщении с >= 2 reply-кнопками.
+CAPTCHA_MIN_BUTTONS: int = 2
+
 
 def _detect_media_type(msg: object) -> str:
     """Определяет тип media через MessageMedia объект."""
@@ -191,17 +197,25 @@ class DvinchikCollector:
 
         Ищет индекс аккаунта с session == account_session и берёт
         соответствующий client (accounts/clients параллельны).
+        Для авто-уведомлений ищет «другой» аккаунт (session != account_session)
+        — на него пересылается карточка анкеты с причиной (Бармалей↔Меланхолик).
         """
         mode = self._config.project.mode
         auto_cfg = self._config.auto_actions
         target_session = auto_cfg.account_session
 
         client = None
+        notify_client = None
         if target_session:
             for i, acc in enumerate(self._config.telegram.accounts):
-                if acc.session == target_session and i < len(self._clients):
-                    client = self._clients[i]
+                if i >= len(self._clients):
                     break
+                if acc.session == target_session:
+                    client = self._clients[i]
+                elif notify_client is None:
+                    # Первый аккаунт, не являющийся авто-аккаунтом, — получатель
+                    # авто-уведомлений (для notify_chat_id == 0).
+                    notify_client = self._clients[i]
 
         if auto_cfg.enabled and client is None:
             logger.warning(
@@ -214,6 +228,7 @@ class DvinchikCollector:
             config=auto_cfg,
             mode=mode,
             chat_id=self._dvinchik_chat_id,
+            notify_client=notify_client,
         )
 
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
@@ -248,7 +263,9 @@ class DvinchikCollector:
         try:
             if await self._process_active_profile_if_any():
                 return True
-            return await self._press_view_button_if_needed()
+            if await self._press_view_button_if_needed():
+                return True
+            return await self._press_captcha_button()
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
             return False
@@ -376,6 +393,60 @@ class DvinchikCollector:
             return True
         except Exception as e:
             logger.error(f"AutoAction: ошибка нажатия кнопки «Смотреть анкеты»: {e}")
+            return False
+
+    async def _press_captcha_button(self) -> bool:
+        """Нажимает ПОСЛЕДНЮЮ кнопку на "проверке"/капче Leo (сбрасывает диалог).
+
+        Leo присылает сделки/подписки/подтверждения с reply-кнопками
+        («Меню»/«Сообщение …»/«Готово»/«Возможно позже» и т.п.). Чтобы не
+        зависала лента, авто-аккаунт нажимает ПРАВУЮ/ПОСЛЕДНЮЮ кнопку — это
+        сбрасывает диалог и продолжает ленту (в конкретном случае
+        «Возможно позже»). Идемпотентно: если после карточки уже отправлен
+        текст этой кнопки — не нажимаем повторно.
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            card_msg = None
+            button_text = ""
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                texts = self._extract_button_texts(msg)
+                if len(texts) >= CAPTCHA_MIN_BUTTONS:
+                    card_msg = msg
+                    button_text = texts[-1]  # правая/последняя кнопка
+                    break
+
+            if card_msg is None or not button_text:
+                return False
+
+            sent_at = card_msg.id
+            already_sent = False
+            async for msg in client.iter_messages(
+                self._dvinchik_chat_id, limit=15
+            ):
+                if msg.id <= sent_at:
+                    break
+                if (
+                    getattr(msg, "out", False)
+                    and (msg.text or "").strip() == button_text
+                ):
+                    already_sent = True
+                    break
+
+            if already_sent:
+                logger.info("AutoAction: правая кнопка капчи уже нажата")
+                return False
+
+            logger.info(
+                f"AutoAction: капча/проверка (msg={card_msg.id}) — "
+                f"нажимаю правую кнопку «{button_text}»"
+            )
+            await self._auto_engine.send_text(button_text)
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия кнопки капчи: {e}")
             return False
 
     def _has_action_buttons(self, msg: object) -> bool:
@@ -878,7 +949,9 @@ class DvinchikCollector:
                                                         )
                                                     else:
                                                         action = await self._auto_engine.maybe_act(
-                                                            decision.decision, profile.id
+                                                            decision.decision, profile.id,
+                                                            message_id=task.message_id,
+                                                            reasons=decision.reasons,
                                                         )
                                                         if action in ("LIKE", "DISLIKE"):
                                                             try:
@@ -928,7 +1001,9 @@ class DvinchikCollector:
                                         else:
                                             action = (
                                                 await self._auto_engine.maybe_act(
-                                                    AIDecision.DISLIKE, profile.id
+                                                    AIDecision.DISLIKE, profile.id,
+                                                    message_id=task.message_id,
+                                                    reasons=[r.value for r in filter_result.reasons],
                                                 )
                                             )
                                             if action in ("LIKE", "DISLIKE"):
@@ -992,6 +1067,9 @@ class DvinchikCollector:
                         texts = self._extract_button_texts(msg)
                         if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
+                        elif len(texts) >= CAPTCHA_MIN_BUTTONS:
+                            # Капча/проверка/сделка — нажимаем правую кнопку.
+                            await self._press_captcha_button()
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
 
