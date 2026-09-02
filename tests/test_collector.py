@@ -2428,6 +2428,32 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_no_button_press_on_menu_or_premium(self) -> None:
+        """Меню/Premium-промо Leo (без маркера капчи) НЕ трогаем — кнопки не жмём."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: главное меню Leo (не капча) → старый 👎 → анкета.
+            yield self._iter_msg(
+                auto_client, 720, "1. Смотреть анкеты.\n2. Моя анкета.\n3. Не искать",
+                buttons=["1 🚀", "2", "3", "4"],
+            )
+            yield self._iter_msg(auto_client, 719, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 718, "Margo, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
 class TestCollectorSetMode:
     """Динамическое переключение режима коллектора (Stage 7.5)."""
 

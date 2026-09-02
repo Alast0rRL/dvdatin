@@ -62,8 +62,25 @@ VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 #: На любые "проверки"/капчи Leo (сделка, подписка, подтверждение и т.п.)
 #: авто-аккаунт всегда нажимает ПОСЛЕДНЮЮ reply-кнопку — это сбрасывает
 #: диалог и продолжает ленту (в конкретном случае «Возможно позже»).
-#: Срабатывает на UNKNOWN-сообщении с >= 2 reply-кнопками.
+#: Срабатывает ТОЛЬКО на явные капчи/сделки: текст сообщения должен содержать
+#: один из маркеров CAPTCHA_MARKERS (иначе легко зациклиться в меню/Premium).
+#: Кнопок при этом должно быть >= CAPTCHA_MIN_BUTTONS.
 CAPTCHA_MIN_BUTTONS: int = 2
+
+#: Маркеры текста, по которым сообщение считается капчей/сделкой/проверкой
+#: (а не меню/Premium-промо). Любой из них (без учёта регистра) включает
+#: авто-ответ последней кнопкой.
+CAPTCHA_MARKERS: tuple[str, ...] = (
+    "сделк",
+    "подписываешься",
+    "подпишись",
+    "подтверд",
+    "верификац",
+    "капч",
+    "проверк",
+    "ты подписываешься",
+    "@leoday",
+)
 
 
 def _detect_media_type(msg: object) -> str:
@@ -396,14 +413,15 @@ class DvinchikCollector:
             return False
 
     async def _press_captcha_button(self) -> bool:
-        """Нажимает ПОСЛЕДНЮЮ кнопку на "проверке"/капче Leo (сбрасывает диалог).
+        """Нажимает ПОСЛЕДНЮЮ кнопку на проверке/капче Leo (сбрасывает диалог).
 
         Leo присылает сделки/подписки/подтверждения с reply-кнопками
-        («Меню»/«Сообщение …»/«Готово»/«Возможно позже» и т.п.). Чтобы не
-        зависала лента, авто-аккаунт нажимает ПРАВУЮ/ПОСЛЕДНЮЮ кнопку — это
-        сбрасывает диалог и продолжает ленту (в конкретном случае
-        «Возможно позже»). Идемпотентно: если после карточки уже отправлен
-        текст этой кнопки — не нажимаем повторно.
+        («Готово»/«Возможно позже» и т.п.). Чтобы не зависала лента, авто-аккаунт
+        нажимает ПОСЛЕДНЮЮ кнопку — сбрасывает диалог и продолжает ленту.
+        Реагируем ТОЛЬКО на явные капчи/сделки: текст сообщения должен содержать
+        один из CAPTCHA_MARKERS, а reply-кнопок должно быть >= CAPTCHA_MIN_BUTTONS.
+        Иначе легко зациклиться, нажимая кнопки в главном меню/Premium-промо Leo.
+        Идемпотентно: если после карточки уже отправлен текст кнопки — не нажимаем.
         """
         client = self._auto_engine.client
         if client is None or not self._auto_engine.enabled:
@@ -412,6 +430,9 @@ class DvinchikCollector:
             card_msg = None
             button_text = ""
             async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                text = (getattr(msg, "text", None) or "").lower()
+                if not any(m in text for m in CAPTCHA_MARKERS):
+                    continue
                 texts = self._extract_button_texts(msg)
                 if len(texts) >= CAPTCHA_MIN_BUTTONS:
                     card_msg = msg
@@ -1067,8 +1088,11 @@ class DvinchikCollector:
                         texts = self._extract_button_texts(msg)
                         if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
-                        elif len(texts) >= CAPTCHA_MIN_BUTTONS:
-                            # Капча/проверка/сделка — нажимаем правую кнопку.
+                        elif (
+                            len(texts) >= CAPTCHA_MIN_BUTTONS
+                            and any(m in (text or "").lower() for m in CAPTCHA_MARKERS)
+                        ):
+                            # Капча/сделка/проверка — нажимаем последнюю кнопку.
                             await self._press_captcha_button()
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")

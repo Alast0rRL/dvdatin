@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (469 total, no linter/formatter configured)
+# Run all tests (470 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -58,7 +58,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_ai (105), test_collector (97), test_parser (47), test_decision (27), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (10), test_preferences (10), test_review_ui (5), test_auto_action (33), test_auto_action_audit (4), test_control_bot (12) → 469 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_ai (105), test_collector (98), test_parser (47), test_decision (27), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (10), test_preferences (10), test_review_ui (5), test_auto_action (33), test_auto_action_audit (4), test_control_bot (12) → 470 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -91,7 +91,7 @@ Currently at **Stage 7 (SEMI_AUTO)**. See `PROJECT.md` for roadmap. DecisionServ
 - `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
 - `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape — не отправляется стартом), `notify_chat_id` (default 0, user_id владельца для уведомлений о лайке/дизлайке; `0` = авто-режим «другой аккаунт»: уведомление уходит на аккаунт из `accounts`, чей user_id ≠ авто-аккаунта — в нашем случае с Бармалея (dvai_2) на Меланхолика (dvai)).
 - Active mode: `collector.start_auto_stream()` при старте (SEMI_AUTO) обрабатывает уже показанную активную анкету (без повторного `✨🔍`), а если активной нет — нажимает кнопку «🚀 Смотреть анкеты» (`VIEW_BUTTON_FRAGMENT`, идемпотентно через `AutoActionEngine.send_text`), продолжая ленту Leo.
-- Капчи/проверки Leo (сделки, подписки, подтверждения и т.п.): на `UNKNOWN`-сообщение в чате Дайвинчика на авто-аккаунте с `>= 2` reply-кнопками (константа `CAPTCHA_MIN_BUTTONS`, не «Смотреть анкеты») авто-аккаунт нажимает **последнюю** кнопку (`_press_captcha_button`, идемпотентно) — сбрасывает диалог и продолжает ленту. Работает и при старте (`start_auto_stream` fallback после view-кнопки), и в live-обработке (`UNKNOWN`-ветка).
+- Капчи/проверки Leo (сделки, подписки, подтверждения и т.п.): на `UNKNOWN`-сообщение в чате Дайвинчика на авто-аккаунте авто-аккаунт нажимает **последнюю** кнопку (`_press_captcha_button`, идемпотентно) — сбрасывает диалог и продолжает ленту. Реагирует ТОЛЬКО на явные капчи/сделки: текст должен содержать один из маркеров `CAPTCHA_MARKERS` (сделк/подписываешься/подтверд/верификац и т.п.), а reply-кнопок должно быть `>= CAPTCHA_MIN_BUTTONS`. Это НЕ трогает главное меню Leo и Premium-промо (иначе бот зацикливается: жмёт «Активировать Premium»/«← Назад» каждые 1-2 сек). Работает и при старте (`start_auto_stream` fallback после view-кнопки), и в live-обработке (`UNKNOWN`-ветка).
 - Идемпотентность авто-действий — по **конкретной карточке** (`telegram_message_id`), НЕ по `profile_id`/имени: `has_auto_action_for_message(chat_id, tm_id)` / `record_auto_action(..., tm_id)`. Повторная карточка той же личности (новый `telegram_message_id` в ленте) получает реакцию снова, чтобы лента не замирала при повторах Leo. `auto_actions_log` хранит `telegram_message_id` (partial unique index `chat_id`+`telegram_message_id` WHERE `telegram_message_id IS NOT NULL`), `UNIQUE(profile_id)` убран; `record_auto_action` по-прежнему обновляет статус профиля `LIKED`/`DISLIKED`. Миграция старой схемы — полное пересоздание таблицы с переносом записей (SQLite не умеет DROP CONSTRAINT).
 
 ## Control Panel (Stage 7.5)
