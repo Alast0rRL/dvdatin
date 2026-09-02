@@ -11,7 +11,14 @@ import pytest
 
 from app.config import AppConfig
 from database.database import Database
-from models.ai import AIScore, AIRecommendation, CLIPScore, ConfidenceLevel, LLMScore
+from models.ai import (
+    AIScore,
+    AIRecommendation,
+    CLIPScore,
+    ConfidenceLevel,
+    LLMScore,
+    ProfileStatus,
+)
 from models.profile import Profile
 from services.ai_scoring_service import AIScoringService
 from services.clip_service import BaseCLIPService, CLIPService
@@ -312,7 +319,9 @@ class TestLLMService:
             svc.evaluate_profile("Anna", 19, "СПб", "desc")
         )
         assert result.recommendation == AIRecommendation.REVIEW
-        assert result.score == 0.5
+        # Стаб без признаков → детерминированный нейтральный скор (0.6).
+        assert result.score == 0.6
+        assert result.status == ProfileStatus.INSUFFICIENT_DATA
 
     def test_build_prompt(self) -> None:
         svc = make_llm_service(enabled=True)
@@ -320,12 +329,20 @@ class TestLLMService:
         assert "Anna" in prompt
         assert "19" in prompt
 
-    def test_parse_valid_json(self) -> None:
+    def test_parse_valid_json_features(self) -> None:
+        # Новый контракт: сервер возвращает признаки, score вычисляется
+        # детерминированно (positive factor → 0.9).
         svc = make_llm_service(enabled=True)
-        raw = '{"score": 0.8, "recommendation": "LIKE", "confidence": 0.9, "reasons": ["ok"]}'
+        raw = (
+            '{"confidence": 0.9, '
+            '"hard_negatives": [], '
+            '"positive_factors": [{"criterion": "P3:gaming", "evidence": "играю в игры"}], '
+            '"unknown": []}'
+        )
         result = svc._parse_response(raw)
-        assert result.score == 0.8
-        assert result.recommendation == AIRecommendation.LIKE
+        assert result.score == 0.9
+        assert result.status == ProfileStatus.SUFFICIENT_DATA
+        assert any("like:" in r for r in result.reasons)
 
     def test_parse_invalid_json(self) -> None:
         svc = make_llm_service(enabled=True)
@@ -351,8 +368,9 @@ class TestAIScoringCombined:
         result = loop.run_until_complete(svc.evaluate(profile, image_data_list=[b"img"]))
         assert isinstance(result, AIScore)
         assert result.clip_score == 0.5
-        assert result.llm_score == 0.5
-        assert result.combined_score == 0.5
+        # Стаб LLM без признаков → нейтральный скор 0.6.
+        assert result.llm_score == 0.6
+        assert abs(result.combined_score - 0.55) < 0.01
 
     def test_only_clip(self, tmp_db: Database) -> None:
         config = make_config(clip_enabled=True, llm_enabled=False)
@@ -379,8 +397,8 @@ class TestAIScoringCombined:
         profile = make_profile(profile_id=prof_id)
         result = loop.run_until_complete(svc.evaluate(profile))
         assert result.clip_score is None
-        assert result.llm_score == 0.5
-        assert result.combined_score == 0.5
+        assert result.llm_score == 0.6
+        assert result.combined_score == 0.6
 
     def test_both_disabled(self, tmp_db: Database) -> None:
         config = make_config(clip_enabled=False, llm_enabled=False)
@@ -400,8 +418,8 @@ class TestAIScoringCombined:
         prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=4))
         profile = make_profile(profile_id=prof_id)
         result = loop.run_until_complete(svc.evaluate(profile, image_data_list=[b"img"]))
-        # clip=0.5*0.8 + llm=0.5*0.2 = 0.4+0.1 = 0.5
-        assert abs(result.combined_score - 0.5) < 0.01
+        # clip=0.5*0.8 + llm(нейтральный 0.6)*0.2 = 0.4+0.12 = 0.52
+        assert abs(result.combined_score - 0.52) < 0.01
 # ═════════════════════════════════════════════════════════════════════
 # 7. Recommendation thresholds
 # ═════════════════════════════════════════════════════════════════════
@@ -417,15 +435,28 @@ class TestRecommendationThresholds:
         svc = AIScoringService(db, config, clip, llm)
         return svc, db
 
-    def test_recommendation_rejects_when_disabled_services(self, tmp_db: Database) -> None:
+    def test_recommendation_no_hard_negative_is_never_dislike(self, tmp_db: Database) -> None:
         config = make_config(clip_enabled=False, llm_enabled=False)
         clip = make_clip_service(enabled=False)
         llm = make_llm_service(enabled=False)
         svc = AIScoringService(tmp_db, config, clip, llm)
 
-        assert svc._determine_recommendation(0.0) == AIRecommendation.DISLIKE
+        # Инвариант: без подтверждённого негатива DISLIKE невозможен,
+        # даже при combined=0.0 (низкий скор → REVIEW).
+        assert svc._determine_recommendation(0.0) == AIRecommendation.REVIEW
         assert svc._determine_recommendation(1.0) == AIRecommendation.LIKE
         assert svc._determine_recommendation(0.5) == AIRecommendation.REVIEW
+
+    def test_recommendation_dislike_only_with_hard_negative(self, tmp_db: Database) -> None:
+        from models.ai import HardNegative
+
+        config = make_config(clip_enabled=False, llm_enabled=False)
+        clip = make_clip_service(enabled=False)
+        llm = make_llm_service(enabled=False)
+        svc = AIScoringService(tmp_db, config, clip, llm)
+
+        hn = [HardNegative(criterion="H1:not_looking", evidence="ищу друга")]
+        assert svc._determine_recommendation(0.9, hard_negatives=hn) == AIRecommendation.DISLIKE
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1119,32 +1150,40 @@ class TestRemoteLLMClient:
     def test_parse_valid_response(self) -> None:
         client = self._make_client()
         data = {
-            "score": 0.85,
             "confidence": 0.9,
-            "reasons": ["Хорошая анкета"],
+            "hard_negatives": [],
+            "positive_factors": [
+                {"criterion": "P3:gaming", "evidence": "играю в игры"},
+            ],
+            "unknown": [],
         }
         result = client._parse_response(data)
-        assert result.score == 0.85
+        # Признак positive → детерминированный скор 0.9.
+        assert result.score == 0.9
         assert result.confidence == 0.9
-        assert result.reasons == ["Хорошая анкета"]
+        assert result.status == ProfileStatus.SUFFICIENT_DATA
+        assert any("like:" in r for r in result.reasons)
 
-    def test_parse_response_clamps_scores(self) -> None:
+    def test_parse_response_no_features_is_neutral(self) -> None:
         client = self._make_client()
-        data = {"score": 1.5, "confidence": -0.5, "reasons": []}
+        # Серверный score/confidence больше не читаются; пустые признаки →
+        # нейтральный скор 0.6 (недостаточность данных ≠ DISLIKE).
+        data = {"score": 0.0, "confidence": 0.0}
         result = client._parse_response(data)
-        assert result.score == 1.0
-        assert result.confidence == 0.0
+        assert result.score == 0.6
+        assert result.status == ProfileStatus.INSUFFICIENT_DATA
 
     def test_parse_response_invalid_reasons(self) -> None:
         client = self._make_client()
-        data = {"score": 0.5, "confidence": 0.5, "reasons": "not a list"}
+        data = {"confidence": 0.5, "reasons": "not a list"}
         result = client._parse_response(data)
         assert isinstance(result.reasons, list)
 
     def test_parse_response_exception(self) -> None:
         client = self._make_client()
         result = client._parse_response({})
-        assert result.score == 0.0
+        # Пустой ответ (без негатива) → нейтральный REVIEW, не отказ.
+        assert result.score == 0.6
         assert result.recommendation == AIRecommendation.REVIEW
 
     def test_successful_evaluate(self) -> None:
@@ -1157,9 +1196,12 @@ class TestRemoteLLMClient:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = {
-            "score": 0.7,
             "confidence": 0.8,
-            "reasons": ["ok"],
+            "hard_negatives": [],
+            "positive_factors": [
+                {"criterion": "P2:anime", "evidence": "люблю аниме"},
+            ],
+            "unknown": [],
         }
 
         mock_http = AsyncMock()
@@ -1171,7 +1213,7 @@ class TestRemoteLLMClient:
         result = loop.run_until_complete(
             client.evaluate_profile("Anna", 19, "СПб", "desc")
         )
-        assert result.score == 0.7
+        assert result.score == 0.9
         assert result.confidence == 0.8
 
     def test_timeout_retries(self) -> None:
@@ -1749,7 +1791,7 @@ class TestErrorIsolation:
         prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=50))
         profile = make_profile(profile_id=prof_id)
         result = loop.run_until_complete(svc.evaluate(profile))
-        assert result.llm_score == 0.5
+        assert result.llm_score == 0.6
         assert result.clip_score is None
 
     def test_llm_fails_clip_still_works(self, tmp_db: Database) -> None:
@@ -1900,9 +1942,12 @@ class TestAIScoringWithRemoteClients:
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = {
-            "score": 0.8,
             "confidence": 0.9,
-            "reasons": ["Отличная анкета"],
+            "hard_negatives": [],
+            "positive_factors": [
+                {"criterion": "P2:anime", "evidence": "люблю аниме"},
+            ],
+            "unknown": [],
         }
 
         mock_http = AsyncMock()
@@ -1921,8 +1966,9 @@ class TestAIScoringWithRemoteClients:
         profile = make_profile(profile_id=prof_id)
         result = loop.run_until_complete(svc.evaluate(profile))
 
-        assert result.llm_score == 0.8
-        assert result.combined_score == 0.8
+        # Positive factor → детерминированный скор 0.9 → LIKE (порог 0.75).
+        assert result.llm_score == 0.9
+        assert result.combined_score == 0.9
         assert result.recommendation == AIRecommendation.LIKE
 
     def test_remote_clip_produces_score(self, tmp_db: Database) -> None:

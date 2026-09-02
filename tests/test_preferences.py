@@ -139,14 +139,15 @@ class TestDecisionHardRules:
         )
         assert decision == AIDecision.DISLIKE
 
-    def test_no_prefs_behavior_unchanged(self) -> None:
-        # Без preferences (backward compat) — DISLIKE как раньше.
+    def test_no_prefs_no_hard_negative_is_review(self) -> None:
+        # Инвариант NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE: без preferences
+        # и без подтверждённого негатива низкий скор → REVIEW, не DISLIKE.
         svc = make_service()
         decision, _, _ = svc._decide(
             FilterDecision.PASS, 0.4, 0.3, 0.6, ["..."],
             text="играю во многие игры",
         )
-        assert decision == AIDecision.DISLIKE
+        assert decision == AIDecision.REVIEW
 
 
 class TestDecisionIntegration:

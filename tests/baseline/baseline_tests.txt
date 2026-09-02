@@ -1,10 +1,7 @@
-﻿# DvAI Test Baseline (FROZEN)
-# count=396
-# generated=2026-08-30 23:13:24
-# python=Python 3.12.10
-# pytest=pytest 9.1.1
-# command=python -m pytest tests/ -q
-# status=396 passed (reply_markup capture added)
+# DvAI Test Baseline (FROZEN)
+# count=472
+# generated=2026-09-02 20:20:58
+# status=472 passed (feature-based LLM contract, NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE)
 # usage: diff <(grep '::' tests/baseline/baseline_tests.txt | sort) <(pytest tests/ --collect-only -q | grep '::' | sort)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
@@ -59,7 +56,7 @@ tests/test_ai.py::TestLLMService::test_disabled
 tests/test_ai.py::TestLLMService::test_disabled_returns_review
 tests/test_ai.py::TestLLMService::test_enabled
 tests/test_ai.py::TestLLMService::test_parse_invalid_json
-tests/test_ai.py::TestLLMService::test_parse_valid_json
+tests/test_ai.py::TestLLMService::test_parse_valid_json_features
 tests/test_ai.py::TestLLMService::test_stub_returns_review
 tests/test_ai.py::TestModelVersion::test_both_enabled
 tests/test_ai.py::TestModelVersion::test_clip_only
@@ -68,7 +65,8 @@ tests/test_ai.py::TestReasonsCollection::test_clip_high_quality
 tests/test_ai.py::TestReasonsCollection::test_clip_low_quality
 tests/test_ai.py::TestReasonsCollection::test_llm_reasons_included
 tests/test_ai.py::TestReasonsCollection::test_no_data
-tests/test_ai.py::TestRecommendationThresholds::test_recommendation_rejects_when_disabled_services
+tests/test_ai.py::TestRecommendationThresholds::test_recommendation_dislike_only_with_hard_negative
+tests/test_ai.py::TestRecommendationThresholds::test_recommendation_no_hard_negative_is_never_dislike
 tests/test_ai.py::TestRemoteAIConfig::test_custom_values
 tests/test_ai.py::TestRemoteAIConfig::test_defaults
 tests/test_ai.py::TestRemoteCLIPClient::test_close
@@ -99,9 +97,9 @@ tests/test_ai.py::TestRemoteLLMClient::test_http_404_no_retry
 tests/test_ai.py::TestRemoteLLMClient::test_http_429_retries
 tests/test_ai.py::TestRemoteLLMClient::test_http_500_retries
 tests/test_ai.py::TestRemoteLLMClient::test_http_503_retries
-tests/test_ai.py::TestRemoteLLMClient::test_parse_response_clamps_scores
 tests/test_ai.py::TestRemoteLLMClient::test_parse_response_exception
 tests/test_ai.py::TestRemoteLLMClient::test_parse_response_invalid_reasons
+tests/test_ai.py::TestRemoteLLMClient::test_parse_response_no_features_is_neutral
 tests/test_ai.py::TestRemoteLLMClient::test_parse_valid_response
 tests/test_ai.py::TestRemoteLLMClient::test_sends_x_api_key_header_llm
 tests/test_ai.py::TestRemoteLLMClient::test_successful_evaluate
@@ -172,6 +170,43 @@ tests/test_audit.py::TestAudit8Transaction::test_create_and_link_atomic
 tests/test_audit.py::TestAudit8Transaction::test_profile_exists_even_if_link_fails
 tests/test_audit.py::TestAudit9ForeignKeys::test_cascade_delete
 tests/test_audit.py::TestAudit9ForeignKeys::test_foreign_keys_enabled
+tests/test_auto_action.py::TestAutoActionConfig::test_defaults
+tests/test_auto_action.py::TestAutoActionConfig::test_interval_positive
+tests/test_auto_action.py::TestAutoActionExec::test_dislike_sends_thumbsdown
+tests/test_auto_action.py::TestAutoActionExec::test_error_on_send_raises_auto_action_error
+tests/test_auto_action.py::TestAutoActionExec::test_like_sends_heart
+tests/test_auto_action.py::TestAutoActionExec::test_none_decision_skips
+tests/test_auto_action.py::TestAutoActionExec::test_review_sends_dislike_to_keep_stream_moving
+tests/test_auto_action.py::TestAutoActionGate::test_disabled_in_observe_mode
+tests/test_auto_action.py::TestAutoActionGate::test_disabled_when_config_off
+tests/test_auto_action.py::TestAutoActionGate::test_disabled_without_client
+tests/test_auto_action.py::TestAutoActionGate::test_enabled_in_auto
+tests/test_auto_action.py::TestAutoActionGate::test_enabled_in_semi_auto
+tests/test_auto_action.py::TestAutoActionGate::test_observe_returns_gate
+tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_goes_to_other_account
+tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_me_is_cached
+tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_skipped_without_notify_client
+tests/test_auto_action.py::TestAutoActionNotify::test_decision_codes_are_filtered_out
+tests/test_auto_action.py::TestAutoActionNotify::test_dislike_explains
+tests/test_auto_action.py::TestAutoActionNotify::test_empty_reasons_skips_explanation
+tests/test_auto_action.py::TestAutoActionNotify::test_like_forwards_and_explains
+tests/test_auto_action.py::TestAutoActionNotify::test_no_notify_when_disabled
+tests/test_auto_action.py::TestAutoActionNotify::test_no_notify_without_message_id
+tests/test_auto_action.py::TestAutoActionNotify::test_notify_error_does_not_break_action
+tests/test_auto_action.py::TestAutoActionNotify::test_user_skip_label_humanized
+tests/test_auto_action.py::TestAutoActionRateLimit::test_rate_limit_delays_between_actions
+tests/test_auto_action.py::TestAutoActionRateLimit::test_start_stream_without_command_does_not_send
+tests/test_auto_action.py::TestAutoActionRuntimeMode::test_mode_setter_persists_value
+tests/test_auto_action.py::TestAutoActionRuntimeMode::test_mode_setter_updates_gate
+tests/test_auto_action.py::TestAutoActionRuntimeMode::test_turn_off_at_runtime
+tests/test_auto_action.py::TestFormatReason::test_filters_decision_codes
+tests/test_auto_action.py::TestFormatReason::test_filters_prefix_labels
+tests/test_auto_action.py::TestFormatReason::test_formats_filter_and_ai_reasons
+tests/test_auto_action.py::TestFormatReason::test_returns_empty_for_none
+tests/test_auto_action_audit.py::TestAutoActionAudit::test_failed_telegram_action_has_no_log
+tests/test_auto_action_audit.py::TestAutoActionAudit::test_migration_adds_log_to_existing_database
+tests/test_auto_action_audit.py::TestAutoActionAudit::test_repeat_show_of_same_profile_gets_another_action
+tests/test_auto_action_audit.py::TestAutoActionAudit::test_successful_action_creates_one_log_and_updates_status
 tests/test_collector.py::TestAuditMediumFixes::test_dedup_marks_only_after_successful_save
 tests/test_collector.py::TestAuditMediumFixes::test_enqueued_set_bounded_after_recovery
 tests/test_collector.py::TestBacklogRecovery::test_cutoff_excludes_live_traffic
@@ -181,11 +216,31 @@ tests/test_collector.py::TestBacklogRecovery::test_processed_not_recovered
 tests/test_collector.py::TestBacklogRecovery::test_raw_without_processing_recovered
 tests/test_collector.py::TestBacklogRecovery::test_restart_recovery_no_reprocess
 tests/test_collector.py::TestBacklogRecovery::test_several_backlog_recovered
+tests/test_collector.py::TestCallbackQueryCapture::test_callback_data_bytes_decoded
+tests/test_collector.py::TestCallbackQueryCapture::test_callback_logs_data
+tests/test_collector.py::TestCollectorAutoActions::test_filter_reject_no_action_on_other_account
+tests/test_collector.py::TestCollectorAutoActions::test_filter_reject_sends_dislike_to_keep_stream_moving
+tests/test_collector.py::TestCollectorAutoActions::test_filter_review_sends_dislike_to_keep_stream_moving
+tests/test_collector.py::TestCollectorAutoActions::test_like_decision_sends_heart_on_auto_account
+tests/test_collector.py::TestCollectorAutoActions::test_log_failure_does_not_resend_action
+tests/test_collector.py::TestCollectorAutoActions::test_logged_profile_is_not_sent_twice
+tests/test_collector.py::TestCollectorAutoActions::test_no_action_when_message_on_other_account
+tests/test_collector.py::TestCollectorAutoActions::test_no_button_press_on_menu_or_premium
+tests/test_collector.py::TestCollectorAutoActions::test_observe_mode_no_action_even_if_enabled
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_no_active_profile_sends_nothing
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_no_button_press_when_already_sent
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_no_captcha_press_when_already_sent
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_presses_right_button_on_captcha
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_presses_view_button_when_promo
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_processes_active_profile_without_resync
 tests/test_collector.py::TestCollectorIntegration::test_handle_match
 tests/test_collector.py::TestCollectorIntegration::test_handle_media_only
 tests/test_collector.py::TestCollectorIntegration::test_handle_profile
 tests/test_collector.py::TestCollectorIntegration::test_handle_unknown
 tests/test_collector.py::TestCollectorIntegration::test_register
+tests/test_collector.py::TestCollectorSetMode::test_set_mode_persists_to_config
+tests/test_collector.py::TestCollectorSetMode::test_set_mode_updates_engine
+tests/test_collector.py::TestCollectorSetMode::test_turn_off_at_runtime
 tests/test_collector.py::TestCollectorStats::test_record_match
 tests/test_collector.py::TestCollectorStats::test_record_media_only
 tests/test_collector.py::TestCollectorStats::test_record_profile
@@ -209,6 +264,10 @@ tests/test_collector.py::TestMediaLinkingPersistent::test_unknown_media_without_
 tests/test_collector.py::TestMultiAccount::test_accepts_single_client_for_backward_compat
 tests/test_collector.py::TestMultiAccount::test_registers_handler_on_all_clients
 tests/test_collector.py::TestMultiAccount::test_same_message_from_two_accounts_enqueued_once
+tests/test_collector.py::TestOutgoingCapture::test_outgoing_blank_whitespace_ignored
+tests/test_collector.py::TestOutgoingCapture::test_outgoing_empty_text_ignored
+tests/test_collector.py::TestOutgoingCapture::test_outgoing_outside_dvinchik_ignored
+tests/test_collector.py::TestOutgoingCapture::test_outgoing_saved_and_processed
 tests/test_collector.py::TestProfileMediaOrderingAndDedup::test_concurrent_profile_then_media_links
 tests/test_collector.py::TestProfileMediaOrderingAndDedup::test_no_double_enqueue_live_and_recovery
 tests/test_collector.py::TestRateLimiter::test_can_act_initially
@@ -246,13 +305,26 @@ tests/test_collector.py::TestSourceFilter::test_config_sources_seeded_from_dvinc
 tests/test_collector.py::TestSourceFilter::test_unauthorized_ignored_before_db
 tests/test_collector.py::TestSourceFilter::test_unauthorized_no_ai_scoring
 tests/test_collector.py::TestSourceFilter::test_unauthorized_photo_no_download_no_db
+tests/test_control_bot.py::TestControlBotActions::test_mode_set_helper
+tests/test_control_bot.py::TestControlBotActions::test_toggle_off_callback
+tests/test_control_bot.py::TestControlBotActions::test_toggle_on_callback
+tests/test_control_bot.py::TestControlBotActions::test_unrelated_callback_ignored
+tests/test_control_bot.py::TestControlBotAuth::test_allows_authorized
+tests/test_control_bot.py::TestControlBotAuth::test_denies_unauthorized
+tests/test_control_bot.py::TestControlBotRouter::test_router_denies_unauthorized
+tests/test_control_bot.py::TestControlBotRouter::test_router_mode_on
+tests/test_control_bot.py::TestControlBotRouter::test_router_status
+tests/test_control_bot.py::TestControlBotRouter::test_router_stream
+tests/test_control_bot.py::TestControlBotStream::test_stream_when_disabled_no_action
+tests/test_control_bot.py::TestControlBotStream::test_stream_when_enabled
 tests/test_decision.py::TestAIDecisionModel::test_decision_field_is_enum
 tests/test_decision.py::TestAIDecisionModel::test_enum_values
 tests/test_decision.py::TestAIDecisionModel::test_reasons_json
 tests/test_decision.py::TestAIDecisionModel::test_result_validation
 tests/test_decision.py::TestAIDecisionModel::test_score_validation
 tests/test_decision.py::TestDecisionBasic::test_pass_high_score_like
-tests/test_decision.py::TestDecisionBasic::test_pass_low_score_dislike
+tests/test_decision.py::TestDecisionBasic::test_pass_llm_hard_negative_becomes_dislike
+tests/test_decision.py::TestDecisionBasic::test_pass_low_score_no_hard_negative_becomes_review
 tests/test_decision.py::TestDecisionBasic::test_pass_medium_score_review
 tests/test_decision.py::TestDecisionBasic::test_reuses_passed_filter_result
 tests/test_decision.py::TestDecisionConfidence::test_low_confidence_review
@@ -332,8 +404,8 @@ tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2013\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2014\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
-tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
+tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_unknown_city
 tests/test_parser.py::TestCityNormalization::test_unknown_district_not_mapped_to_city
 tests/test_parser.py::TestCityNormalization::test_whitespace
@@ -358,6 +430,7 @@ tests/test_parser.py::TestParseMatch::test_basic_match
 tests/test_parser.py::TestParseMatch::test_match_multiline
 tests/test_parser.py::TestParseMatch::test_match_no_link
 tests/test_parser.py::TestParseProfile::test_cyrillic_name
+tests/test_parser.py::TestParseProfile::test_decor_prefix_with_comma
 tests/test_parser.py::TestParseProfile::test_no_match_returns_description
 tests/test_parser.py::TestParseProfile::test_real_no_description
 tests/test_parser.py::TestParseProfile::test_real_simple_name
@@ -370,7 +443,7 @@ tests/test_parser.py::TestServiceMessages::test_service[\u041d\u0430\u043f\u0438
 tests/test_parser.py::TestServiceMessages::test_service[\u0423 \u0432\u0430\u0441 \u043e\u0431\u043e\u044e\u0434\u043d\u043e\u0435 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u0435!]
 tests/test_preferences.py::TestDecisionHardRules::test_like_factor_does_not_override_filter_reject
 tests/test_preferences.py::TestDecisionHardRules::test_like_factor_lifts_below_threshold_to_review
-tests/test_preferences.py::TestDecisionHardRules::test_no_prefs_behavior_unchanged
+tests/test_preferences.py::TestDecisionHardRules::test_no_prefs_no_hard_negative_is_review
 tests/test_preferences.py::TestDecisionHardRules::test_skip_hard_overrides_high_clip
 tests/test_preferences.py::TestDecisionHardRules::test_skip_smoking_hard
 tests/test_preferences.py::TestDecisionIntegration::test_observed_fn_gamer_is_not_lost

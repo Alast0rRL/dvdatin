@@ -144,16 +144,44 @@ ai_decisions ← human_decisions`.
 
 ### Слой предпочтений пользователя (SKIP/LIKE)
 
-`config/preferences.yaml` (gitignored) содержит персональные правила. `PreferencesEngine`
-применяет их **после** порогов, как высший приоритет:
+`config/preferences.yaml` (gitignored) содержит персональные правила — **единый источник
+истины** для SKIP/LIKE. `PreferencesEngine` (`app/preferences.py`) применяет их как высший
+приоритет (правила НЕ зашиты в `decision_service.py` — тот только применяет их):
 
 - **SKIP** (напр. «ищу друга», «курит», «есть парень», «покатайте», «под каре», «instagram»)
   → **жёсткий DISLIKE**, CLIP не может перевернуть;
 - **LIKE-фактор** (напр. «СПбПУ», «аниме», «игры», «переехала в СПб») → потенциальный
   DISLIKE поднимается до **REVIEW** (анкета не теряется) или до LIKE при высоком скоре.
 
-Пороги `0.75 / 0.50` не меняются. Правила дублируются в серверном LLM-промпте (`llm-v2`),
+Пороги `0.75 / 0.50` не меняются. Правила дублируются в серверном LLM-промпте (`llm-v3`),
 который живёт на Ubuntu AI Server (не в репозитории).
+
+### AI-оценка анкеты: извлечение признаков, а не «мнение» (llm-v3)
+
+**LLM больше НЕ является источником пользовательских критериев и НЕ «судья».** Промпт
+`llm-v3` (`deploy/llm-v3_prompt.md`) предписывает модели qwen3:8b **только извлекать**
+разрешённые признаки из текста анкеты, никогда не выдумывая свои критерии:
+
+- `hard_negatives` — подтверждённые жёсткие негативы (закрытый список H1–H8) с `evidence`-цитатой;
+- `positive_factors` — разрешённые положительные факторы (P1–P4) с `evidence`-цитатой;
+- `unknown` — осмысленные отсутствующие аспекты.
+
+`score` **вычисляется детерминированно** на клиенте (`services/llm_service.py` →
+`detect_score_status`), а не берётся из ответа модели: есть hard negative → `0.1`;
+есть positive factor → `0.9`; иначе нейтральный `0.6`. Изъятие признаков идёт по контракту
+`parse_feature_response` в `services/llm_service.py` / `services/remote_llm_client.py`.
+
+Жёсткие запреты промпта: DO NOT INVENT CRITERIA; **отсутствие информации ≠ наказание**,
+**UNKNOWN ≠ DISLIKE**, короткая/пустая/эмодзи-анкета ≠ `invalid_data`; не делать выводов
+о фото/внешности по тексту (DO NOT INFER VISUAL FACTS); Instagram — жёсткий негатив (H8).
+
+**Главный инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`:** семантический DISLIKE в
+`decision_service.py` возможен **только** при подтверждённом жёстком негативе
+(пользовательский SKIP, признак LLM/`LLM_SKIP:…`, REJECT-фильтр). Низкий скор, отсутствие
+положительных факторов, малоинформативная анкета → **REVIEW**, а не DISLIKE. Транспортное
+`👎` при REVIEW выполняется на уровне `AutoActionEngine` (движение ленты Leo) и не является
+семантическим DISLIKE. `_determine_recommendation` в `ai_scoring_service.py` тоже даёт
+DISLIKE только при признаке.
 
 ### Human Review & Analytics (Stage 6)
 
@@ -342,7 +370,7 @@ dvdatin/
 ├── deploy/                      # Deploy-артефакты (Ubuntu/systemd)
 │   ├── dvai.service             #   systemd unit
 │   ├── run.sh                   #   Ручной запуск (UTF-8)
-│   ├── llm-v2_prompt.md         #   Серверный LLM-промпт (SKIP/LIKE) + инструкция применения
+│   ├── llm-v3_prompt.md         #   Серверный LLM-промпт (извлечение признаков, не судейство)
 │   └── README.md                #   Runbook деплоя
 │
 ├── proxy/                       # Vendored xray-core + VLESS (НЕ коммитится)
@@ -559,7 +587,8 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Stage 6** — Human Review & Analytics: `human_decisions`, ReviewService, AnalyticsService (Agreement Rate), Telegram review UI, CSV-export.
 - [x] **Multi-account** — несколько Telegram-аккаунтов с общим pipeline и дедупликацией.
 - [x] **Preferences layer (SKIP/LIKE)** — `config/preferences.yaml`, `app/preferences.py`, интеграция в DecisionService.
-- [x] **Серверный LLM-промпт `llm-v2`** — `deploy/llm-v2_prompt.md` (SKIP/LIKE-правила для семантической оценки), клиент помечает `prompt_version=llm-v2`.
+- [x] **Серверный LLM-промпт `llm-v3`** — `deploy/llm-v3_prompt.md` (извлечение признаков, а не судейство; DO NOT INVENT CRITERIA; отсутствие информации ≠ негатив), клиент помечает `prompt_version=llm-v3`.
+- [x] **Фичевый LLM-контракт + инвариант** — LLM извлекает только разрешённые признаки (H1–H8/P1–P4) с evidence; `score` детерминированный (0.1/0.6/0.9) на клиенте; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` в DecisionService и `_determine_recommendation`.
 - [x] **Захват кнопок (reply_markup)** — read-only разведка слоя действий: `raw_messages.reply_markup`, сериализация в коллекторе, вывод в консоль. Кнопка LIKE ставится по inline-кнопке на анкете (callback_data).
 - [x] **Захват исходящих (outgoing capture)** — read-only перехват действий пользователя: `events.NewMessage(outgoing=True)` в чате бота (1234060895). Исходящие эмодзи (лайки/дизлайки) сохраняются в `raw_messages` и помечаются `processed_at` (pipeline пропускается). ground truth для реверса механики LIKE.
 - [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.

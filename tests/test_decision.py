@@ -28,11 +28,15 @@ from services.remote_llm_client import PROMPT_VERSION
 # ── Mock AI клиенты (offline) ────────────────────────────────────────
 
 class MockLLMClient(BaseLLMService):
-    def __init__(self, enabled=True, score=0.7, confidence=0.8, reasons=None):
+    def __init__(self, enabled=True, score=0.7, confidence=0.8, reasons=None,
+                 hard_negatives=None, positive_factors=None, unknown=None):
         self._enabled = enabled
         self._score = score
         self._confidence = confidence
         self._reasons = reasons or ["mock llm reason"]
+        self._hard_negatives = hard_negatives or []
+        self._positive_factors = positive_factors or []
+        self._unknown = unknown or []
 
     @property
     def is_enabled(self) -> bool:
@@ -43,6 +47,9 @@ class MockLLMClient(BaseLLMService):
             score=self._score, confidence=self._confidence,
             reasons=self._reasons, model_version="mock-llm",
             prompt_version=PROMPT_VERSION,
+            hard_negatives=self._hard_negatives,
+            positive_factors=self._positive_factors,
+            unknown=self._unknown,
         )
 
 
@@ -220,7 +227,9 @@ class TestDecisionBasic:
         assert result.decision == AIDecision.REVIEW
         assert "REVIEW_THRESHOLD" in result.reasons
 
-    def test_pass_low_score_dislike(self, tmp_db: Database) -> None:
+    def test_pass_low_score_no_hard_negative_becomes_review(self, tmp_db: Database) -> None:
+        # Инвариант NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE: низкий скор без
+        # подтверждённого жёсткого негатива → REVIEW, а не DISLIKE.
         config = make_config()
         decision = build_stack(
             tmp_db, config,
@@ -229,8 +238,28 @@ class TestDecisionBasic:
         )
         prof_id = run(insert_profile(tmp_db, 3))
         result = run(decision.evaluate(prof_id, [b"img"]))
+        assert result.decision == AIDecision.REVIEW
+        assert "INSUFFICIENT_DATA" in result.reasons
+
+    def test_pass_llm_hard_negative_becomes_dislike(self, tmp_db: Database) -> None:
+        # Подтверждённый жёсткий негатив из LLM → DISLIKE (criterion+evidence).
+        from models.ai import HardNegative
+
+        config = make_config()
+        decision = build_stack(
+            tmp_db, config,
+            MockLLMClient(
+                score=0.2, confidence=0.8,
+                hard_negatives=[
+                    HardNegative(criterion="H1:not_looking", evidence="ищу друга"),
+                ],
+            ),
+            MockCLIPClient(score=0.1, image_count=1),
+        )
+        prof_id = run(insert_profile(tmp_db, 3))
+        result = run(decision.evaluate(prof_id, [b"img"]))
         assert result.decision == AIDecision.DISLIKE
-        assert "BELOW_THRESHOLDS" in result.reasons
+        assert any("LLM_SKIP:H1:not_looking" in r for r in result.reasons)
 
     def test_reuses_passed_filter_result(self, tmp_db: Database) -> None:
         """Переданный filter_result НЕ должен вызывать повторную оценку фильтра."""

@@ -104,6 +104,9 @@ class DecisionService:
             confidence=ai_score.confidence_score,
             ai_reasons=ai_score.reasons,
             text=profile.description or "",
+            hard_negatives=ai_score.hard_negatives,
+            positive_factors=ai_score.positive_factors,
+            unknown=ai_score.unknown,
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -116,6 +119,9 @@ class DecisionService:
             clip_score=ai_score.clip_score,
             confidence=ai_score.confidence_score,
             reasons=reasons,
+            hard_negatives=ai_score.hard_negatives,
+            positive_factors=ai_score.positive_factors,
+            unknown=ai_score.unknown,
             evaluated_at=now,
             scoring_version=self._decision_cfg.scoring_version,
             prompt_version=ai_score.prompt_version,
@@ -161,15 +167,21 @@ class DecisionService:
         confidence: float,
         ai_reasons: list[str],
         text: str = "",
+        *,
+        hard_negatives: list | None = None,
+        positive_factors: list | None = None,
+        unknown: list[str] | None = None,
     ) -> tuple[AIDecision, float, list[str]]:
-        """Вычисляет решение на основе hard filters + порогов + правил пользователя.
+        """Вычисляет решение на основе hard negatives + порогов + правил.
 
-        Данные о предпочтениях пользователя (SKIP/LIKE) приходят из
-        preferences-файла (config/preferences.yaml) и применяются как
-        последний слой поверх порогов:
-          - SKIP-сигнал (hard) → DISLIKE (CLIP не переворачивает).
-          - LIKE-фактор → потенциальный DISLIKE подтягивается до REVIEW
-            (анкета не теряется), при достижении порога — LIKE.
+        Главный инвариант (см. NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE):
+        семантический DISLIKE возможен ТОЛЬКО при подтверждённом hard negative
+        (пользовательский SKIP из preferences, признак LLM или REJECT-фильтр).
+        Низкий скор, отсутствие positive factors, пустая/короткая анкета, эмодзи
+        или «неинтересность» НЕ являются причиной DISLIKE — такие анкеты
+        уходят в REVIEW. Транспортное действие 👎 (движение ленты Leo) при
+        REVIEW выполняется на уровне AutoActionEngine и не является
+        семантическим DISLIKE.
 
         Returns:
             (decision, combined_score, reasons)
@@ -177,38 +189,43 @@ class DecisionService:
         combined = self._combine(llm_score, clip_score)
         reasons = list(ai_reasons)
         cfg = self._decision_cfg
+        hard_negatives = list(hard_negatives or [])
+        positive_factors = list(positive_factors or [])
+        unknown = list(unknown or [])
 
-        # Предпочтения пользователя — оценка текста анкеты.
+        # Предпочтения пользователя — оценка текста анкеты (единый источник
+        # бизнес-правил: config/preferences.yaml → PreferencesEngine).
         skip_labels, like_labels = (), ()
         scoring = self._prefs.scoring
         if self._prefs.enabled and text:
             skip_labels, like_labels = self._prefs.evaluate(text)
 
-        # HARD USER SKIP: явный негатив → всегда DISLIKE. Самый высокий
-        # приоритет: высокий CLIP / high combined не может перевернуть.
+        # HARD USER SKIP: явный негатив пользователя → DISLIKE (самый высокий
+        # приоритет; высокий CLIP / high combined не может перевернуть).
         if skip_labels and scoring.skip_is_hard:
             return AIDecision.DISLIKE, combined, [
                 f"USER_SKIP:{skip_labels[0]}", *reasons,
             ]
 
-        # HARD FILTER: REJECT → всегда DISLIKE
+        # HARD LLM NEGATIVE: подтверждённый признак из анкеты (criterion+evidence)
+        # → DISLIKE. Критерий и evidence фиксируются в reasons.
+        if hard_negatives:
+            hn = hard_negatives[0]
+            ev = f"«{hn.evidence}»" if getattr(hn, "evidence", "") else ""
+            return AIDecision.DISLIKE, combined, [
+                f"LLM_SKIP:{hn.criterion}", *reasons, f"skip:{hn.criterion}:{ev}",
+            ]
+
+        # HARD FILTER: REJECT → всегда DISLIKE (возраст/город вне диапазона).
         if filter_decision == FilterDecision.REJECT:
             return AIDecision.DISLIKE, combined, [
                 "FILTER_REJECTED", *reasons,
             ]
 
-        # HARD FILTER: REVIEW → только REVIEW или DISLIKE, НЕ LIKE
+        # HARD FILTER: REVIEW → только REVIEW (нет hard negative — DISLIKE
+        # невозможен; LIKE тоже не берём, т.к. данные фильтра неполные).
         if filter_decision == FilterDecision.REVIEW:
-            if combined >= cfg.review_threshold:
-                return AIDecision.REVIEW, combined, [
-                    "FILTER_REVIEW", *reasons,
-                ]
-            # LIKE-фактор не даёт потерять анкету, попавшую в REVIEW-фильтр.
-            if like_labels and scoring.like_lifts_review:
-                return AIDecision.REVIEW, combined, [
-                    "FILTER_REVIEW", f"USER_LIKE:{like_labels[0]}", *reasons,
-                ]
-            return AIDecision.DISLIKE, combined, [
+            return AIDecision.REVIEW, combined, [
                 "FILTER_REVIEW", *reasons,
             ]
 
@@ -219,6 +236,8 @@ class DecisionService:
                 "AI_UNAVAILABLE", *reasons,
             ]
 
+        # LIKE по порогу (positive factors дают детерминированный score 0.9;
+        # при CLIP off combined ≈ 0.9 → LIKE) + достаточно уверенности.
         if combined >= cfg.like_threshold:
             if confidence >= cfg.min_confidence:
                 return AIDecision.LIKE, combined, [
@@ -228,21 +247,20 @@ class DecisionService:
                 "LOW_CONFIDENCE", *reasons,
             ]
 
+        # REVIEW по порогу (нейтральные анкеты: score 0.6, combined ≈ 0.6).
+        # LIKE-фактор пользователя фиксируется как причина, но сам факт
+        # наличия интереса не поднимает решение выше REVIEW без порога.
         if combined >= cfg.review_threshold:
+            note = f"USER_LIKE:{like_labels[0]}" if like_labels else None
             return AIDecision.REVIEW, combined, [
-                "REVIEW_THRESHOLD", *reasons,
+                "REVIEW_THRESHOLD", *([note] if note else []), *reasons,
             ]
 
-        # BELOW_THRESHOLDS → DISLIKE, НО не теряем LIKE-факторы пользователя
-        # (например «играет в игры» / «аниме» / «переехала в СПб») — они идут
-        # в очередь REVIEW на подтверждение, а не в мусор.
-        if like_labels and scoring.like_lifts_review:
-            return AIDecision.REVIEW, combined, [
-                "USER_LIKE", f"USER_LIKE:{like_labels[0]}", *reasons,
-            ]
-
-        return AIDecision.DISLIKE, combined, [
-            "BELOW_THRESHOLDS", *reasons,
+        # BELOW_THRESHOLDS и нет hard negative → REVIEW, НЕ DISLIKE.
+        # Недостаточно данных / низкий скор не являются причиной отказа.
+        note = f"USER_LIKE:{like_labels[0]}" if like_labels else None
+        return AIDecision.REVIEW, combined, [
+            "INSUFFICIENT_DATA", *([note] if note else []), *reasons,
         ]
 
     # ── Сохранение и чтение ──────────────────────────────────────────

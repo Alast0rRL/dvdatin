@@ -16,6 +16,40 @@ class AIRecommendation(StrEnum):
     REVIEW = "REVIEW"
 
 
+class ProfileStatus(StrEnum):
+    """Статус достаточности данных по анкете.
+
+    Вычисляется из извлечённых признаков (детерминированно), а не из
+    субъективной оценки LLM. Используется DecisionService, чтобы нейтральные
+    и малоинформативные анкеты не превращались в DISLIKE.
+    """
+
+    SUFFICIENT_DATA = "SUFFICIENT_DATA"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+
+
+class HardNegative(BaseModel):
+    """Подтверждённый жёсткий негатив, извлечённый LLM.
+
+    Ключевое требование: ``evidence`` — цитата/формулировка из анкеты, на
+    основании которой сделан вывод. Без evidence негатив не подтверждён.
+    """
+
+    criterion: str
+    evidence: str = ""
+
+    model_config = ConfigDict(use_enum_values=False)
+
+
+class PositiveFactor(BaseModel):
+    """Разрешённый положительный фактор, извлечённый LLM."""
+
+    criterion: str
+    evidence: str = ""
+
+    model_config = ConfigDict(use_enum_values=False)
+
+
 class ConfidenceLevel(StrEnum):
     """Уровень уверенности."""
 
@@ -45,12 +79,23 @@ class CLIPScore(BaseModel):
 
 
 class LLMScore(BaseModel):
-    """Результат оценки анкеты через LLM."""
+    """Результат оценки анкеты через LLM.
+
+    LLM выполняет извлечение РАЗРЕШЁННЫХ признаков (hard_negatives,
+    positive_factors, unknown), а не субъективную оценку. Поле ``score`` —
+    детерминированная производная по правилу (hard negative → низкий,
+    positive → высокий, иначе нейтральный), чтобы пороги/комбинирование
+    оставались рабочими без субъективности модели.
+    """
 
     score: float = 0.0
     recommendation: AIRecommendation = AIRecommendation.REVIEW
     confidence: float = 0.0
     reasons: list[str] = []
+    hard_negatives: list[HardNegative] = []
+    positive_factors: list[PositiveFactor] = []
+    unknown: list[str] = []
+    status: ProfileStatus = ProfileStatus.INSUFFICIENT_DATA
     raw_response: str = ""
     model_version: str = ""
     prompt_version: str = "llm-v1"
@@ -75,6 +120,10 @@ class AIScore(BaseModel):
     confidence: ConfidenceLevel = ConfidenceLevel.LOW
     confidence_score: float = 0.0
     reasons: list[str] = []
+    hard_negatives: list[HardNegative] = []
+    positive_factors: list[PositiveFactor] = []
+    unknown: list[str] = []
+    status: ProfileStatus = ProfileStatus.INSUFFICIENT_DATA
     model_version: str = ""
     created_at: str = ""
     prompt_version: str = "llm-v1"

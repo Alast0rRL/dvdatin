@@ -11,12 +11,12 @@ from loguru import logger
 from pydantic import ValidationError
 
 from models.ai import AIRecommendation, LLMScore
-from services.llm_service import BaseLLMService
+from services.llm_service import BaseLLMService, parse_feature_response
 
 if TYPE_CHECKING:
     from app.config import LLMConfig, RemoteAIConfig
 
-PROMPT_VERSION = "llm-v2"
+PROMPT_VERSION = "llm-v3"
 
 
 class RemoteLLMClient(BaseLLMService):
@@ -118,37 +118,17 @@ class RemoteLLMClient(BaseLLMService):
         return self._parse_response(data)
 
     def _parse_response(self, data: dict) -> LLMScore:
-        """Парсит JSON-ответ сервера в LLMScore с валидацией."""
-        try:
-            score = float(data.get("score", 0.0))
-            confidence = float(data.get("confidence", 0.0))
-            reasons = data.get("reasons", [])
+        """Парсит JSON-ответ сервера в LLMScore (признаки + детерм. скор).
 
-            score = max(0.0, min(1.0, score))
-            confidence = max(0.0, min(1.0, confidence))
-
-            if not isinstance(reasons, list):
-                reasons = [str(reasons)]
-
-            return LLMScore(
-                score=score,
-                recommendation=AIRecommendation.REVIEW,
-                confidence=confidence,
-                reasons=reasons,
-                raw_response=json.dumps(data, ensure_ascii=False),
-                model_version=self._config.model,
-                prompt_version=PROMPT_VERSION,
-            )
-        except (ValidationError, KeyError, TypeError, ValueError) as e:
-            logger.warning(f"Remote LLM: ошибка парсинга ответа: {e}")
-            return LLMScore(
-                score=0.0,
-                recommendation=AIRecommendation.REVIEW,
-                confidence=0.0,
-                reasons=[f"Ошибка парсинга ответа: {e}"],
-                raw_response=json.dumps(data, ensure_ascii=False),
-                model_version=self._config.model,
-            )
+        Ответ сервера не трактуется как «мнение»: извлекаются только
+        разрешённые признаки, а score/status вычисляются детерминированно.
+        """
+        return parse_feature_response(
+            data,
+            raw=json.dumps(data, ensure_ascii=False),
+            model_version=self._config.model,
+            prompt_version=PROMPT_VERSION,
+        )
 
     def _handle_http_error(self, e: httpx.HTTPStatusError) -> LLMScore:
         """Обрабатывает HTTP-ошибки, не подлежащие retry."""

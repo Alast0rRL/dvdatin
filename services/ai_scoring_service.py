@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from models.ai import AIScore, AIRecommendation, ConfidenceLevel, CLIPScore, LLMScore
+from models.ai import (
+    AIScore,
+    AIRecommendation,
+    CLIPScore,
+    ConfidenceLevel,
+    LLMScore,
+    ProfileStatus,
+)
 from services.clip_service import BaseCLIPService
 from services.llm_service import BaseLLMService
 
@@ -136,7 +143,10 @@ class AIScoringService:
         llm_sig = llm_result if llm_available else None
 
         combined = self._combine_scores(clip_sig, llm_sig)
-        recommendation = self._determine_recommendation(combined)
+        recommendation = self._determine_recommendation(
+            combined,
+            hard_negatives=llm_sig.hard_negatives if llm_sig else [],
+        )
         confidence_level, confidence_score = self._determine_confidence(clip_sig, llm_sig)
         reasons = self._collect_reasons(clip_sig, llm_sig)
 
@@ -151,6 +161,10 @@ class AIScoringService:
             confidence=confidence_level,
             confidence_score=confidence_score,
             reasons=reasons,
+            hard_negatives=llm_sig.hard_negatives if llm_sig else [],
+            positive_factors=llm_sig.positive_factors if llm_sig else [],
+            unknown=llm_sig.unknown if llm_sig else [],
+            status=llm_sig.status if llm_sig else ProfileStatus.INSUFFICIENT_DATA,
             model_version=self._model_version(),
             created_at=now,
             prompt_version=(
@@ -203,15 +217,25 @@ class AIScoringService:
 
         return 0.0
 
-    def _determine_recommendation(self, combined: float) -> AIRecommendation:
-        """Определяет рекомендацию на основе combined score."""
+    def _determine_recommendation(
+        self,
+        combined: float,
+        hard_negatives: list | None = None,
+    ) -> AIRecommendation:
+        """Рекомендация на основе признаков и combined score.
+
+        Инвариант NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE: DISLIKE возможен
+        ТОЛЬКО при подтверждённом жёстком негативе. Низкий combined без
+        негатива — это REVIEW, а не DISLIKE (недостаток данных ≠ отказ).
+        """
         scoring = self._scoring_config
+        hard_negatives = list(hard_negatives or [])
+
+        if hard_negatives:
+            return AIRecommendation.DISLIKE
 
         if combined >= scoring.like_threshold:
             return AIRecommendation.LIKE
-
-        if combined <= scoring.dislike_threshold:
-            return AIRecommendation.DISLIKE
 
         return AIRecommendation.REVIEW
 

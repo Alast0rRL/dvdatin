@@ -45,6 +45,9 @@ class AIDecisionResult(BaseModel):
     clip_score: float | None = None
     confidence: float = 0.0
     reasons: list[str] = []
+    hard_negatives: list = []
+    positive_factors: list = []
+    unknown: list[str] = []
     evaluated_at: str = ""
     scoring_version: str = "v1"
     prompt_version: str = "llm-v1"

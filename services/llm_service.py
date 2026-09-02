@@ -10,10 +10,46 @@ from typing import TYPE_CHECKING
 from loguru import logger
 from pydantic import ValidationError
 
-from models.ai import AIRecommendation, LLMScore
+from models.ai import (
+    AIRecommendation,
+    HardNegative,
+    LLMScore,
+    PositiveFactor,
+    ProfileStatus,
+)
 
 if TYPE_CHECKING:
     from app.config import LLMConfig
+
+#: Нейтральный скор для анкеты без hard-negatives/positive-factors.
+#: Выбран так, чтобы combined (при CLIP off) попадал в зону REVIEW, а не
+#: проваливался в BELOW_THRESHOLDS (автоматический DISLIKE неясной анкеты).
+NEUTRAL_SCORE = 0.6
+#: Скор для hard-negative анкеты (сам по себе не нужен для решения —
+#: DISLIKE выносится по факту обнаруженного критерия, см. DecisionService).
+HARD_NEGATIVE_SCORE = 0.1
+#: Скор для анкеты с подтверждённым positive-factor.
+POSITIVE_SCORE = 0.9
+#: Версия промпта (bump при изменении контракта извлечения признаков).
+PROMPT_VERSION = "llm-v3"
+
+
+def detect_score_status(
+    hard_negatives: list[HardNegative],
+    positive_factors: list[PositiveFactor],
+) -> tuple[float, ProfileStatus]:
+    """Детерминированный скор и статус по извлечённым признакам.
+
+    Правило (не зависит от мнения LLM):
+    - есть hard negative → низкий скор, статус SUFFICIENT_DATA;
+    - есть positive factor → высокий скор, SUFFICIENT_DATA;
+    - иначе → нейтральный скор, INSUFFICIENT_DATA.
+    """
+    if hard_negatives:
+        return HARD_NEGATIVE_SCORE, ProfileStatus.SUFFICIENT_DATA
+    if positive_factors:
+        return POSITIVE_SCORE, ProfileStatus.SUFFICIENT_DATA
+    return NEUTRAL_SCORE, ProfileStatus.INSUFFICIENT_DATA
 
 
 class BaseLLMService(ABC):
@@ -103,10 +139,15 @@ class LLMService(BaseLLMService):
             f"prompt_len={len(prompt)}"
         )
 
-        raw_response = (
-            '{"score": 0.5, "recommendation": "REVIEW", '
-            '"confidence": 0.5, "reasons": ["stub analysis"]}'
-        )
+        raw_response = json.dumps({
+            "score": NEUTRAL_SCORE,
+            "confidence": 0.5,
+            "reasons": ["stub extractor"],
+            "hard_negatives": [],
+            "positive_factors": [],
+            "unknown": [],
+            "status": "INSUFFICIENT_DATA",
+        }, ensure_ascii=False)
 
         return self._parse_response(raw_response)
 
@@ -117,16 +158,17 @@ class LLMService(BaseLLMService):
         city: str,
         description: str,
     ) -> str:
-        """Формирует промпт для LLM."""
+        """Формирует промпт для LLM (извлечение признаков, не судейство)."""
         parts = [
-            f"Оцени анкету для знакомства:",
+            "Извлеки из анкеты только разрешённые признаки (не оценивай анкету):",
             f"Имя: {name}",
             f"Возраст: {age if age else 'неизвестен'}",
             f"Город: {city if city else 'неизвестен'}",
             f"Описание: {description if description else 'нет описания'}",
             "",
-            "Верни JSON: {\"score\": 0.0-1.0, \"recommendation\": \"LIKE/DISLIKE/REVIEW\", "
-            "\"confidence\": 0.0-1.0, \"reasons\": [\"...\"]}",
+            "Верни JSON: {\"hard_negatives\":[{\"criterion\":\"...\",\"evidence\":\"...\"}], "
+            "\"positive_factors\":[{\"criterion\":\"...\",\"evidence\":\"...\"}], "
+            "\"unknown\":[\"...\"], \"confidence\": 0.0-1.0}",
         ]
         return "\n".join(parts)
 
@@ -145,24 +187,89 @@ class LLMService(BaseLLMService):
                 model_version=self._config.model,
             )
 
-        try:
-            return LLMScore(
-                score=data.get("score", 0.0),
-                recommendation=AIRecommendation(
-                    data.get("recommendation", "REVIEW")
-                ),
-                confidence=data.get("confidence", 0.0),
-                reasons=data.get("reasons", []),
-                raw_response=raw,
-                model_version=self._config.model,
+        return parse_feature_response(
+            data, raw, self._config.model, PROMPT_VERSION,
+        )
+
+
+def parse_feature_response(
+    data: dict,
+    raw: str,
+    model_version: str,
+    prompt_version: str,
+) -> LLMScore:
+    """Извлекает из JSON-ответа LLM признаки и детерминированный скор.
+
+    Ответ не является «мнением модели»: жёсткие/положительные признаки берутся
+    из структуры, а score вычисляется по правилу (см. ``detect_score_status``).
+    """
+    try:
+        hard_raw = data.get("hard_negatives", []) or []
+        pos_raw = data.get("positive_factors", []) or []
+
+        hard_negatives = [
+            HardNegative(
+                criterion=str(h.get("criterion", "")),
+                evidence=str(h.get("evidence", "")),
             )
-        except (ValidationError, KeyError) as e:
-            logger.warning(f"LLM: ошибка валидации ответа: {e}")
-            return LLMScore(
-                score=0.0,
-                recommendation=AIRecommendation.REVIEW,
-                confidence=0.0,
-                reasons=[f"Ошибка валидации: {e}"],
-                raw_response=raw,
-                model_version=self._config.model,
+            for h in hard_raw if isinstance(h, dict)
+        ]
+        positive_factors = [
+            PositiveFactor(
+                criterion=str(p.get("criterion", "")),
+                evidence=str(p.get("evidence", "")),
             )
+            for p in pos_raw if isinstance(p, dict)
+        ]
+        unknown = [
+            str(u) for u in (data.get("unknown", []) or [])
+            if isinstance(u, str) and u
+        ]
+
+        score, status = detect_score_status(hard_negatives, positive_factors)
+        reasons = _feature_reasons(hard_negatives, positive_factors, unknown)
+
+        return LLMScore(
+            score=score,
+            confidence=float(data.get("confidence", 0.0)),
+            reasons=reasons,
+            hard_negatives=hard_negatives,
+            positive_factors=positive_factors,
+            unknown=unknown,
+            status=status,
+            raw_response=raw,
+            model_version=model_version,
+            prompt_version=prompt_version,
+        )
+    except (ValidationError, KeyError, TypeError, ValueError) as e:
+        logger.warning(f"LLM: ошибка валидации ответа: {e}")
+        return LLMScore(
+            score=0.0,
+            recommendation=AIRecommendation.REVIEW,
+            confidence=0.0,
+            reasons=[f"Ошибка валидации: {e}"],
+            raw_response=raw,
+            model_version=model_version,
+            prompt_version=prompt_version,
+        )
+
+
+def _feature_reasons(
+    hard_negatives: list[HardNegative],
+    positive_factors: list[PositiveFactor],
+    unknown: list[str],
+) -> list[str]:
+    """reasons — только наблюдаемые факты (критерий + evidence)."""
+    reasons: list[str] = []
+    for h in hard_negatives:
+        ev = f": «{h.evidence}»" if h.evidence else ""
+        reasons.append(f"skip:{h.criterion}{ev}")
+    for p in positive_factors:
+        ev = f": «{p.evidence}»" if p.evidence else ""
+        reasons.append(f"like:{p.criterion}{ev}")
+    if unknown:
+        reasons.append(f"unknown:{','.join(unknown)}")
+    if not reasons:
+        reasons.append("insufficient_data")
+    return reasons
+

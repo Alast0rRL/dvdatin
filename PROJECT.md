@@ -44,7 +44,7 @@
 └─────────────────────────────────────────────────┘
 ```
 
-## Текущий этап: Stage 6 — Human Review & Analytics
+## Текущий этап: Stage 7 — Semi-Auto (авто-действия)
 
 ### Завершено
 
@@ -76,14 +76,15 @@
 
 **LLM Service (`services/llm_service.py`):**
 - BaseLLMService (ABC) — абстрактный интерфейс
-- LLMService — заглушка, парсит JSON-ответ, возвращает score=0.5
+- LLMService — заглушка; парсит JSON-ответ, извлекает признаки, возвращает детерминированный нейтральный score=0.6 (`NEUTRAL_SCORE`)
 - Включается/выключается через `ai.llm.enabled`
 - Валидация JSON + Pydantic-модель, ошибки → REVIEW с confidence=0.0
+- **Фичевый контракт (llm-v3)**: LLM извлекает только разрешённые признаки (hard_negatives H1–H8, positive_factors P1–P4, unknown), score вычисляется детерминированно (`detect_score_status`): негатив → 0.1, positive → 0.9, иначе нейтральный 0.6. Ответ модели-«мнение» (score/reasoning) игнорируется.
 
 **AI Scoring Service (`services/ai_scoring_service.py`):**
 - AIScoringService — объединяет CLIP + LLM в единый AIScore
 - Веса: `clip_weight`, `llm_weight` (нормализуются если один компонент отсутствует)
-- Пороги: `like_threshold`, `dislike_threshold`
+- Порог: `like_threshold`; DISLIKE-рекомендация `_determine_recommendation` возможна ТОЛЬКО при подтверждённом hard negative (инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`)
 - Уверенность: HIGH (оба), MEDIUM (один), LOW (нет данных)
 - Сохраняет результат в `ai_scores` таблицу
 
@@ -164,13 +165,14 @@ ai:
 - `score_profile(profile, image_data_list)` → AIScore (без сохранения)
 - `evaluate(profile, image_data_list)` → AIScore (сохраняет в ai_scores)
 - Сигналы помечаются недоступными (None) при недоступности шлюза (`_llm_failed`/`_clip_failed`)
-- `LLMScore.prompt_version` = "llm-v1"
+- `LLMScore.prompt_version` = "llm-v3" (клиент помечает версию промпта)
 
 **DecisionService (`services/decision_service.py`):**
 - `evaluate(profile_id, image_data_list)` / `evaluate_profile(profile, image_data_list)` / `get_latest` / `get_history`
 - Алгоритм `_combine` (веса `ai.decision.weights`, отсутствующий сигнал не 0) + `_decide`:
-  - REJECT → DISLIKE/FILTER_REJECTED; REVIEW → REVIEW (никогда LIKE)
-  - PASS: нет сигналов → REVIEW/AI_UNAVAILABLE; combined ≥ like ∧ conf ≥ min_conf → LIKE; иначе low-conf → REVIEW/LOW_CONFIDENCE; combined ≥ review → REVIEW; иначе DISLIKE/BELOW_THRESHOLDS
+  - Инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`: семантический DISLIKE только при подтверждённом hard negative (пользовательский SKIP/`USER_SKIP`, признак LLM/`LLM_SKIP`, REJECT-фильтр)
+  - REJECT → DISLIKE/FILTER_REJECTED; REVIEW → REVIEW (никогда LIKE, никогда не-DISLIKE без негатива)
+  - PASS: USER_SKIP → DISLIKE; LLM hard negative → DISLIKE; нет сигналов → REVIEW/AI_UNAVAILABLE; combined ≥ like ∧ conf ≥ min_conf → LIKE; иначе low-conf → REVIEW/LOW_CONFIDENCE; combined ≥ review → REVIEW; иначе REVIEW/INSUFFICIENT_DATA (НЕ DISLIKE)
 - Один вызов шлюза: внутри использует `AIScoringService.evaluate` (сохраняет и `ai_scores`, и `ai_decisions`)
 - Telegram-free; сохраняет решение в БД, лог INFO
 
@@ -274,4 +276,4 @@ python -m pytest tests/test_filter.py -v
 python -m pytest tests/test_parser.py -v
 ```
 
-Текущий результат: **315/315 passed** (после Stage 6)
+Текущий результат: **472/472 passed** (после фичевого LLM-контракта и инварианта `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`)
