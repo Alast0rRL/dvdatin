@@ -1,6 +1,6 @@
 # DvAI — Система автоматизации знакомств в Telegram
 
-> **D**ayvinchik **AI** — умный коллектор + AI-скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» в Telegram.
+> **D**ayvinchik **AI** — умный коллектор + детерминированный скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» в Telegram.
 > Текущий этап: **v0.7 / Stage 7 (SEMI_AUTO)** — AI отправляет ❤️/👎 на анкеты с авто-аккаунта, управление через Telegram-панель.
 
 ---
@@ -35,9 +35,9 @@ Telegram (RAW)
    → сохранить всё ✅ (инвариант RAW-first)
    → классифицировать / распарсить
    → дедуплицировать в Profile
-   → отфильтровать (возраст/город)
-   → AI-оценить (CLIP фото + LLM текст)
-   → вынести решение LIKE / REVIEW / DISLIKE
+    → отфильтровать (возраст/город)
+    → детерминированно извлечь признаки (правила из preferences.yaml)
+    → вынести решение LIKE / REVIEW / DISLIKE
    → человек подтверждает/отклоняет решение (Human Review)
    → аналитика согласия «AI ↔ человек» (калибровка AI)
 ```
@@ -68,11 +68,15 @@ Telegram (RAW)
 | Зона | Процесс | Компоненты | Контакт с Telegram |
 |---|---|---|---|
 | **Collector (Windows/Linux)** | сбор и сохранение данных | `dvinchik_collector`, `raw_worker`, `raw_queue`, `dedup`, `city_normalizer`, `anti_block`, `stats` | ✅ Telethon |
-| **AI + Decision (Windows/Linux)** | анализ и решение | `filter_engine/service`, `clip_service`, `llm_service`, `ai_scoring_service`, `decision_service`, `preferences` | ❌ Telegram-free |
+| **AI + Decision (Windows/Linux)** | анализ и решение | `filter_engine/service`, `profile_normalizer`, `feature_extractor`, `score_engine`, `decision_service`, `preferences` | ❌ Telegram-free |
 | **Review + Analytics (Windows)** | ручная рецензия и аналитика | `review_service`, `analytics_service`, `review_export`, `review_bot` | ✅ только `review_bot.py` |
 
 Отдельно живёт **Ubuntu AI Inference Server** (FastAPI): LLM (Ollama `qwen3:8b`) + CLIP
 на GPU. Windows/Linux обращается к нему по HTTP через **remote-клиенты** (`httpx`).
+> **Stage 8:** скоринг переведён на **детерминированный движок правил** (см. ниже) —
+> LLM/CLIP в scoring-пайплайне больше не используются. Legacy-модули
+> (`clip_service`, `llm_service`, `ai_scoring_service`, `remote_llm_client`,
+> `remote_clip_client`) остаются в кодовой базе как пассивные и не вызываются.
 
 ### Пайплайн обработки сообщения (OBSERVE)
 
@@ -88,11 +92,9 @@ Telegram NewMessage (входящее)
    ├─ classify → PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN
    ├─ PROFILE → upsert_profile(Profile, fingerprint-дедуп)
    ├─ Фильтр FilterService.evaluate(profile) → PASS / REJECT / REVIEW
-   │     └─ Только PASS:
-   │         ├─ скачать изображения (msg.download_media → bytes)
-   │         ├─ Remote CLIP (фото) + Remote LLM (текст)
-   │         ├─ AIScoringService → AIScore (combined)
-   │         └─ DecisionService → LIKE / REVIEW / DISLIKE  (+ предпочтения SKIP/LIKE)
+   │     └─ Все результаты (PASS/REJECT/REVIEW):
+   │         ├─ DecisionService.evaluate(profile, filter_result) — детерминированные
+   │         │   правила (нормализация → извлечение признаков H01–H09, P01–P04 → score → решение)
    ├─ MEDIA_ONLY → привязка к последней анкете чата (profile_messages)
    └─ mark_raw_processed (processed_at=now → W3-backlog не повторяет)
 ```
@@ -124,7 +126,7 @@ Telegram NewMessage (входящее)
 | `profile_messages` | Связь профиль ↔ сообщения (в т.ч. MEDIA_ONLY) |
 | `chat_context` | Контекст «последняя анкета чата» (переживает restart) |
 | `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
-| `ai_scores` | Скоры CLIP/LLM/combined + рекомендация скоринга |
+| `ai_scores` | Скоры CLIP/LLM/combined (legacy, не используется в Stage 8 скоринге) |
 | `ai_decisions` | Итоговые решения Decision Engine (LIKE/REVIEW/DISLIKE) |
 | `auto_actions_log` | Успешно отправленные Telegram LIKE/DISLIKE; запись на карточку (по `telegram_message_id`) |
 | `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
@@ -136,11 +138,41 @@ ai_decisions ← human_decisions`.
 
 | Слой | Модуль | Модель | Что сохраняется | Смысл |
 |---|---|---|---|---|
-| AI Scoring | `ai_scoring_service.py` | `AIRecommendation` (LIKE/DISLIKE/REVIEW) | `ai_scores` | Скоринговая рекомендация по порогам `ai.scoring` |
+| AI Scoring (scoring) | `score_engine.py` | скор (0–1) + reason коды (`LIKE_THRESHOLD` и т.п.) | `ai_decisions` | Детерминированный расчёт по правилам |
 | AI Decision | `decision_service.py` | `AIDecision` (LIKE/REVIEW/DISLIKE) | `ai_decisions` | Итоговое решение + предпочтения пользователя |
 
-`DecisionService.evaluate()` — единый вызов шлюза: внутри сохраняет и `ai_scores`, и
-`ai_decisions`. Решение считается **только на клиенте**, не на сервере.
+`DecisionService.evaluate()` — единый вызов шлюза: внутри нормализует текст, извлекает
+признаки, считает скор и выносит решение (сохраняет в `ai_decisions`). Решение считается
+**только на клиенте** (нет сервера/шлюза).
+
+### Детерминированный скоринг (Stage 8)
+
+**LLM/CLIP полностью исключены из scoring-пайплайна.** Оценка анкеты — это
+предсказуемый, воспроизводимый движок правил (без внешних шлюзов, без сети, без
+промптов). Пайплайн:
+
+```
+Profile.text (сырой)
+   → profile_normalizer.normalize_text()  (нижний регистр, лемматизация, склейка слов)
+   → feature_extractor.extract_features() — детерминированные правила:
+        H01–H09: жёсткие негативы (ищу общение, курю, есть парень, instagram, фото, ...)
+        P01–P04: положительные факторы (СПбПУ, аниме, игры, переехала в СПб, ...)
+   → score_engine.compute_score(features, config) — базовый скор +/– веса
+   → decision_service._decide(filter_decision, score, skip_labels, like_labels, ...)
+```
+
+Правила (негативы/позитивы/пороги) — в `config/preferences.yaml` (gitignored) —
+**единый источник истины**. `Services/profile_normalizer.py`, `services/feature_extractor.py`,
+`services/score_engine.py` применяют их детерминированно; ничего не зашито в
+`decision_service.py` (он только применяет итоговые labels/score).
+
+**Ключевые свойства:**
+- **Детерминизм:** один и тот же текст → один и тот же результат. Нет стохастики LLM.
+- **Без сети:** не нужен Ubuntu AI Server, GPU, ключи, промпты. Раньше при недоступном
+  шлюзе всё падало в `AI_UNAVAILABLE → REVIEW` — теперь это просто считается локально.
+- **Сопоставление паттернов** понимает инверсию («не курю» ≠ негатив) и третье лицо
+  («парень курит» — про другого человека).
+- **Evidence — фактические цитаты**, никогда не спекулятивные выводы.
 
 ### Слой предпочтений пользователя (SKIP/LIKE)
 
@@ -149,46 +181,22 @@ ai_decisions ← human_decisions`.
 приоритет (правила НЕ зашиты в `decision_service.py` — тот только применяет их):
 
 - **SKIP** (напр. «ищу друга», «курит», «есть парень», «покатайте», «под каре», «instagram»)
-  → **жёсткий DISLIKE**, CLIP не может перевернуть;
+  → **жёсткий DISLIKE**, правила не могут перевернуть;
 - **LIKE-фактор** (напр. «СПбПУ», «аниме», «игры», «переехала в СПб») → потенциальный
   DISLIKE поднимается до **REVIEW** (анкета не теряется) или до LIKE при высоком скоре.
 
-Пороги `0.75 / 0.50` не меняются. Правила дублируются в серверном LLM-промпте (`llm-v3`),
-который живёт на Ubuntu AI Server (не в репозитории).
+Пороги `0.75 / 0.50` не меняются. Правила больше **не дублируются** в серверном
+LLM-промпте — детерминированный движок читает тот же `preferences.yaml` напрямую.
 
-### AI-оценка анкеты: извлечение признаков, а не «мнение» (llm-v3)
+### Главный инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`
 
-**LLM больше НЕ является источником пользовательских критериев и НЕ «судья».** Промпт
-`llm-v3` (`deploy/llm-v3_prompt.md`) предписывает модели qwen3:8b **только извлекать**
-разрешённые признаки из текста анкеты, никогда не выдумывая свои критерии:
-
-- `hard_negatives` — подтверждённые жёсткие негативы (закрытый список H1–H8) с `evidence`-цитатой;
-- `positive_factors` — разрешённые положительные факторы (P1–P4) с `evidence`-цитатой;
-- `unknown` — осмысленные отсутствующие аспекты.
-
-`score` **вычисляется детерминированно** на клиенте (`services/llm_service.py` →
-`detect_score_status`), а не берётся из ответа модели: есть hard negative → `0.1`;
-есть positive factor → `0.9`; иначе нейтральный `0.6`. Изъятие признаков идёт по контракту
-`parse_feature_response` в `services/llm_service.py` / `services/remote_llm_client.py`.
-
-**Строгий whitelist признаков:** `parse_feature_response` принимает только коды из
-`HARD_NEGATIVE_CODES` (H1–H8) и `POSITIVE_FACTOR_CODES` (P1–P4). Любой неизвестный
-критерий (например `H999`/`P999`) **игнорируется** — он логируется на debug-уровне и
-НЕ попадает в итоговые features/reasons, не влияя на score/decision. Unknown feature =
-ignored, никогда не превращается в DISLIKE (нет fallback на негатив). Валидные признаки
-продолжают обрабатываться независимо от наличия неизвестных.
-
-Жёсткие запреты промпта: DO NOT INVENT CRITERIA; **отсутствие информации ≠ наказание**,
-**UNKNOWN ≠ DISLIKE**, короткая/пустая/эмодзи-анкета ≠ `invalid_data`; не делать выводов
-о фото/внешности по тексту (DO NOT INFER VISUAL FACTS); Instagram — жёсткий негатив (H8).
-
-**Главный инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`:** семантический DISLIKE в
-`decision_service.py` возможен **только** при подтверждённом жёстком негативе
-(пользовательский SKIP, признак LLM/`LLM_SKIP:…`, REJECT-фильтр). Низкий скор, отсутствие
-положительных факторов, малоинформативная анкета → **REVIEW**, а не DISLIKE. Транспортное
+Семантический DISLIKE в `decision_service._decide()` возможен **только** при
+подтверждённом жёстком негативе (пользовательский SKIP, признак H01–H09, REJECT-фильтр).
+Низкий скор, отсутствие положительных факторов, малоинформативная/пустая/эмодзи-анкета →
+**REVIEW**, а не DISLIKE: **missing/unknown информация никогда не наказывается**. Транспортное
 `👎` при REVIEW выполняется на уровне `AutoActionEngine` (движение ленты Leo) и не является
-семантическим DISLIKE. `_determine_recommendation` в `ai_scoring_service.py` тоже даёт
-DISLIKE только при признаке.
+семантическим DISLIKE.
+
 
 ### Human Review & Analytics (Stage 6)
 
@@ -277,7 +285,7 @@ DISLIKE только при признаке.
 - **Уведомления владельцу (`notify_chat_id`):** при каждом авто-лайке/дизлайке
   авто-аккаунт пересылает карточку анкеты владельцу и прикладывает отдельным
   сообщением понятное объяснение причины. Только смысловые причины: результаты
-  фильтра (город/возраст) и AI-анализ (LLM-причины на русском). Внутренние коды
+  фильтра (город/возраст) и AI-анализ (детерминированные причины на русском). Внутренние коды
   скоринга (`LIKE_THRESHOLD`, `BELOW_THRESHOLDS` и т.п.) **не** показываются.
   `0` — уведомления выключены. Ошибки пересылки ловятся и не ломают пайплайн.
 - Полный AUTO / диалог-менеджер не реализуются до явной команды (см. Roadmap).
@@ -312,7 +320,7 @@ dvdatin/
 ├── requirements.txt             # Prod-зависимости
 ├── requirements-dev.txt         # Dev-зависимости (pytest)
 ├── AGENTS.md                    # Правила/конвенции для агентов (и этот файл)
-├── PROJECT.md                   # План проекта, история этапов (Stages), roadmap
+├── Roadmap.md                   # План проекта, история этапов (Stages), roadmap
 │
 ├── config/                      # Конфигурация
 │   ├── config.example.yaml      #   Шаблон (коммитится)
@@ -341,7 +349,8 @@ dvdatin/
 │   ├── raw.py                   #   RawMessage, ParsedProfile, MessageType, FilterResult(raw)
 │   ├── profile.py               #   Profile, ProfileStatus, compute_fingerprint
 │   ├── filter.py                #   FilterDecision, FilterReason, FilterResult(filter)
-│   ├── ai.py                    #   AIScore, CLIPScore, LLMScore, AIRecommendation
+│   ├── ai.py                    #   AIScore, CLIPScore, LLMScore, AIRecommendation (legacy)
+│   ├── features.py              #   Stage 8: Feature/ScoringResult (детерминированный скоринг)
 │   ├── decision.py              #   AIDecision, AIDecisionResult
 │   └── human_decision.py        #   HumanDecision, AgreementStatus, HumanReview
 │
@@ -349,15 +358,20 @@ dvdatin/
 │   ├── profile_service.py       #   CRUD + upsert + fingerprint
 │   ├── filter_engine.py         #   AgeRule / CityRule / DataCompletenessRule
 │   ├── filter_service.py        #   Оценка + история в БД
-│   ├── clip_service.py          #   BaseCLIPService (ABC) + локальная заглушка
-│   ├── llm_service.py           #   BaseLLMService (ABC) + локальная заглушка
-│   ├── ai_scoring_service.py    #   Объединённый CLIP+LLM скоринг → AIScore
-│   ├── decision_service.py      #   AI Decision Engine (+ предпочтения)
-│   ├── remote_clip_client.py    #   httpx → Ubuntu AI (multipart field "files")
-│   ├── remote_llm_client.py     #   httpx → Ubuntu AI (Ollama /v1/llm/evaluate)
+│   ├── profile_normalizer.py    #   Stage 8: нормализация текста анкеты
+│   ├── feature_extractor.py     #   Stage 8: детерминированные правила H01–H09 / P01–P04
+│   ├── score_engine.py          #   Stage 8: расчёт скора (ScoreConfig)
+│   ├── decision_service.py      #   AI Decision Engine (+ предпочтения) — Stage 8 детерминированный
 │   ├── review_service.py        #   Human Review очередь/сохранение
 │   ├── analytics_service.py     #   Read-only аналитика (согласие, breakdowns)
 │   └── review_export.py         #   CSV-экспорт рецензий
+│
+│   # Legacy (Stage ≤7, НЕ вызываются в Stage 8 скоринге — пассивные):
+│   ├── clip_service.py          #   BaseCLIPService (ABC) + локальная заглушка (legacy)
+│   ├── llm_service.py           #   BaseLLMService (ABC) + локальная заглушка (legacy)
+│   ├── ai_scoring_service.py    #   Объединённый CLIP+LLM скоринг → AIScore (legacy)
+│   ├── remote_clip_client.py    #   httpx → Ubuntu AI (multipart field "files") (legacy)
+│   └── remote_llm_client.py     #   httpx → Ubuntu AI (Ollama /v1/llm/evaluate) (legacy)
 │
 ├── collectors/                  # Сбор данных
 │   ├── dvinchik_collector.py    #   Перехват, RAW-first, per-chat locks, W3-recovery, outgoing+callback
@@ -373,7 +387,7 @@ dvdatin/
 │
 ├── filters/  dialogs/  managers/  prompts/  utils/   # 🅡 ЗАРЕЗЕРВИРОВАНЫ (только __init__.py)
 │
-├── tests/                       # Тесты (434, без pytest-asyncio)
+├── tests/                       # Тесты (480, без pytest-asyncio)
 │   ├── test_*.py                #   Unit/integration для модулей
 │   ├── e2e_ai.py                #   REAL_E2E против живого шлюза (не в обычном pytest)
 │   └── baseline/                #   Frozen baseline тестов (diff-сверка)
@@ -605,18 +619,18 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.
 - [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW→`👎` (двигаем ленту Leo, профиль остаётся в БД), None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`. Автозапуск потока не шлёт `✨🔍` (невалидна вне состояния Leo): при старте обрабатывается уже показанная активная анкета, а при исчерпании ленты автоматически нажимается кнопка «🚀 Смотреть анкеты» (`start_auto_stream` + live-хук в `UNKNOWN`). Фильтровые REJECT/REVIEW (не-PASS от FilterService) тоже получают `👎`, чтобы лента не замирала и при неподходящих карточках. Финальный реверс механики LIKE/👎 как plain-text reply-кнопок. Автоответ на капчи/проверки Leo: на `UNKNOWN`-сообщение, текст которого содержит маркер `CAPTCHA_MARKERS` и имеет `>= 2` reply-кнопок, авто-аккаунт нажимает последнюю кнопку (идемпотентно) — сбрасывает диалог и продолжает ленту, не трогая главное меню/Premium.
 - [x] **Stage 7.5 — контрольная панель** — `ControlBot` (`telegram/control_bot.py`): /status /mode on|off /stream /recent /help + inline-кнопки; runtime-переключение режима (`collector.set_mode`) с персистентностью в `config.yaml`; авторизация по `control.allowed_user_ids`.
+- [x] **Stage 8 — детерминированный скоринг (без LLM/CLIP)** — LLM/CLIP полностью исключены из scoring-пайплайна. Вместо внешнего шлюза — детерминированный движок правил: `services/profile_normalizer.py` (нормализация), `services/feature_extractor.py` (признаки H01–H09 / P01–P04 из `config/preferences.yaml`), `services/score_engine.py` (расчёт скора), `models/features.py` (модели). `DecisionService.evaluate()` вызывается для **всех** результатов фильтра (PASS/REJECT/REVIEW). Один и тот же текст → один и тот же результат; без сети/GPU/промптов; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` сохранён (missing/unknown → REVIEW, никогда DISLIKE); версия scoring `deterministic-v2`; `ImagesConfig.enabled` по умолчанию `false`. Legacy-модули (`llm_service`, `clip_service`, `ai_scoring_service`, `remote_*_client`) остаются пассивными.
 
-Проверено: **434 теста проходят** (baseline в `tests/baseline/`).
+Проверено: **480 тестов проходят** (baseline в `tests/baseline/`).
 
 ### В разработке / планируется
 
 | | Этап / фича | Идея |
 |---|---|---|
-| 🔜 | **Stage 8: Dialog Manager** | автоматические сообщения, генерация реплик, управление диалогами (требует переключения `Mode` в AUTO) |
-| 🔜 | **Stage 9: Production** | мониторинг, алертинг, адаптация под изменения API Дайвинчика |
+| 🔜 | **Stage 9: Dialog Manager** | автоматические сообщения, генерация реплик, управление диалогами (требует переключения `Mode` в AUTO) |
+| 🔜 | **Stage 10: Production** | мониторинг, алертинг, адаптация под изменения API Дайвинчика |
 | 🔜 | **Docker-образ** | контейнеризация коллектора/клиента |
-| 🔜 | **Перенос `llm-v2` на сервер** | применить `deploy/llm-v2_prompt.md` в FastAPI `/v1/llm/evaluate` на Ubuntu AI Server и проверить live-запросами |
-| 🔜 | **Advanced AI scoring** | семантика вместо грубого текстового поиска, калибровка по Agreement Rate |
+| 🔜 | **Расширение правил скоринга** | больше признаков/паттернов, калибровка по Agreement Rate |
 
 ### Категорически НЕ реализуется до Stage 8
 
@@ -644,8 +658,8 @@ Dialog/Message Generator. Stage 7 ограничен реакцией на ко�
 ### Ключевые константы
 
 - Дайвинчик (Leo) chat_id по умолчанию: **`1234060895`**
-- Пороги решений: LIKE `0.75`, REVIEW `0.50`, min_confidence `0.60`
-- Веса Decision Engine: llm `0.7` / clip `0.3`
+- Пороги решений: LIKE `0.75`, REVIEW `0.50`
+- Scoring: детерминированный (`deterministic-v2`); правила в `config/preferences.yaml` (legacy-веса llm 0.7 / clip 0.3 не используются)
 - Версия баннера (`banner.py`): **`0.7`**
 
 ### Лицензия

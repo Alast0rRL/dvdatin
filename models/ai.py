@@ -1,4 +1,6 @@
-# Pydantic-модели для AI Scoring: CLIP, LLM, объединённый скор.
+# Pydantic-модели для AI Scoring (детерминированный scoring, Stage 8).
+# LLM/CLIP-зависимые модели (LLMScore, CLIPScore) УСТАРЕЛИ и не используются
+# в текущей архитектуре. AIScore сохранён для обратной совместимости с БД.
 
 from __future__ import annotations
 
@@ -19,9 +21,7 @@ class AIRecommendation(StrEnum):
 class ProfileStatus(StrEnum):
     """Статус достаточности данных по анкете.
 
-    Вычисляется из извлечённых признаков (детерминированно), а не из
-    субъективной оценки LLM. Используется DecisionService, чтобы нейтральные
-    и малоинформативные анкеты не превращались в DISLIKE.
+    Вычисляется из извлечённых признаков (детерминировано).
     """
 
     SUFFICIENT_DATA = "SUFFICIENT_DATA"
@@ -29,11 +29,7 @@ class ProfileStatus(StrEnum):
 
 
 class HardNegative(BaseModel):
-    """Подтверждённый жёсткий негатив, извлечённый LLM.
-
-    Ключевое требование: ``evidence`` — цитата/формулировка из анкеты, на
-    основании которой сделан вывод. Без evidence негатив не подтверждён.
-    """
+    """Подтверждённый жёсткий негатив (детерминированно извлечённый)."""
 
     criterion: str
     evidence: str = ""
@@ -42,7 +38,7 @@ class HardNegative(BaseModel):
 
 
 class PositiveFactor(BaseModel):
-    """Разрешённый положительный фактор, извлечённый LLM."""
+    """Разрешённый положительный фактор (детерминированно извлечённый)."""
 
     criterion: str
     evidence: str = ""
@@ -59,7 +55,7 @@ class ConfidenceLevel(StrEnum):
 
 
 class CLIPScore(BaseModel):
-    """Результат анализа изображений через CLIP."""
+    """Результат анализа изображений через CLIP (УСТАРЕЛО)."""
 
     image_count: int = 0
     aesthetic_score: float = 0.0
@@ -79,14 +75,7 @@ class CLIPScore(BaseModel):
 
 
 class LLMScore(BaseModel):
-    """Результат оценки анкеты через LLM.
-
-    LLM выполняет извлечение РАЗРЕШЁННЫХ признаков (hard_negatives,
-    positive_factors, unknown), а не субъективную оценку. Поле ``score`` —
-    детерминированная производная по правилу (hard negative → низкий,
-    positive → высокий, иначе нейтральный), чтобы пороги/комбинирование
-    оставались рабочими без субъективности модели.
-    """
+    """Результат оценки анкеты (УСТАРЕЛО — не используется)."""
 
     score: float = 0.0
     recommendation: AIRecommendation = AIRecommendation.REVIEW
@@ -98,7 +87,7 @@ class LLMScore(BaseModel):
     status: ProfileStatus = ProfileStatus.INSUFFICIENT_DATA
     raw_response: str = ""
     model_version: str = ""
-    prompt_version: str = "llm-v1"
+    prompt_version: str = "deterministic-v2"
 
     @field_validator("score", "confidence")
     @classmethod
@@ -110,7 +99,7 @@ class LLMScore(BaseModel):
 
 
 class AIScore(BaseModel):
-    """Единый результат AI-анализа анкеты."""
+    """Единый результат AI-анализа профиля (совместимость с БД)."""
 
     profile_id: int = 0
     clip_score: float | None = None
@@ -126,7 +115,7 @@ class AIScore(BaseModel):
     status: ProfileStatus = ProfileStatus.INSUFFICIENT_DATA
     model_version: str = ""
     created_at: str = ""
-    prompt_version: str = "llm-v1"
+    prompt_version: str = "deterministic-v2"
 
     def reasons_json(self) -> str:
         """Сериализует причины в JSON."""

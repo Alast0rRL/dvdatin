@@ -56,40 +56,29 @@ filters:
       - "Санкт-Петербург"
 
 ai:
-  enabled: false
-  backend: "local"           # "local" (stubs) или "remote" (Ubuntu AI Server через прокладку)
-  clip:
-    enabled: false
-    model: "openai/clip-vit-base-patch32"
-  llm:
-    enabled: false
-    provider: "ollama"
-    model: "qwen3:8b"
-    api_key: ""
-    timeout: 90
-    max_retries: 1
+  enabled: true                # Включить детерминированный scoring (Stage 8)
+  backend: "local"
   scoring:
-    clip_weight: 0.5
-    llm_weight: 0.5
-    like_threshold: 0.75
+    # Веса для ScoreEngine (детерминированный)
+    base_score: 0.5            # Базовый score без признаков (REVIEW)
+    positive_weight: 0.10      # Бонус за каждый positive factor
+    positive_cap: 0.35         # Макс. бонус за все positive factors
+    negative_penalty: 0.50     # Штраф за hard negative
   decision:
-    like_threshold: 0.75
-    review_threshold: 0.50
+    like_threshold: 0.75       # score >= + positive factors → LIKE
+    review_threshold: 0.50     # score >= → REVIEW
     min_confidence: 0.60
-    scoring_version: "v1"
+    scoring_version: "deterministic-v2"
     weights:
       llm: 0.7
       clip: 0.3
   remote:
-    base_url: "http://144.31.139.206:8000"   # пример: внешний порт прокладки на Ubuntu AI Server
+    base_url: "http://144.31.139.206:8000"
     timeout: 90
     max_retries: 1
-    api_key: ""                                # API-ключ для аутентификации (X-API-Key); реальный секрет — только в live config.yaml / env
+    api_key: ""
   images:
-    enabled: true
-    max_images: 5
-    max_size_mb: 10
-    timeout: 60
+    enabled: false             # CLIP отключён (детерминированный scoring не использует фото)
 
 limits:
   max_likes_per_day: 40

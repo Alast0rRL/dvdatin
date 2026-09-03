@@ -1,4 +1,4 @@
-# Unit/Integration тесты Stage 5: AIScoringService (score_profile/text/images).
+# Unit/Integration тесты AIScoringService (score_profile/text/images).
 # Полностью offline — используются MockLLMClient / MockCLIPClient.
 
 from __future__ import annotations
@@ -81,8 +81,6 @@ def make_config(
     ai_enabled: bool = True,
     clip_enabled: bool = True,
     llm_enabled: bool = True,
-    clip_weight: float = 0.5,
-    llm_weight: float = 0.5,
 ) -> AppConfig:
     """Создаёт конфиг с decision-блоком для тестов."""
     return AppConfig(**{
@@ -95,15 +93,11 @@ def make_config(
             "enabled": ai_enabled,
             "clip": {"enabled": clip_enabled, "model": "test-clip"},
             "llm": {"enabled": llm_enabled, "model": "test-llm", "api_key": "k"},
-            "scoring": {
-                "clip_weight": clip_weight,
-                "llm_weight": llm_weight,
-            },
+            "scoring": {},
             "decision": {
                 "like_threshold": 0.75,
                 "review_threshold": 0.50,
                 "min_confidence": 0.60,
-                "weights": {"llm": 0.70, "clip": 0.30},
             },
         },
     })
@@ -208,99 +202,19 @@ class TestAIScoringServiceStage5:
         )
         assert result is None
 
-    def test_score_profile_both(self, tmp_db: Database) -> None:
-        config = make_config(clip_weight=0.5, llm_weight=0.5)
+    def test_evaluate_disabled_gate(self, tmp_db: Database) -> None:
+        """AIScoringService is_enabled отражает наличие хотя бы одного компонента."""
+        config = make_config()
         llm = MockLLMClient(score=0.8, confidence=0.9)
-        clip = MockCLIPClient(score=0.6, image_count=1)
+        clip = MockCLIPClient(enabled=False)
         svc = AIScoringService(tmp_db, config, clip, llm)
-
+        # Только LLM → сервис включён (score_text возвращает LLM-скор).
+        assert svc.is_enabled is True
         prof_id = asyncio.get_event_loop().run_until_complete(
             insert_test_profile(tmp_db, 5)
         )
         result = asyncio.get_event_loop().run_until_complete(
-            svc.score_profile(make_profile(profile_id=prof_id), [b"img"])
+            svc.score_text(make_profile(profile_id=prof_id))
         )
-        assert result.llm_score == 0.8
-        assert result.clip_score == 0.6
-        # combined = 0.8*0.5 + 0.6*0.5 = 0.7
-        assert abs(result.combined_score - 0.7) < 0.01
-
-    def test_score_profile_llm_only(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False)
-        llm = MockLLMClient(score=0.8, confidence=0.9)
-        clip = MockCLIPClient(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        prof_id = asyncio.get_event_loop().run_until_complete(
-            insert_test_profile(tmp_db, 6)
-        )
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_profile(make_profile(profile_id=prof_id))
-        )
-        assert result.llm_score == 0.8
-        assert result.clip_score is None
-        assert result.combined_score == 0.8
-
-    def test_score_profile_clip_only(self, tmp_db: Database) -> None:
-        config = make_config(llm_enabled=False)
-        llm = MockLLMClient(enabled=False)
-        clip = MockCLIPClient(score=0.72, image_count=1)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        prof_id = asyncio.get_event_loop().run_until_complete(
-            insert_test_profile(tmp_db, 7)
-        )
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_profile(make_profile(profile_id=prof_id), [b"img"])
-        )
-        assert result.llm_score is None
-        assert result.clip_score == 0.72
-        assert result.combined_score == 0.72
-
-    def test_clip_score_none_without_images(self, tmp_db: Database) -> None:
-        config = make_config()
-        llm = MockLLMClient(score=0.8, confidence=0.9)
-        clip = MockCLIPClient(score=0.6, image_count=0)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        prof_id = asyncio.get_event_loop().run_until_complete(
-            insert_test_profile(tmp_db, 8)
-        )
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_profile(make_profile(profile_id=prof_id))
-        )
-        # нет изображений → clip_score = None, combined = llm
-        assert result.clip_score is None
-        assert result.combined_score == 0.8
-
-    def test_score_profile_does_not_save(self, tmp_db: Database) -> None:
-        config = make_config()
-        llm = MockLLMClient(score=0.8, confidence=0.9)
-        clip = MockCLIPClient(score=0.6)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        prof_id = asyncio.get_event_loop().run_until_complete(
-            insert_test_profile(tmp_db, 9)
-        )
-        asyncio.get_event_loop().run_until_complete(
-            svc.score_profile(make_profile(profile_id=prof_id), [b"img"])
-        )
-        row = asyncio.get_event_loop().run_until_complete(
-            tmp_db.get_latest_ai_score(prof_id)
-        )
-        assert row is None
-
-    def test_combined_score_weights_configurable(self, tmp_db: Database) -> None:
-        config = make_config(clip_weight=0.8, llm_weight=0.2)
-        llm = MockLLMClient(score=0.5, confidence=0.9)
-        clip = MockCLIPClient(score=1.0, image_count=1)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        prof_id = asyncio.get_event_loop().run_until_complete(
-            insert_test_profile(tmp_db, 10)
-        )
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_profile(make_profile(profile_id=prof_id), [b"img"])
-        )
-        # 0.5*0.2 + 1.0*0.8 = 0.9
-        assert abs(result.combined_score - 0.9) < 0.01
+        assert result is not None
+        assert result.score == 0.8

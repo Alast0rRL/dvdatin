@@ -39,8 +39,6 @@ if TYPE_CHECKING:
 
     from app.config import AppConfig
     from database.database import Database
-    from models.ai import AIScore
-    from services.ai_scoring_service import AIScoringService
     from services.filter_service import FilterService
     from services.profile_service import ProfileService
 
@@ -121,7 +119,6 @@ class DvinchikCollector:
         config: AppConfig,
         profile_service: ProfileService | None = None,
         filter_service: FilterService | None = None,
-        ai_scoring_service: AIScoringService | None = None,
         decision_service: object | None = None,
         stats: object | None = None,
         worker: DvinchikRawWorker | None = None,
@@ -162,7 +159,6 @@ class DvinchikCollector:
         self._recovery_armed: bool = False
         self._profile_service = profile_service
         self._filter_service = filter_service
-        self._ai_scoring_service = ai_scoring_service
         self._decision_service = decision_service
         # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
         # (config.auto_actions.account_session) среди accounts/clients (они
@@ -930,76 +926,58 @@ class DvinchikCollector:
                                 filter_result = await self._filter_service.evaluate(profile)
                                 self._print_filter_result(profile, filter_result)
 
-                                # AI scoring только для PASS
-                                if (
-                                    self._ai_scoring_service
-                                    and self._ai_scoring_service.is_enabled
-                                    and str(filter_result.decision) == "PASS"
-                                ):
+                                # Deterministic scoring (Stage 8): всегда через DecisionService.
+                                # Нет изображений, нет LLM — только текстовые правила.
+                                if self._decision_service:
                                     try:
-                                        image_data_list = (
-                                            await self._download_profile_images(msg)
+                                        decision = (
+                                            await self._decision_service.evaluate(
+                                                profile.id,
+                                                filter_result=filter_result,
+                                            )
                                         )
-                                        # Stage 5: если есть Decision Engine — используем его
-                                        # (один вызов шлюза: скор + решение сохраняются раздельно)
-                                        if self._decision_service:
-                                            decision = (
-                                                await self._decision_service.evaluate(
-                                                    profile.id,
-                                                    image_data_list=image_data_list,
-                                                    filter_result=filter_result,
-                                                )
-                                            )
-                                            self._print_ai_decision(profile, decision)
-                                            # Stage 7: авто-действие (SEMI_AUTO).
-                                            # Только если анкета пришла на авто-аккаунт
-                                            # (msg.client — аккаунт-получатель).
-                                            if (
-                                                self._auto_engine.enabled
-                                                and decision is not None
-                                                and msg is not None
-                                                and getattr(msg, "client", None)
-                                                is self._auto_engine.client
-                                            ):
-                                                try:
-                                                    if await self._db.has_auto_action_for_message(
-                                                        chat_id, task.message_id
-                                                    ):
-                                                        logger.info(
-                                                            f"AutoAction: карточка {task.message_id} уже в журнале"
-                                                        )
-                                                    else:
-                                                        action = await self._auto_engine.maybe_act(
-                                                            decision.decision, profile.id,
-                                                            message_id=task.message_id,
-                                                            reasons=decision.reasons,
-                                                        )
-                                                        if action in ("LIKE", "DISLIKE"):
-                                                            try:
-                                                                await self._db.record_auto_action(
-                                                                    profile.id, action,
-                                                                    decision.decision.value,
-                                                                    chat_id,
-                                                                    task.message_id,
-                                                                )
-                                                            except Exception as e:
-                                                                logger.error(
-                                                                    f"AutoAction: действие отправлено, но не записано: {e}"
-                                                                )
-                                                except Exception as e:
-                                                    logger.error(
-                                                        f"AutoAction error: {e}"
+                                        self._print_ai_decision(profile, decision)
+                                        # Stage 7: авто-действие (SEMI_AUTO).
+                                        # Только если анкета пришла на авто-аккаунт
+                                        # (msg.client — аккаунт-получатель).
+                                        if (
+                                            self._auto_engine.enabled
+                                            and decision is not None
+                                            and msg is not None
+                                            and getattr(msg, "client", None)
+                                            is self._auto_engine.client
+                                        ):
+                                            try:
+                                                if await self._db.has_auto_action_for_message(
+                                                    chat_id, task.message_id
+                                                ):
+                                                    logger.info(
+                                                        f"AutoAction: карточка {task.message_id} уже в журнале"
                                                     )
-                                        else:
-                                            ai_score = (
-                                                await self._ai_scoring_service.evaluate(
-                                                    profile,
-                                                    image_data_list=image_data_list,
+                                                else:
+                                                    action = await self._auto_engine.maybe_act(
+                                                        decision.decision, profile.id,
+                                                        message_id=task.message_id,
+                                                        reasons=decision.reasons,
+                                                    )
+                                                    if action in ("LIKE", "DISLIKE"):
+                                                        try:
+                                                            await self._db.record_auto_action(
+                                                                profile.id, action,
+                                                                decision.decision.value,
+                                                                chat_id,
+                                                                task.message_id,
+                                                            )
+                                                        except Exception as e:
+                                                            logger.error(
+                                                                f"AutoAction: действие отправлено, но не записано: {e}"
+                                                            )
+                                            except Exception as e:
+                                                logger.error(
+                                                    f"AutoAction error: {e}"
                                                 )
-                                            )
-                                            self._print_ai_score(profile, ai_score)
                                     except Exception as e:
-                                        logger.error(f"AI scoring error: {e}")
+                                        logger.error(f"Decision service error: {e}")
                                 elif (
                                     str(filter_result.decision) != "PASS"
                                     and self._auto_engine.enabled
@@ -1175,46 +1153,6 @@ class DvinchikCollector:
                 f"Media-only context (no service): "
                 f"media_msg={message_id}, profile_msg={prev}"
             )
-
-    async def _download_profile_images(
-        self, msg: object,
-    ) -> list[bytes]:
-        """Скачивает фотографии из сообщения для CLIP-анализа.
-
-        Скачивание происходит только после Filter PASS.
-        Ошибки отдельных изображений не ломают pipeline.
-        """
-        images_config = self._config.ai.images
-        if not images_config.enabled:
-            return []
-
-        if not hasattr(msg, "media") or msg.media is None:
-            return []
-
-        # Скачиваем через клиент, привязанный к самому сообщению (msg
-        # принадлежит тому аккаунту, который его получил), чтобы не зависеть
-        # от того, какой из нескольких клиентов коллектора вызвал обработку.
-        if msg is None or not hasattr(msg, "download_media"):
-            return []
-
-        max_bytes = images_config.max_size_mb * 1024 * 1024
-
-        try:
-            data = await msg.download_media(file=bytes)  # type: ignore[union-attr]
-            if data and len(data) <= max_bytes:
-                logger.info(
-                    f"Скачано изображение для CLIP: {len(data)} bytes"
-                )
-                return [data]
-            if data:
-                logger.warning(
-                    f"Фото превышает лимит "
-                    f"({len(data)} > {max_bytes} bytes)"
-                )
-        except Exception as e:
-            logger.warning(f"Ошибка скачивания фото: {e}")
-
-        return []
 
     def _serialize_entities(self, msg: object) -> str:
         """Сериализует entities сообщения в JSON."""
@@ -1461,55 +1399,8 @@ class DvinchikCollector:
             border_style=color,
         ))
 
-    def _print_ai_score(self, profile: object, ai_score: AIScore) -> None:
-        """Красивый вывод результата AI-анализа."""
-        rec = ai_score.recommendation.value
-        color_map = {
-            "LIKE": "green",
-            "DISLIKE": "red",
-            "REVIEW": "yellow",
-        }
-        color = color_map.get(rec, "white")
-
-        conf_color_map = {
-            "HIGH": "green",
-            "MEDIUM": "yellow",
-            "LOW": "red",
-        }
-        conf_color = conf_color_map.get(ai_score.confidence.value, "white")
-
-        table = Table(show_header=False, border_style="dim", padding=(0, 1))
-        table.add_column("Key", style="bold magenta", width=18)
-        table.add_column("Value")
-
-        if hasattr(profile, "id"):
-            table.add_row("Profile", f"#{profile.id}")
-        if hasattr(profile, "name"):
-            table.add_row("Name", profile.name)
-
-        table.add_row("Combined", f"{ai_score.combined_score:.2f}")
-        table.add_row("Recommendation", f"[{color}]{rec}[/{color}]")
-        table.add_row("Confidence", f"[{conf_color}]{ai_score.confidence.value}[/{conf_color}] ({ai_score.confidence_score:.2f})")
-
-        if ai_score.clip_score is not None:
-            table.add_row("CLIP", f"{ai_score.clip_score:.2f}")
-        if ai_score.llm_score is not None:
-            table.add_row("LLM", f"{ai_score.llm_score:.2f}")
-
-        if ai_score.reasons:
-            reasons_text = "\n".join(f"  • {r}" for r in ai_score.reasons)
-            table.add_row("Reasons", reasons_text)
-
-        table.add_row("Model", ai_score.model_version)
-
-        console.print(Panel(
-            table,
-            title=f"[bold {color}]AI SCORE[/]",
-            border_style=color,
-        ))
-
     def _print_ai_decision(self, profile: object, decision: object) -> None:
-        """Красивый вывод решения Decision Engine (Stage 5, только OBSERVE)."""
+        """Красивый вывод решения Decision Engine (детерминированный scoring)."""
         color_map = {
             "LIKE": "green",
             "REVIEW": "yellow",
@@ -1527,12 +1418,7 @@ class DvinchikCollector:
             table.add_row("Name", profile.name)
 
         table.add_row("Filter", "PASS")
-        if decision.llm_score is not None:
-            table.add_row("LLM", f"{decision.llm_score:.2f}")
-        if decision.clip_score is not None:
-            table.add_row("CLIP", f"{decision.clip_score:.2f}")
-        table.add_row("Combined", f"{decision.combined_score:.2f}")
-        table.add_row("Confidence", f"{decision.confidence:.2f}")
+        table.add_row("Score", f"{decision.combined_score:.2f}")
         table.add_row(
             "Decision",
             f"[bold {color}]{decision.decision.value}[/bold {color}]",
@@ -1550,6 +1436,6 @@ class DvinchikCollector:
 
         console.print(Panel(
             table,
-            title=f"[bold {color}]AI DECISION[/]",
+            title=f"[bold {color}]DECISION[/]",
             border_style=color,
         ))

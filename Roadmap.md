@@ -44,7 +44,12 @@
 └─────────────────────────────────────────────────┘
 ```
 
-## Текущий этап: Stage 7 — Semi-Auto (авто-действия)
+## Текущий этап: Stage 8 — Детерминированный скоринг (без LLM/CLIP)
+
+> Этап-маркеры ниже относятся к истории. Текущий scoring-пайплайн детерминированный
+> (`deterministic-v2`): нормализация → извлечение признаков (H01–H09/P01–P04 из
+> `config/preferences.yaml`) → расчёт скора → решение. LLM/CLIP/remote-клиенты — legacy,
+> пассивные.
 
 ### Завершено
 
@@ -231,14 +236,44 @@ ai:
 - `tests/test_review_ui.py` (5: регистрация 6 handler'ов, callback-парсинг, панель, полный поток через mocked event, все renderer'ы, отсутствие PII в кнопках)
 - Итог: **315 passed**
 
+### Stage 8 — что сделано (детерминированный скоринг)
+
+**Проблема:** LLM (qwen3:8b) через внешний шлюз — стохастичность, зависимость от сети/GPU,
+задержки, `AI_UNAVAILABLE → REVIEW`, промпт как источник правил.
+
+**Решение — детерминированное, клиентское, без шлюза:**
+
+- `models/features.py` — Feature / ScoringResult-модели.
+- `services/profile_normalizer.py` — нормализация текста (регистр, лемматизация, склейка).
+- `services/feature_extractor.py` — детерминированные правила H01–H09 (жёсткие негативы:
+  «ищу общение», «курю», «есть парень», instagram и т.п.) и P01–P04 (позитивные факторы).
+  Паттерны понимают инверсию («не курю») и третье лицо («парень курит»).
+- `services/score_engine.py` — ScoreConfig + расчёт скора (базовый +/– веса).
+- `services/decision_service.py` — переписан: вызывает `_decide(filter_decision, score,
+  skip_labels, like_labels, hard_negatives, positive_factors)`.
+- Collector вызывает `DecisionService.evaluate()` для **всех** результатов фильтра
+  (PASS/REJECT/REVIEW); решение деривируется внутри.
+- Правила — в `config/preferences.yaml` (единый источник истины), ничего не зашито в
+  decision_service.
+- Инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` сохранён: missing/unknown →
+  REVIEW, никогда DISLIKE.
+- `ImagesConfig.enabled` default → `false`; CLIP больше не влияет на «мнение».
+- Версия скоринга: `deterministic-v2`.
+- Stage 7 (AutoActionEngine, SEMI_AUTO) и Stage 7.5 (ControlBot) не тронуты.
+- Legacy: `llm_service`, `clip_service`, `ai_scoring_service`, `remote_llm_client`,
+  `remote_clip_client` остаются как пассивные. `ai_scores` более не пишется скорингом.
+
+**Tests:** `tests/test_deterministic_scoring.py` (73), переписан `tests/test_ai.py` (46,
+`TestCollectorDecisionIntegration`, `TestNoUnknownToDislikeInvariant`). Итог: **480 passed**.
+
 ### Следующие этапы
 
-**Stage 7: Dialog Manager**
+**Stage 9: Dialog Manager**
 - Автоматическая отправка сообщений
 - Генерация реплик
 - Управление диалогами
 
-**Stage 8: Production**
+**Stage 10: Production**
 - Мониторинг
 - Алертинг
 - Адаптация под изменения API
@@ -275,4 +310,4 @@ python -m pytest tests/test_filter.py -v
 python -m pytest tests/test_parser.py -v
 ```
 
-Текущий результат: **472/472 passed** (после фичевого LLM-контракта и инварианта `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`)
+Текущий результат: **480/480 passed** (после перевода скоринга на детерминированный движок правил, Stage 8).

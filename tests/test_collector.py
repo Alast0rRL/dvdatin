@@ -295,14 +295,10 @@ class TestSourceFilter:
         stats = CollectorStats()
         collector = DvinchikCollector(client, db, config, stats=stats)
 
-        with patch.object(
-            collector, "_download_profile_images", new=AsyncMock()
-        ) as dl:
-            event = self._photo_event(chat_id=-1001225291649, msg_id=998)
-            asyncio.get_event_loop().run_until_complete(
-                collector._handle_new_message(event)
-            )
-            dl.assert_not_called()
+        event = self._photo_event(chat_id=-1001225291649, msg_id=998)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
         db.save_raw_message.assert_not_called()
 
     def test_unauthorized_no_ai_scoring(self) -> None:
@@ -498,35 +494,30 @@ class TestRawWorker:
 
     def _collector_with_worker(
         self,
-    ) -> tuple[DvinchikCollector, DvinchikRawWorker, MagicMock, AsyncMock]:
+    ) -> tuple[DvinchikCollector, DvinchikRawWorker, AsyncMock]:
         client = AsyncMock()
         db = make_db_mock()
         config = make_config()
-        ai = MagicMock()
-        ai.is_enabled = True
-        ai.evaluate = AsyncMock(return_value=MagicMock())
         process = AsyncMock()
         collector = DvinchikCollector(
             client, db, config,
-            ai_scoring_service=ai,
             stats=CollectorStats(),
         )
         worker = DvinchikRawWorker(process=process)
         collector.attach_worker(worker)
-        return collector, worker, ai, process
+        return collector, worker, process
 
     def test_handler_does_not_run_ai(self) -> None:
-        collector, _worker, ai, process = self._collector_with_worker()
+        collector, _worker, process = self._collector_with_worker()
         loop = asyncio.get_event_loop()
         event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=100)
         loop.run_until_complete(collector._handle_new_message(event))
-        # Хендлер только ставит в очередь — сам pipeline (и AI) НЕ выполняется
+        # Хендлер только ставит в очередь — сам pipeline НЕ выполняется
         assert collector._dedup.is_duplicate((1234060895, 100)) is True
         process.assert_not_called()
-        ai.evaluate.assert_not_awaited()
 
     def test_message_enqueued(self) -> None:
-        collector, worker, _ai, process = self._collector_with_worker()
+        collector, worker, process = self._collector_with_worker()
         loop = asyncio.get_event_loop()
         event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=101)
         loop.run_until_complete(collector._handle_new_message(event))
@@ -1908,8 +1899,6 @@ class TestCollectorAutoActions:
             "account_session": "dvai_2",
             "interval_sec": 0.0,
         }
-        # Отключаем скачивание images, чтобы не тянуть медиа в тесте.
-        data["ai"] = {"images": {"enabled": False}}
         return AppConfig(**data)
 
     def _make_collector(
@@ -1945,10 +1934,6 @@ class TestCollectorAutoActions:
         ps = AsyncMock()
         ps.upsert_profile = AsyncMock(return_value=profile)
         collector._profile_service = ps
-        # AI-scoring включён (is_enabled=True), чтобы пройти в decision-блок.
-        ai = AsyncMock()
-        ai.is_enabled = True
-        collector._ai_scoring_service = ai
         # Привязываем worker, чтобы хендлер ставил в очередь, а не
         # обрабатывал синхронно — но для прямого вызова _process_message
         # нам нужен синхронный путь. Здесь вызываем _process_message напрямую.
@@ -1967,11 +1952,11 @@ class TestCollectorAutoActions:
         return AIDecisionResult(
             decision=decision,
             combined_score=0.8,
-            llm_score=0.8,
+            llm_score=None,
             clip_score=None,
             confidence=0.7,
             reasons=["test"],
-            scoring_version="v1",
+            scoring_version="deterministic-v2",
         )
 
     def test_like_decision_sends_heart_on_auto_account(self) -> None:
@@ -2157,9 +2142,6 @@ class TestCollectorAutoActions:
         ps = AsyncMock()
         ps.upsert_profile = AsyncMock(return_value=profile)
         collector._profile_service = ps
-        ai = AsyncMock()
-        ai.is_enabled = True
-        collector._ai_scoring_service = ai
         return collector
 
     def test_filter_reject_sends_dislike_to_keep_stream_moving(self) -> None:
@@ -2525,7 +2507,6 @@ class TestCollectorSetMode:
             "account_session": "dvai_2",
             "interval_sec": 0.0,
         }
-        data["ai"] = {"images": {"enabled": False}}
         return AppConfig(**data)
 
     def test_set_mode_updates_engine(self, tmp_path) -> None:

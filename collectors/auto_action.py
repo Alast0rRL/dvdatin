@@ -265,9 +265,9 @@ class AutoActionEngine:
     def _format_reason(action: str, reasons: list[str] | None) -> str:
         """Формирует человеко-читаемое объяснение причины лайка/дизлайка.
 
-        Коды решений (LIKE_THRESHOLD, BELOW_THRESHOLDS и т.д.) пропускаются —
-        пользователю показываются только смысловые причины: результаты работы
-        фильтра (город, возраст) и AI-анализа (LLM-причины на русском).
+        Поддерживает как старый формат (HARD_NEGATIVE:..., POSITIVE:...),
+        так и legacy формат (USER_SKIP:..., FILTER_REJECTED и т.д.).
+        Коды решений пропускаются — показываются только смысловые причины.
         """
         if not reasons:
             return ""
@@ -284,6 +284,26 @@ class AutoActionEngine:
             "LIKE_THRESHOLD", "LOW_CONFIDENCE", "REVIEW_THRESHOLD",
             "BELOW_THRESHOLDS", "FILTER_REJECTED", "FILTER_REVIEW",
             "USER_SKIP", "USER_LIKE", "AI_UNAVAILABLE",
+            "NO_FEATURES_FOUND",
+        }
+
+        _NEGATIVE_LABELS: dict[str, str] = {
+            "not_relationships": "Не ищет отношения",
+            "has_boyfriend": "Есть парень",
+            "smoking": "Курит",
+            "alcohol": "Пьёт",
+            "bad_habits": "Вредные привычки",
+            "pokatayte": "Покатайте/прокат",
+            "short_hair": "Волосы короче каре",
+            "instagram": "Instagram",
+            "plus_size": "+size",
+        }
+
+        _POSITIVE_LABELS: dict[str, str] = {
+            "spbpu": "СПбПУ",
+            "anime": "Аниме",
+            "games": "Игры",
+            "relocated_to_spb": "Переехала в СПб",
         }
 
         label = "❤️ Лайк" if action == "LIKE" else "👎 Дизлайк"
@@ -298,6 +318,24 @@ class AutoActionEngine:
             elif reason.startswith("USER_LIKE:"):
                 tag = reason.split(":", 1)[1]
                 lines.append(f"• Ваша метка интереса: {tag}")
+            elif reason.startswith("HARD_NEGATIVE:"):
+                parts = reason.split(":", 2)
+                name = parts[1] if len(parts) > 1 else ""
+                evidence = parts[2].strip("«»") if len(parts) > 2 else ""
+                label_text = _NEGATIVE_LABELS.get(name, name)
+                if evidence:
+                    lines.append(f"• {label_text}: {evidence}")
+                else:
+                    lines.append(f"• {label_text}")
+            elif reason.startswith("POSITIVE:"):
+                parts = reason.split(":", 2)
+                name = parts[1] if len(parts) > 1 else ""
+                evidence = parts[2].strip("«»") if len(parts) > 2 else ""
+                label_text = _POSITIVE_LABELS.get(name, name)
+                if evidence:
+                    lines.append(f"• {label_text}: {evidence}")
+                else:
+                    lines.append(f"• {label_text}")
             elif reason in _FILTER_LABELS:
                 lines.append(f"• {_FILTER_LABELS[reason]}")
             else:

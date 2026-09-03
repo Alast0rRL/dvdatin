@@ -27,11 +27,6 @@ from database.database import Database
 from services.filter_engine import FilterEngine
 from services.filter_service import FilterService
 from services.profile_service import ProfileService
-from services.clip_service import CLIPService
-from services.llm_service import LLMService
-from services.remote_llm_client import RemoteLLMClient
-from services.remote_clip_client import RemoteCLIPClient
-from services.ai_scoring_service import AIScoringService
 from services.decision_service import DecisionService
 from services.review_service import ReviewService
 from services.analytics_service import AnalyticsService
@@ -119,40 +114,25 @@ async def main() -> None:
     filter_engine = FilterEngine(config)
     filter_service = FilterService(db, profile_service, filter_engine)
 
-    ai_scoring_service = None
-    if config.ai.enabled:
-        if config.ai.backend == "remote":
-            clip_service = RemoteCLIPClient(config.ai.clip, config.ai.remote)
-            llm_service = RemoteLLMClient(config.ai.llm, config.ai.remote)
-            logger.info(
-                f"AI Scoring (remote): base_url={config.ai.remote.base_url}"
-            )
-        else:
-            clip_service = CLIPService(config.ai.clip)
-            llm_service = LLMService(config.ai.llm)
-            logger.info("AI Scoring (local stubs)")
-        ai_scoring_service = AIScoringService(db, config, clip_service, llm_service)
-
-    # AI Decision Engine (Stage 5) — только OBSERVE, никаких Telegram-действий
     # Предпочтения пользователя (SKIP/LIKE) подгружаются из отдельного файла.
     preferences = load_preferences()
     if preferences.enabled:
         logger.info(
-            "Предпочтения AI scoring загружены: "
+            "Предпочтения scoring загружены: "
             f"skip={len(preferences._prefs.skip)} like={len(preferences._prefs.like)}"
         )
-    decision_service = None
-    if config.ai.enabled and ai_scoring_service is not None:
-        decision_service = DecisionService(
-            db,
-            config,
-            profile_service,
-            filter_service,
-            ai_scoring_service,
-            preferences=preferences,
-        )
 
-    # Human Review + Analytics (Stage 6) — только OBSERVE/REVIEW
+    # Deterministic Decision Engine (Stage 8): детерминированный scoring
+    # без LLM/CLIP. Решение = правила + извлечённые признаки.
+    decision_service = DecisionService(
+        db,
+        config,
+        profile_service,
+        filter_service,
+        preferences=preferences,
+    )
+
+    # Human Review + Analytics (Stage 6)
     review_service = ReviewService(db, profile_service)
     analytics_service = AnalyticsService(db, config)
     review_bot = ReviewBot(
@@ -166,7 +146,6 @@ async def main() -> None:
         clients, db, config,
         profile_service=profile_service,
         filter_service=filter_service,
-        ai_scoring_service=ai_scoring_service,
         decision_service=decision_service,
         stats=stats,
         config_path=CONFIG_PATH,
@@ -174,7 +153,6 @@ async def main() -> None:
     collector.register()
 
     # Stage 7.5: ControlBot — панель управления режимом (вкл/выкл авто).
-    # Команды принимаются только от allowed_user_ids (см. config.control).
     if config.control.enabled:
         control_bot = ControlBot(
             clients[0], config,
@@ -184,23 +162,17 @@ async def main() -> None:
         control_bot.register()
         logger.info("ControlBot: панель управления активна")
 
-    # Stage 6.2: pipeline (parse → filter → AI) выполняется в фоновом worker.
-    # Хендлер только сохраняет RAW и ставит задание в очередь — AI/сетевой I/O
-    # не блокирует обработку входящих Telegram-событий.
+    # Pipeline: parse → filter → deterministic scoring
     worker = DvinchikRawWorker(process=collector._process_message)
     collector.attach_worker(worker)
     collector.start()
 
-    # Stage 7 (SEMI_AUTO): обработка уже показанной в чате активной анкеты
-    # на авто-аккаунте (лайк/дизлайк). start_auto_stream() гейтится по enabled;
-    # ✨🔍 не отправляется. Если активной анкеты нет — тихо ничего не делает.
+    # Stage 7 (SEMI_AUTO): обработка активной анкеты на авто-аккаунте
     auto_task = asyncio.get_event_loop().create_task(
         collector.start_auto_stream()
     )
 
-    # W3: восстановление backlog'а (RAW сохранён, но не обработан) запускаем
-    # фоном — не блокируем старт Telegram. Recovery сам дросселируется
-    # очередью (maxsize), worker обрабатывает параллельно.
+    # W3: восстановление backlog'а
     recovery_task = asyncio.get_event_loop().create_task(
         collector.recover_backlog()
     )
@@ -229,13 +201,6 @@ async def main() -> None:
             pass
         await collector.stop()
         stats.print_summary()
-        if ai_scoring_service and config.ai.backend == "remote":
-            clip = ai_scoring_service._clip
-            llm = ai_scoring_service._llm
-            if hasattr(clip, "close"):
-                await clip.close()
-            if hasattr(llm, "close"):
-                await llm.close()
         for c in clients:
             if c.is_connected():
                 await c.disconnect()

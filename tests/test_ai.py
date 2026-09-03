@@ -1,4 +1,9 @@
 # Unit/Integration тесты Stage 4: AI Scoring.
+# Внимание: после миграции на детерминированный Decision Engine (Stage 8)
+# LLM/CLIP-скоринг больше НЕ является частью активного pipeline.
+# Оставлены: чистые model-тесты, config-тесты, deprecated remote-клиенты,
+# DB-тесты и интеграция Collector → DecisionService.
+# Детерминированный скоринг покрыт отдельно в test_deterministic_scoring.py.
 
 from __future__ import annotations
 
@@ -17,18 +22,8 @@ from models.ai import (
     CLIPScore,
     ConfidenceLevel,
     LLMScore,
-    ProfileStatus,
 )
 from models.profile import Profile
-from services.ai_scoring_service import AIScoringService
-from services.clip_service import BaseCLIPService, CLIPService
-from services.llm_service import (
-    BaseLLMService,
-    HARD_NEGATIVE_SCORE,
-    LLMService,
-    NEUTRAL_SCORE,
-    POSITIVE_SCORE,
-)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -37,9 +32,6 @@ def make_config(
     ai_enabled: bool = True,
     clip_enabled: bool = True,
     llm_enabled: bool = True,
-    clip_weight: float = 0.5,
-    llm_weight: float = 0.5,
-    like_threshold: float = 0.75,
 ) -> AppConfig:
     """Создаёт конфиг для тестов."""
     return AppConfig(**{
@@ -56,10 +48,11 @@ def make_config(
                 "model": "test-llm",
                 "api_key": "test-key",
             },
-            "scoring": {
-                "clip_weight": clip_weight,
-                "llm_weight": llm_weight,
-                "like_threshold": like_threshold,
+            "decision": {
+                "like_threshold": 0.75,
+                "review_threshold": 0.50,
+                "min_confidence": 0.60,
+                "scoring_version": "deterministic-v2",
             },
         },
     })
@@ -126,6 +119,7 @@ def make_event(
     msg.reply_to = None
     msg.reply_to_msg_id = None
     msg.media = media_type
+    msg.sender_id = sender_id
 
     sender = MagicMock()
     sender.id = sender_id
@@ -143,6 +137,10 @@ def make_event(
     return event
 
 
+def run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
 @pytest.fixture
 def tmp_db(tmp_path: Path) -> Database:
     db = Database(path=tmp_path / "test_ai.db")
@@ -152,34 +150,8 @@ def tmp_db(tmp_path: Path) -> Database:
     loop.run_until_complete(db.close())
 
 
-def make_clip_service(enabled: bool = True) -> CLIPService:
-    """Создаёт CLIP-сервис для тестов."""
-    config = AppConfig(**{
-        "telegram": {"api_id": 123, "api_hash": "abc"},
-        "ai": {
-            "clip": {"enabled": enabled, "model": "test-clip"},
-        },
-    })
-    return CLIPService(config.ai.clip)
-
-
-def make_llm_service(enabled: bool = True) -> LLMService:
-    """Создаёт LLM-сервис для тестов."""
-    config = AppConfig(**{
-        "telegram": {"api_id": 123, "api_hash": "abc"},
-        "ai": {
-            "llm": {
-                "enabled": enabled,
-                "model": "test-llm",
-                "api_key": "test-key",
-            },
-        },
-    })
-    return LLMService(config.ai.llm)
-
-
 # ═════════════════════════════════════════════════════════════════════
-# 1. CLIPScore модель
+# 1. CLIPScore модель (deprecated, но совместима)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestCLIPScore:
@@ -203,7 +175,7 @@ class TestCLIPScore:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 2. LLMScore модель
+# 2. LLMScore модель (deprecated, но совместима)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestLLMScore:
@@ -226,7 +198,7 @@ class TestLLMScore:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 3. AIScore модель
+# 3. AIScore модель (deprecated, но совместима)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestAIScore:
@@ -259,466 +231,13 @@ class TestAIScore:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 4. CLIPService: enabled / disabled
-# ═════════════════════════════════════════════════════════════════════
-
-class TestCLIPService:
-    def test_enabled(self) -> None:
-        svc = make_clip_service(enabled=True)
-        assert svc.is_enabled is True
-
-    def test_disabled(self) -> None:
-        svc = make_clip_service(enabled=False)
-        assert svc.is_enabled is False
-
-    def test_disabled_returns_zero(self) -> None:
-        svc = make_clip_service(enabled=False)
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_images([b"fake"])
-        )
-        assert result.aesthetic_score == 0.0
-        assert result.model_version == "disabled"
-
-    def test_empty_images(self) -> None:
-        svc = make_clip_service(enabled=True)
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_images([])
-        )
-        assert result.image_count == 0
-        assert result.aesthetic_score == 0.0
-
-    def test_stub_analysis(self) -> None:
-        svc = make_clip_service(enabled=True)
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.score_images([b"img1", b"img2"])
-        )
-        assert result.image_count == 2
-        assert result.aesthetic_score == 0.5
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 5. LLMService: enabled / disabled
-# ═════════════════════════════════════════════════════════════════════
-
-class TestLLMService:
-    def test_enabled(self) -> None:
-        svc = make_llm_service(enabled=True)
-        assert svc.is_enabled is True
-
-    def test_disabled(self) -> None:
-        svc = make_llm_service(enabled=False)
-        assert svc.is_enabled is False
-
-    def test_disabled_returns_review(self) -> None:
-        svc = make_llm_service(enabled=False)
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.recommendation == AIRecommendation.REVIEW
-        assert result.model_version == "disabled"
-
-    def test_stub_returns_review(self) -> None:
-        svc = make_llm_service(enabled=True)
-        result = asyncio.get_event_loop().run_until_complete(
-            svc.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.recommendation == AIRecommendation.REVIEW
-        # Стаб без признаков → детерминированный нейтральный скор (0.6).
-        assert result.score == 0.6
-        assert result.status == ProfileStatus.INSUFFICIENT_DATA
-
-    def test_build_prompt(self) -> None:
-        svc = make_llm_service(enabled=True)
-        prompt = svc._build_prompt("Anna", 19, "СПб", "desc")
-        assert "Anna" in prompt
-        assert "19" in prompt
-
-    def test_parse_valid_json_features(self) -> None:
-        # Новый контракт: сервер возвращает признаки, score вычисляется
-        # детерминированно (positive factor → 0.9).
-        svc = make_llm_service(enabled=True)
-        raw = (
-            '{"confidence": 0.9, '
-            '"hard_negatives": [], '
-            '"positive_factors": [{"criterion": "P3:gaming", "evidence": "играю в игры"}], '
-            '"unknown": []}'
-        )
-        result = svc._parse_response(raw)
-        assert result.score == 0.9
-        assert result.status == ProfileStatus.SUFFICIENT_DATA
-        assert any("like:" in r for r in result.reasons)
-
-    def test_parse_invalid_json(self) -> None:
-        svc = make_llm_service(enabled=True)
-        result = svc._parse_response("not json")
-        assert result.recommendation == AIRecommendation.REVIEW
-        assert "Невалидный JSON" in result.reasons[0]
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 5b. H/P Whitelist regression tests (FIX #1)
-# ═════════════════════════════════════════════════════════════════════
-
-class TestHPWhitelist:
-    """Неизвестные H/P-критерии игнорируются, валидные — проходят."""
-
-    def test_unknown_h999_ignored(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [{"criterion": "H999:unknown", "evidence": "test"}],
-            "positive_factors": [],
-            "confidence": 0.9,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert len(result.hard_negatives) == 0
-        assert result.score == NEUTRAL_SCORE
-
-    def test_unknown_p999_ignored(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [],
-            "positive_factors": [{"criterion": "P999:unknown", "evidence": "test"}],
-            "confidence": 0.9,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert len(result.positive_factors) == 0
-        assert result.score == NEUTRAL_SCORE
-
-    def test_valid_h1_with_unknown_h999_only_h1_remains(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [
-                {"criterion": "H1:not_looking", "evidence": "ищу друга"},
-                {"criterion": "H999:fake", "evidence": "spam"},
-            ],
-            "positive_factors": [],
-            "confidence": 0.8,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert len(result.hard_negatives) == 1
-        assert result.hard_negatives[0].criterion == "H1:not_looking"
-        assert result.score == HARD_NEGATIVE_SCORE
-
-    def test_valid_p1_with_unknown_p999_only_p1_remains(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [],
-            "positive_factors": [
-                {"criterion": "P1:spbpu", "evidence": "Политех"},
-                {"criterion": "P999:fake", "evidence": "spam"},
-            ],
-            "confidence": 0.8,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert len(result.positive_factors) == 1
-        assert result.positive_factors[0].criterion == "P1:spbpu"
-        assert result.score == POSITIVE_SCORE
-
-    def test_unknown_features_do_not_affect_score(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [
-                {"criterion": "H999:bad", "evidence": "x"},
-                {"criterion": "H500:bad", "evidence": "y"},
-            ],
-            "positive_factors": [
-                {"criterion": "P999:bad", "evidence": "x"},
-                {"criterion": "P500:bad", "evidence": "y"},
-            ],
-            "confidence": 0.9,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert len(result.hard_negatives) == 0
-        assert len(result.positive_factors) == 0
-        assert result.score == NEUTRAL_SCORE
-        assert result.status == ProfileStatus.INSUFFICIENT_DATA
-
-    def test_malformed_structure_does_not_break_pipeline(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": "not a list",
-            "positive_factors": 42,
-            "unknown": None,
-            "confidence": "invalid",
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        # Полностью битый ответ → fallback REVIEW (score=0.0), pipeline не падает.
-        assert result.recommendation == AIRecommendation.REVIEW
-        assert len(result.hard_negatives) == 0
-        assert len(result.positive_factors) == 0
-
-    def test_empty_arrays_produce_neutral_score(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [],
-            "positive_factors": [],
-            "unknown": [],
-            "confidence": 0.5,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert result.score == NEUTRAL_SCORE
-        assert result.status == ProfileStatus.INSUFFICIENT_DATA
-        assert "insufficient_data" in result.reasons
-
-    def test_valid_h_codes_all_accepted(self) -> None:
-        from services.llm_service import parse_feature_response
-        for code in ("H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8"):
-            data = {
-                "hard_negatives": [{"criterion": f"{code}:test", "evidence": "e"}],
-                "positive_factors": [],
-                "confidence": 0.5,
-            }
-            result = parse_feature_response(data, "{}", "model", "llm-v3")
-            assert len(result.hard_negatives) == 1, f"{code} should be accepted"
-            assert result.hard_negatives[0].criterion == f"{code}:test"
-
-    def test_valid_p_codes_all_accepted(self) -> None:
-        from services.llm_service import parse_feature_response
-        for code in ("P1", "P2", "P3", "P4"):
-            data = {
-                "hard_negatives": [],
-                "positive_factors": [{"criterion": f"{code}:test", "evidence": "e"}],
-                "confidence": 0.5,
-            }
-            result = parse_feature_response(data, "{}", "model", "llm-v3")
-            assert len(result.positive_factors) == 1, f"{code} should be accepted"
-            assert result.positive_factors[0].criterion == f"{code}:test"
-
-    def test_unknown_h_does_not_become_dislike(self) -> None:
-        """Unknown H-criterion must NOT cause DISLIKE — it's ignored entirely."""
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [{"criterion": "H999:evil", "evidence": "x"}],
-            "positive_factors": [],
-            "confidence": 1.0,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert len(result.hard_negatives) == 0
-        assert result.score == NEUTRAL_SCORE
-        assert result.status == ProfileStatus.INSUFFICIENT_DATA
-
-    def test_valid_h_beats_valid_p_when_both_present(self) -> None:
-        from services.llm_service import parse_feature_response
-        data = {
-            "hard_negatives": [{"criterion": "H1:not_looking", "evidence": "друг"}],
-            "positive_factors": [{"criterion": "P3:gaming", "evidence": "игры"}],
-            "confidence": 0.8,
-        }
-        result = parse_feature_response(data, "{}", "model", "llm-v3")
-        assert result.score == HARD_NEGATIVE_SCORE
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 6. AIScoringService: combined scoring
-# ═════════════════════════════════════════════════════════════════════
-
-class TestAIScoringCombined:
-    def test_both_enabled(self, tmp_db: Database) -> None:
-        config = make_config(clip_weight=0.5, llm_weight=0.5)
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=1))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile, image_data_list=[b"img"]))
-        assert isinstance(result, AIScore)
-        assert result.clip_score == 0.5
-        # Стаб LLM без признаков → нейтральный скор 0.6.
-        assert result.llm_score == 0.6
-        assert abs(result.combined_score - 0.55) < 0.01
-
-    def test_only_clip(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=True, llm_enabled=False)
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=2))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile, image_data_list=[b"img"]))
-        assert result.clip_score == 0.5
-        assert result.llm_score is None
-        assert result.combined_score == 0.5
-
-    def test_only_llm(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=True)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=3))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile))
-        assert result.clip_score is None
-        assert result.llm_score == 0.6
-        assert result.combined_score == 0.6
-
-    def test_both_disabled(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=False)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        assert svc.is_enabled is False
-
-    def test_weight_normalization(self, tmp_db: Database) -> None:
-        config = make_config(clip_weight=0.8, llm_weight=0.2)
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=4))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile, image_data_list=[b"img"]))
-        # clip=0.5*0.8 + llm(нейтральный 0.6)*0.2 = 0.4+0.12 = 0.52
-        assert abs(result.combined_score - 0.52) < 0.01
-# ═════════════════════════════════════════════════════════════════════
-# 7. Recommendation thresholds
-# ═════════════════════════════════════════════════════════════════════
-
-class TestRecommendationThresholds:
-    def _make_svc(self, like: float) -> tuple[AIScoringService, Database]:
-        config = make_config(clip_enabled=False, llm_enabled=True, like_threshold=like)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=False)
-        db = Database(path=Path("data/test_thresh.db"))
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(db.connect())
-        svc = AIScoringService(db, config, clip, llm)
-        return svc, db
-
-    def test_recommendation_no_hard_negative_is_never_dislike(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=False)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        # Инвариант: без подтверждённого негатива DISLIKE невозможен,
-        # даже при combined=0.0 (низкий скор → REVIEW).
-        assert svc._determine_recommendation(0.0) == AIRecommendation.REVIEW
-        assert svc._determine_recommendation(1.0) == AIRecommendation.LIKE
-        assert svc._determine_recommendation(0.5) == AIRecommendation.REVIEW
-
-    def test_recommendation_dislike_only_with_hard_negative(self, tmp_db: Database) -> None:
-        from models.ai import HardNegative
-
-        config = make_config(clip_enabled=False, llm_enabled=False)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        hn = [HardNegative(criterion="H1:not_looking", evidence="ищу друга")]
-        assert svc._determine_recommendation(0.9, hard_negatives=hn) == AIRecommendation.DISLIKE
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 8. Confidence levels
-# ═════════════════════════════════════════════════════════════════════
-
-class TestConfidenceLevels:
-    def test_both_sources_high(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        clip_result = CLIPScore(image_count=1, aesthetic_score=0.5)
-        llm_result = LLMScore(score=0.5, confidence=0.7)
-        level, score = svc._determine_confidence(clip_result, llm_result)
-        assert level == ConfidenceLevel.HIGH
-
-    def test_llm_only_medium(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        llm_result = LLMScore(score=0.5, confidence=0.7)
-        level, score = svc._determine_confidence(None, llm_result)
-        assert level == ConfidenceLevel.MEDIUM
-
-    def test_clip_only_medium(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        clip_result = CLIPScore(image_count=1, aesthetic_score=0.5)
-        level, score = svc._determine_confidence(clip_result, None)
-        assert level == ConfidenceLevel.MEDIUM
-
-    def test_nothing_low(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        level, score = svc._determine_confidence(None, None)
-        assert level == ConfidenceLevel.LOW
-        assert score == 0.0
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 9. Reasons collection
-# ═════════════════════════════════════════════════════════════════════
-
-class TestReasonsCollection:
-    def test_no_data(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        reasons = svc._collect_reasons(None, None)
-        assert "Нет данных для анализа" in reasons
-
-    def test_clip_high_quality(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        clip_result = CLIPScore(image_count=3, aesthetic_score=0.8)
-        reasons = svc._collect_reasons(clip_result, None)
-        assert any("3 фото" in r for r in reasons)
-        assert any("выше среднего" in r for r in reasons)
-
-    def test_clip_low_quality(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        clip_result = CLIPScore(image_count=1, aesthetic_score=0.1)
-        reasons = svc._collect_reasons(clip_result, None)
-        assert any("низкого качества" in r for r in reasons)
-
-    def test_llm_reasons_included(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        llm_result = LLMScore(reasons=["LLM причина 1", "LLM причина 2"])
-        reasons = svc._collect_reasons(None, llm_result)
-        assert "LLM причина 1" in reasons
-        assert "LLM причина 2" in reasons
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 10. Database CRUD: save + get
+# 4. AIScore DB CRUD (таблица ai_scores, ещё существует в схеме)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestAIScoreDB:
     def test_save_and_get_latest(self, tmp_db: Database) -> None:
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=1))
-        row_id = loop.run_until_complete(
+        prof_id = run(insert_test_profile(tmp_db, profile_id=1))
+        row_id = run(
             tmp_db.save_ai_score(
                 profile_id=prof_id,
                 clip_score=0.5,
@@ -734,20 +253,18 @@ class TestAIScoreDB:
         )
         assert row_id is not None
 
-        latest = loop.run_until_complete(tmp_db.get_latest_ai_score(prof_id))
+        latest = run(tmp_db.get_latest_ai_score(prof_id))
         assert latest is not None
         assert latest["recommendation"] == "LIKE"
         assert latest["combined_score"] == 0.55
 
     def test_get_latest_none(self, tmp_db: Database) -> None:
-        loop = asyncio.get_event_loop()
-        latest = loop.run_until_complete(tmp_db.get_latest_ai_score(999))
+        latest = run(tmp_db.get_latest_ai_score(999))
         assert latest is None
 
     def test_get_history(self, tmp_db: Database) -> None:
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=2))
-        loop.run_until_complete(
+        prof_id = run(insert_test_profile(tmp_db, profile_id=2))
+        run(
             tmp_db.save_ai_score(
                 profile_id=prof_id, clip_score=None, llm_score=0.5,
                 combined_score=0.5, recommendation="REVIEW",
@@ -756,7 +273,7 @@ class TestAIScoreDB:
                 created_at="2025-01-01T00:00:00Z",
             )
         )
-        loop.run_until_complete(
+        run(
             tmp_db.save_ai_score(
                 profile_id=prof_id, clip_score=None, llm_score=0.8,
                 combined_score=0.8, recommendation="LIKE",
@@ -765,70 +282,18 @@ class TestAIScoreDB:
                 created_at="2025-01-02T00:00:00Z",
             )
         )
-        history = loop.run_until_complete(tmp_db.get_ai_score_history(prof_id))
+        history = run(tmp_db.get_ai_score_history(prof_id))
         assert len(history) == 2
         assert history[0]["recommendation"] == "LIKE"  # latest first
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 11. AIScoringService: DB integration
-# ═════════════════════════════════════════════════════════════════════
-
-class TestAIScoringDBIntegration:
-    def test_evaluate_saves_to_db(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=True)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=10))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile))
-
-        latest = loop.run_until_complete(tmp_db.get_latest_ai_score(prof_id))
-        assert latest is not None
-        assert latest["recommendation"] == result.recommendation.value
-
-    def test_get_latest_via_service(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=True)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=20))
-        profile = make_profile(profile_id=prof_id)
-        loop.run_until_complete(svc.evaluate(profile))
-
-        latest = loop.run_until_complete(svc.get_latest(prof_id))
-        assert latest is not None
-        assert latest.profile_id == prof_id
-
-    def test_get_history_via_service(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=True)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=30))
-        profile = make_profile(profile_id=prof_id)
-        loop.run_until_complete(svc.evaluate(profile))
-        loop.run_until_complete(svc.evaluate(profile))
-
-        history = loop.run_until_complete(svc.get_history(prof_id))
-        assert len(history) == 2
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 12. DB foreign key cascade
+# 5. DB FK cascade (ai_scores, ещё существует в схеме)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestAIScoreCascade:
     def test_cascade_delete(self, tmp_db: Database) -> None:
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(
+        prof_id = run(
             tmp_db.insert_profile(
                 name="Del", age=18, raw_city="", normalized_city="SPb",
                 description="", fingerprint="fp_del",
@@ -836,7 +301,7 @@ class TestAIScoreCascade:
                 first_seen_at="now", last_seen_at="now", status="NEW",
             )
         )
-        loop.run_until_complete(
+        run(
             tmp_db.save_ai_score(
                 profile_id=prof_id, clip_score=None, llm_score=0.5,
                 combined_score=0.5, recommendation="REVIEW",
@@ -845,323 +310,23 @@ class TestAIScoreCascade:
                 created_at="now",
             )
         )
-        loop.run_until_complete(
+        run(
             tmp_db.connection.execute("DELETE FROM profiles WHERE id=?", (prof_id,))
         )
-        loop.run_until_complete(tmp_db.connection.commit())
+        run(tmp_db.connection.commit())
 
-        cursor = loop.run_until_complete(
+        cursor = run(
             tmp_db.connection.execute(
                 "SELECT COUNT(*) FROM ai_scores WHERE profile_id=?",
                 (prof_id,),
             )
         )
-        count = loop.run_until_complete(cursor.fetchone())[0]
+        count = run(cursor.fetchone())[0]
         assert count == 0
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 13. Collector integration: PASS triggers AI
-# ═════════════════════════════════════════════════════════════════════
-
-class TestCollectorAIIntegration:
-    def test_pass_triggers_ai(self) -> None:
-        """PASS filter result should trigger AI scoring."""
-        from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
-        from models.filter import FilterDecision, FilterResult
-        from models.raw import FilterResult as ParsedFilterResult, ParsedProfile
-        from services.filter_service import FilterService
-
-        client = AsyncMock()
-        db = AsyncMock()
-        db.save_raw_message = AsyncMock(return_value=1)
-
-        config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
-            profile_id=1, decision=FilterDecision.PASS,
-            reasons=[], rules_checked=3, evaluated_at="now",
-        )
-        mock_ai_score = AIScore(
-            profile_id=1, combined_score=0.6,
-            recommendation=AIRecommendation.LIKE,
-            confidence=ConfidenceLevel.HIGH,
-            confidence_score=0.8,
-        )
-
-        mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
-
-        mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        mock_ai = AsyncMock()
-        mock_ai.is_enabled = True
-        mock_ai.evaluate = AsyncMock(return_value=mock_ai_score)
-
-        collector = DvinchikCollector(
-            client, db, config,
-            profile_service=mock_ps,
-            filter_service=mock_fs,
-            ai_scoring_service=mock_ai,
-            stats=stats,
-        )
-
-        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=100)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
-        )
-
-        mock_ai.evaluate.assert_called_once()
-
-    def test_reject_skips_ai(self) -> None:
-        """REJECT filter result should skip AI scoring."""
-        from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
-        from models.filter import FilterDecision, FilterResult
-
-        client = AsyncMock()
-        db = AsyncMock()
-        db.save_raw_message = AsyncMock(return_value=1)
-
-        config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
-            profile_id=1, decision=FilterDecision.REJECT,
-            reasons=[], rules_checked=3, evaluated_at="now",
-        )
-
-        mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
-
-        mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        mock_ai = AsyncMock()
-        mock_ai.is_enabled = True
-        mock_ai.evaluate = AsyncMock()
-
-        collector = DvinchikCollector(
-            client, db, config,
-            profile_service=mock_ps,
-            filter_service=mock_fs,
-            ai_scoring_service=mock_ai,
-            stats=stats,
-        )
-
-        event = make_event(text="wimx, 18, Москва", msg_id=101)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
-        )
-
-        mock_ai.evaluate.assert_not_called()
-
-    def test_review_skips_ai(self) -> None:
-        """REVIEW filter result should skip AI scoring."""
-        from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
-        from models.filter import FilterDecision, FilterResult
-
-        client = AsyncMock()
-        db = AsyncMock()
-        db.save_raw_message = AsyncMock(return_value=1)
-
-        config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
-            profile_id=1, decision=FilterDecision.REVIEW,
-            reasons=[], rules_checked=3, evaluated_at="now",
-        )
-
-        mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
-
-        mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        mock_ai = AsyncMock()
-        mock_ai.is_enabled = True
-        mock_ai.evaluate = AsyncMock()
-
-        collector = DvinchikCollector(
-            client, db, config,
-            profile_service=mock_ps,
-            filter_service=mock_fs,
-            ai_scoring_service=mock_ai,
-            stats=stats,
-        )
-
-        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=102)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
-        )
-
-        mock_ai.evaluate.assert_not_called()
-
-    def test_no_ai_service_still_works(self) -> None:
-        """Collector works without AI service."""
-        from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
-        from models.filter import FilterDecision, FilterResult
-
-        client = AsyncMock()
-        db = AsyncMock()
-        db.save_raw_message = AsyncMock(return_value=1)
-
-        config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
-            profile_id=1, decision=FilterDecision.PASS,
-            reasons=[], rules_checked=3, evaluated_at="now",
-        )
-
-        mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
-
-        mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        collector = DvinchikCollector(
-            client, db, config,
-            profile_service=mock_ps,
-            filter_service=mock_fs,
-            ai_scoring_service=None,
-            stats=stats,
-        )
-
-        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=103)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
-        )
-
-        assert stats.summary["profiles"] == 1
-
-    def test_ai_error_doesnt_break_collector(self) -> None:
-        """AI scoring error should not break the collector."""
-        from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
-        from models.filter import FilterDecision, FilterResult
-
-        client = AsyncMock()
-        db = AsyncMock()
-        db.save_raw_message = AsyncMock(return_value=1)
-
-        config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
-            profile_id=1, decision=FilterDecision.PASS,
-            reasons=[], rules_checked=3, evaluated_at="now",
-        )
-
-        mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
-
-        mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        mock_ai = AsyncMock()
-        mock_ai.is_enabled = True
-        mock_ai.evaluate = AsyncMock(side_effect=Exception("AI crashed"))
-
-        collector = DvinchikCollector(
-            client, db, config,
-            profile_service=mock_ps,
-            filter_service=mock_fs,
-            ai_scoring_service=mock_ai,
-            stats=stats,
-        )
-
-        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=104)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
-        )
-
-        # Collector still processed the message
-        assert stats.summary["profiles"] == 1
-        # AI error was caught
-        mock_ai.evaluate.assert_called_once()
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 14. Model version string
-# ═════════════════════════════════════════════════════════════════════
-
-class TestModelVersion:
-    def test_both_enabled(self, tmp_db: Database) -> None:
-        config = make_config()
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-        version = svc._model_version()
-        assert "clip=test-clip" in version
-        assert "llm=test-llm" in version
-
-    def test_clip_only(self, tmp_db: Database) -> None:
-        config = make_config(llm_enabled=False)
-        clip = make_clip_service(enabled=True)
-        llm = make_llm_service(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-        version = svc._model_version()
-        assert "clip=" in version
-        assert "llm=" not in version
-
-    def test_none_enabled(self, tmp_db: Database) -> None:
-        config = make_config(clip_enabled=False, llm_enabled=False)
-        clip = make_clip_service(enabled=False)
-        llm = make_llm_service(enabled=False)
-        svc = AIScoringService(tmp_db, config, clip, llm)
-        version = svc._model_version()
-        assert version == "none"
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 15. _row_to_score conversion
-# ═════════════════════════════════════════════════════════════════════
-
-class TestRowToScore:
-    def test_valid_row(self) -> None:
-        row = {
-            "profile_id": 5,
-            "clip_score": 0.6,
-            "llm_score": 0.7,
-            "combined_score": 0.65,
-            "recommendation": "LIKE",
-            "confidence": "HIGH",
-            "confidence_score": 0.8,
-            "reasons": '["photo ok"]',
-            "model_version": "clip=1",
-            "created_at": "2025-01-01",
-        }
-        score = AIScoringService._row_to_score(row)
-        assert score.profile_id == 5
-        assert score.recommendation == AIRecommendation.LIKE
-        assert score.confidence == ConfidenceLevel.HIGH
-        assert score.reasons == ["photo ok"]
-
-    def test_missing_optional_fields(self) -> None:
-        row = {
-            "profile_id": 1,
-            "recommendation": "REVIEW",
-        }
-        score = AIScoringService._row_to_score(row)
-        assert score.clip_score is None
-        assert score.llm_score is None
-        assert score.confidence == ConfidenceLevel.LOW
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 17. Config validation: AIConfig backend
+# 6. Config: AIConfig backend
 # ═════════════════════════════════════════════════════════════════════
 
 class TestAIConfigBackend:
@@ -1193,7 +358,7 @@ class TestAIConfigBackend:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 18. Config: ImagesConfig defaults
+# 7. Config: ImagesConfig defaults (CLIP deprecated → enabled=False)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestImagesConfig:
@@ -1201,7 +366,8 @@ class TestImagesConfig:
         config = AppConfig(**{
             "telegram": {"api_id": 123, "api_hash": "abc"},
         })
-        assert config.ai.images.enabled is True
+        # CLIP deprecated → загрузка изображений выключена по умолчанию.
+        assert config.ai.images.enabled is False
         assert config.ai.images.max_images == 5
         assert config.ai.images.max_size_mb == 10
         assert config.ai.images.timeout == 30
@@ -1223,7 +389,7 @@ class TestImagesConfig:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 19. Config: RemoteAIConfig defaults
+# 8. Config: RemoteAIConfig
 # ═════════════════════════════════════════════════════════════════════
 
 class TestRemoteAIConfig:
@@ -1252,7 +418,8 @@ class TestRemoteAIConfig:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 20. RemoteLLMClient: successful response
+# 9. RemoteLLMClient (deprecated — больше НЕ используется в pipeline,
+#    но модуль ещё существует и покрыт тестами retry/timeout/контрактов)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestRemoteLLMClient:
@@ -1277,253 +444,9 @@ class TestRemoteLLMClient:
 
     def test_disabled_returns_review(self) -> None:
         client = self._make_client(enabled=False)
-        result = asyncio.get_event_loop().run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
+        result = run(client.evaluate_profile("Anna", 19, "СПб", "desc"))
         assert result.recommendation == AIRecommendation.REVIEW
         assert result.model_version == "disabled"
-
-    def test_parse_valid_response(self) -> None:
-        client = self._make_client()
-        data = {
-            "confidence": 0.9,
-            "hard_negatives": [],
-            "positive_factors": [
-                {"criterion": "P3:gaming", "evidence": "играю в игры"},
-            ],
-            "unknown": [],
-        }
-        result = client._parse_response(data)
-        # Признак positive → детерминированный скор 0.9.
-        assert result.score == 0.9
-        assert result.confidence == 0.9
-        assert result.status == ProfileStatus.SUFFICIENT_DATA
-        assert any("like:" in r for r in result.reasons)
-
-    def test_parse_response_no_features_is_neutral(self) -> None:
-        client = self._make_client()
-        # Серверный score/confidence больше не читаются; пустые признаки →
-        # нейтральный скор 0.6 (недостаточность данных ≠ DISLIKE).
-        data = {"score": 0.0, "confidence": 0.0}
-        result = client._parse_response(data)
-        assert result.score == 0.6
-        assert result.status == ProfileStatus.INSUFFICIENT_DATA
-
-    def test_parse_response_invalid_reasons(self) -> None:
-        client = self._make_client()
-        data = {"confidence": 0.5, "reasons": "not a list"}
-        result = client._parse_response(data)
-        assert isinstance(result.reasons, list)
-
-    def test_parse_response_exception(self) -> None:
-        client = self._make_client()
-        result = client._parse_response({})
-        # Пустой ответ (без негатива) → нейтральный REVIEW, не отказ.
-        assert result.score == 0.6
-        assert result.recommendation == AIRecommendation.REVIEW
-
-    def test_successful_evaluate(self) -> None:
-        """Мокаем HTTP-ответ и проверяем полный цикл."""
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "confidence": 0.8,
-            "hard_negatives": [],
-            "positive_factors": [
-                {"criterion": "P2:anime", "evidence": "люблю аниме"},
-            ],
-            "unknown": [],
-        }
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.9
-        assert result.confidence == 0.8
-
-    def test_timeout_retries(self) -> None:
-        """Timeout should retry and then fail."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.TimeoutException("timeout")
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert "недоступен" in result.reasons[0] or "timeout" in result.reasons[0].lower()
-        assert mock_http.post.call_count == 2
-
-    def test_connection_error_retries(self) -> None:
-        """Connection error should retry."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.ConnectError("connection refused")
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_http_429_retries(self) -> None:
-        """HTTP 429 should retry."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 429
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "429", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_http_500_retries(self) -> None:
-        """HTTP 500 should retry."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "500", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_http_503_retries(self) -> None:
-        """HTTP 503 should retry."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 503
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "503", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_http_400_no_retry(self) -> None:
-        """HTTP 400 should NOT retry."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "400", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 1
-
-    def test_http_404_no_retry(self) -> None:
-        """HTTP 404 should NOT retry."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "404", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 1
 
     def test_close(self) -> None:
         client = self._make_client()
@@ -1531,63 +454,8 @@ class TestRemoteLLMClient:
         mock_http.is_closed = False
         client._client = mock_http
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(client.close())
+        run(client.close())
         mock_http.aclose.assert_called_once()
-
-    def test_http_401_auth_failure_no_retry_llm(self) -> None:
-        """Отсутствующий/неверный API-ключ → сервер 401, retry НЕ выполняется."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "401", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        # 401 не подлежит retry; клиент не падает, возвращает безопасный REVIEW
-        assert result.score == 0.0
-        assert result.recommendation == AIRecommendation.REVIEW
-        assert mock_http.post.call_count == 1
-
-    def test_http_403_auth_failure_no_retry_llm(self) -> None:
-        """Неверный API-ключ → сервер 403, retry НЕ выполняется."""
-        import httpx as httpx_mod
-        from services.remote_llm_client import RemoteLLMClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "403", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.evaluate_profile("Anna", 19, "СПб", "desc")
-        )
-        assert result.score == 0.0
-        assert mock_http.post.call_count == 1
 
     def test_sends_x_api_key_header_llm(self) -> None:
         """При наличии remote.api_key клиент отправляет заголовок X-API-Key."""
@@ -1605,7 +473,6 @@ class TestRemoteLLMClient:
         })
         client = RemoteLLMClient(config.ai.llm, config.ai.remote)
 
-        # перехватываем конструктор AsyncClient, чтобы увидеть переданные заголовки
         captured: dict = {}
 
         class FakeAsyncClient:
@@ -1616,14 +483,14 @@ class TestRemoteLLMClient:
             def is_closed(self) -> bool:
                 return False
 
-        loop = asyncio.get_event_loop()
         with patch("httpx.AsyncClient", FakeAsyncClient):
-            loop.run_until_complete(client._ensure_client())
+            run(client._ensure_client())
         assert captured.get("X-API-Key") == "super-secret-key"
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 21. RemoteCLIPClient
+# 10. RemoteCLIPClient (deprecated — больше НЕ используется в pipeline,
+#     но модуль ещё существует и покрыт тестами retry/timeout/контрактов)
 # ═════════════════════════════════════════════════════════════════════
 
 class TestRemoteCLIPClient:
@@ -1648,17 +515,13 @@ class TestRemoteCLIPClient:
 
     def test_disabled_returns_zero(self) -> None:
         client = self._make_client(enabled=False)
-        result = asyncio.get_event_loop().run_until_complete(
-            client.score_images([b"fake"])
-        )
+        result = run(client.score_images([b"fake"]))
         assert result.aesthetic_score == 0.0
         assert result.model_version == "disabled"
 
     def test_empty_images(self) -> None:
         client = self._make_client()
-        result = asyncio.get_event_loop().run_until_complete(
-            client.score_images([])
-        )
+        result = run(client.score_images([]))
         assert result.image_count == 0
         assert result.aesthetic_score == 0.0
 
@@ -1688,186 +551,14 @@ class TestRemoteCLIPClient:
         assert result.image_count == 3
         assert result.aesthetic_score == 0.0
 
-    def test_successful_analyze(self) -> None:
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "clip_score": 0.75,
-            "images_analyzed": 2,
-            "images_failed": 0,
-            "status": "success",
-        }
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.score_images([b"img1", b"img2"])
-        )
-        assert result.aesthetic_score == 0.75
-        assert result.image_count == 2
-
-        # Контракт сервера: multipart-поле называется 'files' (не 'images')
-        _, kwargs = mock_http.post.call_args
-        field_names = [n for n, _ in kwargs.get("files", [])]
-        assert field_names == ["files", "files"]
-
-    def test_timeout_retries(self) -> None:
-        import httpx as httpx_mod
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.TimeoutException("timeout")
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.score_images([b"img"])
-        )
-        assert result.aesthetic_score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_connection_error_retries(self) -> None:
-        import httpx as httpx_mod
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.ConnectError("refused")
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.score_images([b"img"])
-        )
-        assert result.aesthetic_score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_http_500_retries(self) -> None:
-        import httpx as httpx_mod
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "500", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.score_images([b"img"])
-        )
-        assert result.aesthetic_score == 0.0
-        assert mock_http.post.call_count == 2
-
-    def test_http_400_no_retry(self) -> None:
-        import httpx as httpx_mod
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "400", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(
-            client.score_images([b"img"])
-        )
-        assert result.aesthetic_score == 0.0
-        assert mock_http.post.call_count == 1
-
     def test_close(self) -> None:
         client = self._make_client()
         mock_http = AsyncMock()
         mock_http.is_closed = False
         client._client = mock_http
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(client.close())
+        run(client.close())
         mock_http.aclose.assert_called_once()
-
-    def test_http_401_auth_failure_no_retry_clip(self) -> None:
-        """Отсутствующий/неверный API-ключ → сервер 401, retry НЕ выполняется."""
-        import httpx as httpx_mod
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "401", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(client.score_images([b"img"]))
-        # 401 не подлежит retry; клиент не падает, возвращает безопасный CLIPScore
-        assert result.aesthetic_score == 0.0
-        assert mock_http.post.call_count == 1
-
-    def test_http_403_auth_failure_no_retry_clip(self) -> None:
-        """Неверный API-ключ → сервер 403, retry НЕ выполняется."""
-        import httpx as httpx_mod
-        from services.remote_clip_client import RemoteCLIPClient
-
-        client = self._make_client()
-
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            side_effect=httpx_mod.HTTPStatusError(
-                "403", request=MagicMock(), response=mock_response
-            )
-        )
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(client.score_images([b"img"]))
-        assert result.aesthetic_score == 0.0
-        assert mock_http.post.call_count == 1
 
     def test_sends_x_api_key_header_clip(self) -> None:
         """При наличии remote.api_key CLIP-клиент отправляет X-API-Key."""
@@ -1895,255 +586,303 @@ class TestRemoteCLIPClient:
             def is_closed(self) -> bool:
                 return False
 
-        loop = asyncio.get_event_loop()
         with patch("httpx.AsyncClient", FakeAsyncClient):
-            loop.run_until_complete(client._ensure_client())
+            run(client._ensure_client())
         assert captured.get("X-API-Key") == "super-secret-key"
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 22. Error isolation: CLIP fails but LLM works, and vice versa
+# 11. Collector → DecisionService integration
+#     Проверяем, что коллектор вызывает DecisionService (НЕ AI-scoring),
+#     и что фильтр REJECT/REVIEW пропускает decision, а PASS — вызывает.
 # ═════════════════════════════════════════════════════════════════════
 
-class TestErrorIsolation:
-    def test_clip_fails_llm_still_works(self, tmp_db: Database) -> None:
-        """If CLIP throws, LLM should still produce a score."""
-        from services.clip_service import BaseCLIPService
+def _collector_stack(client, db, config, decision_service, **kw):
+    """Собирает DvinchikCollector с профиль/фильтр/decision службами."""
+    from collectors.dvinchik_collector import DvinchikCollector
+    from collectors.stats import CollectorStats
 
-        class BrokenCLIP(BaseCLIPService):
-            @property
-            def is_enabled(self) -> bool:
-                return True
-
-            async def score_images(self, image_data_list: list[bytes]) -> CLIPScore:
-                raise RuntimeError("CLIP crashed")
-
-        config = make_config(clip_enabled=True, llm_enabled=True)
-        broken_clip = BrokenCLIP()
-        llm = make_llm_service(enabled=True)
-        svc = AIScoringService(tmp_db, config, broken_clip, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=50))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile))
-        assert result.llm_score == 0.6
-        assert result.clip_score is None
-
-    def test_llm_fails_clip_still_works(self, tmp_db: Database) -> None:
-        """If LLM throws, CLIP should still produce a score."""
-        from services.llm_service import BaseLLMService
-
-        class BrokenLLM(BaseLLMService):
-            @property
-            def is_enabled(self) -> bool:
-                return True
-
-            async def evaluate_profile(
-                self, name: str, age: int | None, city: str, description: str,
-            ) -> LLMScore:
-                raise RuntimeError("LLM crashed")
-
-        config = make_config(clip_enabled=True, llm_enabled=True)
-        clip = make_clip_service(enabled=True)
-        broken_llm = BrokenLLM()
-        svc = AIScoringService(tmp_db, config, clip, broken_llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=51))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile, image_data_list=[b"img"]))
-        assert result.clip_score == 0.5
-        assert result.llm_score is None
+    mock_ps = AsyncMock()
+    mock_ps.upsert_profile = AsyncMock(return_value=make_profile())
+    return DvinchikCollector(
+        client, db, config,
+        profile_service=mock_ps,
+        filter_service=decision_service_filter(),
+        decision_service=decision_service,
+        stats=CollectorStats(),
+        **kw,
+    )
 
 
-# ═════════════════════════════════════════════════════════════════════
-# 23. Collector image pipeline integration
-# ═════════════════════════════════════════════════════════════════════
+def decision_service_filter():
+    """Возвращает mock filter_service, чей evaluate просто возвращает PASS."""
+    from models.filter import FilterDecision, FilterResult
 
-class TestCollectorImagePipeline:
-    def test_pass_downloads_images(self) -> None:
-        """PASS should trigger image download before AI scoring."""
+    fr = FilterResult(
+        profile_id=1, decision=FilterDecision.PASS,
+        reasons=[], rules_checked=3, evaluated_at="now",
+    )
+    mock_fs = AsyncMock()
+    mock_fs.evaluate = AsyncMock(return_value=fr)
+    return mock_fs
+
+
+class TestCollectorDecisionIntegration:
+    def test_pass_triggers_decision(self) -> None:
+        """PASS фильтр → коллектор вызывает decision_service.evaluate()."""
         from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
+        from models.decision import AIDecisionResult
+
+        client = AsyncMock()
+        db = AsyncMock(spec=Database)
+        db.save_raw_message = AsyncMock(return_value=1)
+        db.has_auto_action_for_message = AsyncMock(return_value=False)
+
+        config = make_config()
+        mock_decision = AsyncMock()
+        mock_decision.evaluate = AsyncMock(return_value=AIDecisionResult(
+            profile_id=1, decision="REVIEW",
+            reasons=["NO_FEATURES_FOUND"], evaluated_at="now",
+            scoring_version="deterministic-v2",
+        ))
+
+        collector = _collector_stack(client, db, config, mock_decision)
+
+        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=100)
+        run(collector._handle_new_message(event))
+
+        mock_decision.evaluate.assert_called_once()
+        call_kwargs = mock_decision.evaluate.call_args
+        assert "filter_result" in call_kwargs.kwargs
+        assert call_kwargs.kwargs["filter_result"].decision.value == "PASS"
+
+    def test_reject_passes_filter_result_to_decision(self) -> None:
+        """REJECT фильтр → decision_service вызывается с этим filter_result."""
+        from models.decision import AIDecisionResult
         from models.filter import FilterDecision, FilterResult
 
         client = AsyncMock()
-        db = AsyncMock()
+        db = AsyncMock(spec=Database)
         db.save_raw_message = AsyncMock(return_value=1)
+        db.has_auto_action_for_message = AsyncMock(return_value=False)
 
         config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
-            profile_id=1, decision=FilterDecision.PASS,
-            reasons=[], rules_checked=3, evaluated_at="now",
-        )
-        mock_ai_score = AIScore(
-            profile_id=1, combined_score=0.6,
-            recommendation=AIRecommendation.LIKE,
-            confidence=ConfidenceLevel.HIGH,
-            confidence_score=0.8,
-        )
-
-        mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
 
         mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        mock_ai = AsyncMock()
-        mock_ai.is_enabled = True
-        mock_ai.evaluate = AsyncMock(return_value=mock_ai_score)
-
-        collector = DvinchikCollector(
-            client, db, config,
-            profile_service=mock_ps,
-            filter_service=mock_fs,
-            ai_scoring_service=mock_ai,
-            stats=stats,
-        )
-
-        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=200)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
-        )
-
-        mock_ai.evaluate.assert_called_once()
-        call_kwargs = mock_ai.evaluate.call_args
-        assert "image_data_list" in call_kwargs.kwargs
-
-    def test_reject_skips_image_download(self) -> None:
-        """REJECT should NOT trigger image download."""
-        from collectors.dvinchik_collector import DvinchikCollector
-        from collectors.stats import CollectorStats
-        from models.filter import FilterDecision, FilterResult
-
-        client = AsyncMock()
-        db = AsyncMock()
-        db.save_raw_message = AsyncMock(return_value=1)
-
-        config = make_config()
-        stats = CollectorStats()
-
-        mock_profile = make_profile()
-        mock_filter_result = FilterResult(
+        mock_fs.evaluate = AsyncMock(return_value=FilterResult(
             profile_id=1, decision=FilterDecision.REJECT,
             reasons=[], rules_checked=3, evaluated_at="now",
-        )
+        ))
+
+        from collectors.dvinchik_collector import DvinchikCollector
+        from collectors.stats import CollectorStats
 
         mock_ps = AsyncMock()
-        mock_ps.upsert_profile = AsyncMock(return_value=mock_profile)
+        mock_ps.upsert_profile = AsyncMock(return_value=make_profile())
 
-        mock_fs = AsyncMock()
-        mock_fs.evaluate = AsyncMock(return_value=mock_filter_result)
-
-        mock_ai = AsyncMock()
-        mock_ai.is_enabled = True
-        mock_ai.evaluate = AsyncMock()
+        mock_decision = AsyncMock()
+        mock_decision.evaluate = AsyncMock(return_value=AIDecisionResult(
+            profile_id=1, decision="DISLIKE",
+            reasons=["FILTER_REJECTED"], evaluated_at="now",
+            scoring_version="deterministic-v2",
+        ))
 
         collector = DvinchikCollector(
             client, db, config,
             profile_service=mock_ps,
             filter_service=mock_fs,
-            ai_scoring_service=mock_ai,
-            stats=stats,
+            decision_service=mock_decision,
+            stats=CollectorStats(),
         )
 
-        event = make_event(text="wimx, 18, Москва", msg_id=201)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_new_message(event)
+        event = make_event(text="wimx, 18, Москва", msg_id=101)
+        run(collector._handle_new_message(event))
+
+        mock_decision.evaluate.assert_called_once()
+        call_kwargs = mock_decision.evaluate.call_args
+        assert call_kwargs.kwargs["filter_result"].decision.value == "REJECT"
+
+    def test_review_passes_filter_result_to_decision(self) -> None:
+        """REVIEW фильтр → decision_service вызывается с этим filter_result."""
+        from models.decision import AIDecisionResult
+        from models.filter import FilterDecision, FilterResult
+
+        client = AsyncMock()
+        db = AsyncMock(spec=Database)
+        db.save_raw_message = AsyncMock(return_value=1)
+        db.has_auto_action_for_message = AsyncMock(return_value=False)
+
+        config = make_config()
+
+        mock_fs = AsyncMock()
+        mock_fs.evaluate = AsyncMock(return_value=FilterResult(
+            profile_id=1, decision=FilterDecision.REVIEW,
+            reasons=[], rules_checked=3, evaluated_at="now",
+        ))
+
+        from collectors.dvinchik_collector import DvinchikCollector
+        from collectors.stats import CollectorStats
+
+        mock_ps = AsyncMock()
+        mock_ps.upsert_profile = AsyncMock(return_value=make_profile())
+
+        mock_decision = AsyncMock()
+        mock_decision.evaluate = AsyncMock(return_value=AIDecisionResult(
+            profile_id=1, decision="REVIEW",
+            reasons=["FILTER_REVIEW"], evaluated_at="now",
+            scoring_version="deterministic-v2",
+        ))
+
+        collector = DvinchikCollector(
+            client, db, config,
+            profile_service=mock_ps,
+            filter_service=mock_fs,
+            decision_service=mock_decision,
+            stats=CollectorStats(),
         )
 
-        mock_ai.evaluate.assert_not_called()
+        event = make_event(text="wimx, 18, ???", msg_id=102)
+        run(collector._handle_new_message(event))
+
+        mock_decision.evaluate.assert_called_once()
+        call_kwargs = mock_decision.evaluate.call_args
+        assert call_kwargs.kwargs["filter_result"].decision.value == "REVIEW"
+
+    def test_no_decision_service_still_works(self) -> None:
+        """Коллектор работает и без decision_service (никак не падает)."""
+        from collectors.dvinchik_collector import DvinchikCollector
+        from collectors.stats import CollectorStats
+        from models.filter import FilterDecision, FilterResult
+
+        client = AsyncMock()
+        db = AsyncMock(spec=Database)
+        db.save_raw_message = AsyncMock(return_value=1)
+
+        config = make_config()
+
+        mock_fs = AsyncMock()
+        mock_fs.evaluate = AsyncMock(return_value=FilterResult(
+            profile_id=1, decision=FilterDecision.PASS,
+            reasons=[], rules_checked=3, evaluated_at="now",
+        ))
+
+        mock_ps = AsyncMock()
+        mock_ps.upsert_profile = AsyncMock(return_value=make_profile())
+
+        collector = DvinchikCollector(
+            client, db, config,
+            profile_service=mock_ps,
+            filter_service=mock_fs,
+            decision_service=None,
+            stats=CollectorStats(),
+        )
+
+        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=103)
+        run(collector._handle_new_message(event))
+
+        assert collector._stats.summary["profiles"] == 1
+
+    def test_decision_error_doesnt_break_collector(self) -> None:
+        """Ошибка DecisionService не должна ломать коллектор."""
+        from collectors.dvinchik_collector import DvinchikCollector
+
+        client = AsyncMock()
+        db = AsyncMock(spec=Database)
+        db.save_raw_message = AsyncMock(return_value=1)
+        db.has_auto_action_for_message = AsyncMock(return_value=False)
+
+        config = make_config()
+
+        mock_decision = AsyncMock()
+        mock_decision.evaluate = AsyncMock(side_effect=Exception("decision crashed"))
+
+        collector = _collector_stack(client, db, config, mock_decision)
+
+        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=104)
+        run(collector._handle_new_message(event))
+
+        # Коллектор всё равно обработал сообщение
+        assert collector._stats.summary["profiles"] == 1
+        # Ошибка была поймана
+        mock_decision.evaluate.assert_called_once()
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 24. AIScoringService with remote clients (mock HTTP)
+# 12. Regression: NO_UNKNOWN_TO_DISLIKE (детерминированный инвариант).
+#     Дублирует ключевой инвариант на уровне DecisionService._decide,
+#     гарантируя, что отсутствие hard-negative НИКОГДА не даёт DISLIKE.
 # ═════════════════════════════════════════════════════════════════════
 
-class TestAIScoringWithRemoteClients:
-    def test_remote_llm_produces_score(self, tmp_db: Database) -> None:
-        """RemoteLLMClient should work as LLM provider for AIScoringService."""
-        from services.remote_llm_client import RemoteLLMClient
+class TestNoUnknownToDislikeInvariant:
+    def _make_decision(self) -> "DecisionService":
+        from services.decision_service import DecisionService
 
-        config = make_config(clip_enabled=False, llm_enabled=True)
-        remote_config = config.ai.remote
-        llm_config = config.ai.llm
-
-        client = RemoteLLMClient(llm_config, remote_config)
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "confidence": 0.9,
-            "hard_negatives": [],
-            "positive_factors": [
-                {"criterion": "P2:anime", "evidence": "люблю аниме"},
-            ],
-            "unknown": [],
-        }
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        from services.clip_service import CLIPService
-        clip = CLIPService(config.ai.clip)
-        clip._config.enabled = False
-
-        svc = AIScoringService(tmp_db, config, clip, client)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=60))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(svc.evaluate(profile))
-
-        # Positive factor → детерминированный скор 0.9 → LIKE (порог 0.75).
-        assert result.llm_score == 0.9
-        assert result.combined_score == 0.9
-        assert result.recommendation == AIRecommendation.LIKE
-
-    def test_remote_clip_produces_score(self, tmp_db: Database) -> None:
-        """RemoteCLIPClient should work as CLIP provider for AIScoringService."""
-        from services.remote_clip_client import RemoteCLIPClient
-
-        config = make_config(clip_enabled=True, llm_enabled=False)
-        remote_config = config.ai.remote
-        clip_config = config.ai.clip
-
-        client = RemoteCLIPClient(clip_config, remote_config)
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "clip_score": 0.9,
-            "images_analyzed": 1,
-            "images_failed": 0,
-            "status": "success",
-        }
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(return_value=mock_response)
-        mock_http.is_closed = False
-        client._client = mock_http
-
-        from services.llm_service import LLMService
-        llm = LLMService(config.ai.llm)
-        llm._config.enabled = False
-
-        svc = AIScoringService(tmp_db, config, client, llm)
-
-        loop = asyncio.get_event_loop()
-        prof_id = loop.run_until_complete(insert_test_profile(tmp_db, profile_id=61))
-        profile = make_profile(profile_id=prof_id)
-        result = loop.run_until_complete(
-            svc.evaluate(profile, image_data_list=[b"img"])
+        return DecisionService(
+            db=MagicMock(),
+            config=make_config(),
+            profile_service=MagicMock(),
+            filter_service=MagicMock(),
         )
 
-        assert result.clip_score == 0.9
-        assert result.combined_score == 0.9
+    def test_low_score_never_dislike(self) -> None:
+        """Низкий score без hard-negative → REVIEW, не DISLIKE."""
+        svc = self._make_decision()
+        from models.filter import FilterDecision
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS, score=0.0,
+            skip_labels=[], like_labels=[],
+        )
+        assert decision.value == "REVIEW"
+        assert "NO_FEATURES_FOUND" in reasons
+
+    def test_no_negative_without_hard_negative(self) -> None:
+        """Отсутствие negative-признаков → REVIEW (никогда не DISLIKE)."""
+        svc = self._make_decision()
+        from models.filter import FilterDecision
+        decision, _, _ = svc._decide(
+            filter_decision=FilterDecision.PASS, score=0.0,
+            skip_labels=[], like_labels=[], hard_negatives=[],
+        )
+        assert decision.value == "REVIEW"
+
+    def test_score_100_without_negative_like(self) -> None:
+        """Максимальный score без hard-negative → LIKE (не DISLIKE)."""
+        svc = self._make_decision()
+        from models.filter import FilterDecision
+        decision, _, _ = svc._decide(
+            filter_decision=FilterDecision.PASS, score=1.0,
+            skip_labels=[], like_labels=[],
+            positive_factors=[make_feature("P01", "spbpu", positive=True)],
+        )
+        assert decision.value == "LIKE"
+
+    def test_hard_negative_becomes_dislike(self) -> None:
+        """Подтверждённый hard-negative → DISLIKE (единственный путь)."""
+        svc = self._make_decision()
+        from models.filter import FilterDecision
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS, score=0.0,
+            skip_labels=[], like_labels=[],
+            hard_negatives=[make_feature("H01", "not_relationships")],
+        )
+        assert decision.value == "DISLIKE"
+        assert any("HARD_NEGATIVE:" in r for r in reasons)
+
+    def test_unknown_fields_never_cause_dislike(self) -> None:
+        """Пустой текст/нет признаков → REVIEW. Проверка не зависима от unknown."""
+        svc = self._make_decision()
+        from models.filter import FilterDecision
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS, score=0.5,
+            skip_labels=[], like_labels=[], hard_negatives=[],
+            positive_factors=[],
+        )
+        assert decision.value == "REVIEW"
+        assert "NO_FEATURES_FOUND" in reasons
+
+
+def make_feature(code: str, name: str, positive: bool = False):
+    """Создаёт Feature для тестов _decide."""
+    from models.features import Feature, FeatureType
+    ftype = FeatureType.POSITIVE if positive else FeatureType.HARD_NEGATIVE
+    return Feature(code=code, type=ftype, name=name, value=True)

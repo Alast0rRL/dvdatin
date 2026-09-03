@@ -186,14 +186,14 @@ class ControlConfig(BaseModel):
 
 
 class CLIPConfig(BaseModel):
-    """Настройки CLIP-анализа фото."""
+    """Настройки CLIP-анализа фото (оставлен для обратной совместимости)."""
 
     enabled: bool = False
     model: str = "clip-vit-base-patch32"
 
 
 class LLMConfig(BaseModel):
-    """Настройки LLM-оценки анкет."""
+    """Настройки LLM (УСТАРЕЛО — не используется в детерминированном scoring)."""
 
     enabled: bool = False
     provider: str = "openai"
@@ -204,7 +204,7 @@ class LLMConfig(BaseModel):
 
 
 class RemoteAIConfig(BaseModel):
-    """Настройки удалённого AI-сервера."""
+    """Настройки удалённого AI-сервера (УСТАРЕЛО)."""
 
     base_url: str = "http://localhost:8000"
     timeout: int = 60
@@ -217,7 +217,7 @@ class RemoteAIConfig(BaseModel):
 
 
 class DecisionWeightsConfig(BaseModel):
-    """Веса источников для объединённого скора Decision Engine."""
+    """Веса источников для объединённого скора (УСТАРЕЛО)."""
 
     llm: float = 0.70
     clip: float = 0.30
@@ -240,12 +240,17 @@ class DecisionWeightsConfig(BaseModel):
 
 
 class DecisionConfig(BaseModel):
-    """Настройки AI Decision Engine (Stage 5)."""
+    """Настройки Decision Engine.
+
+    Пороги используются для детерминированного scoring:
+    - like_threshold: score >= → LIKE (при наличии positive factors).
+    - review_threshold: score >= → REVIEW (иначе тоже REVIEW — DISLIKE только по hard-negative).
+    """
 
     like_threshold: float = 0.75
     review_threshold: float = 0.50
     min_confidence: float = 0.60
-    scoring_version: str = "v1"
+    scoring_version: str = "deterministic-v2"
     weights: DecisionWeightsConfig = DecisionWeightsConfig()
 
     @field_validator("like_threshold", "review_threshold", "min_confidence")
@@ -269,40 +274,33 @@ class DecisionConfig(BaseModel):
 
 
 class ImagesConfig(BaseModel):
-    """Настройки скачивания изображений для CLIP."""
+    """Настройки скачивания изображений (УСТАРЕЛО — CLIP отключён)."""
 
-    enabled: bool = True
+    enabled: bool = False
     max_images: int = 5
     max_size_mb: int = 10
     timeout: int = 30
 
 
 class ScoringConfig(BaseModel):
-    """Настройки объединённого скоринга."""
+    """Настройки детерминированного скоринга (Stage 8)."""
 
-    clip_weight: float = 0.5
-    llm_weight: float = 0.5
-    like_threshold: float = 0.75
+    base_score: float = 0.5
+    positive_weight: float = 0.10
+    positive_cap: float = 0.35
+    negative_penalty: float = 0.50
 
-    @field_validator("clip_weight", "llm_weight")
+    @field_validator("base_score", "positive_weight", "positive_cap", "negative_penalty")
     @classmethod
     def weight_in_range(cls, v: float) -> float:
         if not (0.0 <= v <= 1.0):
-            msg = "Вес должен быть от 0.0 до 1.0"
-            raise ValueError(msg)
-        return v
-
-    @field_validator("like_threshold")
-    @classmethod
-    def threshold_in_range(cls, v: float) -> float:
-        if not (0.0 <= v <= 1.0):
-            msg = "Порог должен быть от 0.0 до 1.0"
+            msg = "Значение должно быть от 0.0 до 1.0"
             raise ValueError(msg)
         return v
 
 
 class AIConfig(BaseModel):
-    """Настройки AI Scoring."""
+    """Настройки AI Scoring (детерминированный scoring, Stage 8)."""
 
     enabled: bool = False
     backend: str = "local"

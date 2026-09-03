@@ -1,11 +1,17 @@
-# DecisionService: AI Decision Engine (Stage 5).
-# Отдельный слой поверх AI scoring. Принимает финальное решение по профилю.
+# DecisionService: детерминированный Decision Engine.
+# Заменяет LLM-зависимую версию. Полностью детерминированная.
 #
-# ПРАВИЛА:
-# - Работает ТОЛЬКО в OBSERVE-режиме. НЕ выполняет Telegram-действий.
-# - Telegram-free: не импортирует Telethon.
-# - НЕ делает score = decision: combined_score и decision — разные вещи.
-# - Пороги/веса берутся из конфигурации ai.decision.
+# Pipeline: normalize → extract features → evaluate rules → calculate score → decision
+#
+# КРИТИЧЕСКИЙ ИНВАРИАНТ (NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE):
+# DISLIKE возможен ТОЛЬКО при:
+#   1. Подтверждённом hard-negative (извлечённом из текста).
+#   2. Hard filter reject (age/city вне диапазона).
+#   3. User SKIP из preferences.yaml.
+# Низкий score, отсутствие текста, пустая анкета, нет интересов —
+# это всегда REVIEW, а не DISLIKE.
+#
+# Telegram-free: не импортирует Telethon.
 
 from __future__ import annotations
 
@@ -17,19 +23,29 @@ from loguru import logger
 
 from app.preferences import PreferencesEngine
 from models.decision import AIDecision, AIDecisionResult
+from models.features import ScoringResult, SCORING_VERSION
 from models.filter import FilterDecision
+from services.feature_extractor import FeatureExtractor
+from services.profile_normalizer import normalize_for_matching
+from services.score_engine import ScoreConfig, ScoreEngine
 
 if TYPE_CHECKING:
     from app.config import AppConfig, DecisionConfig
     from database.database import Database
     from models.profile import Profile
-    from services.ai_scoring_service import AIScoringService
     from services.filter_service import FilterService
     from services.profile_service import ProfileService
 
 
 class DecisionService:
-    """Сервис принятия AI-решений по профилям."""
+    """Сервис принятия детерминированных решений по профилям.
+
+    Заменяет LLM-based DecisionService. Использует:
+    1. PreferencesEngine (SKIP/LIKE из config/preferences.yaml).
+    2. FeatureExtractor (детерминированное извлечение признаков).
+    3. ScoreEngine (числовой score из признаков).
+    4. Decision logic (LIKE/REVIEW/DISLIKE по порогам и правилам).
+    """
 
     def __init__(
         self,
@@ -37,32 +53,27 @@ class DecisionService:
         config: AppConfig,
         profile_service: ProfileService,
         filter_service: FilterService,
-        ai_scoring_service: AIScoringService,
         preferences: PreferencesEngine | None = None,
     ) -> None:
         self._db = db
         self._config = config
         self._profile_service = profile_service
         self._filter_service = filter_service
-        self._ai = ai_scoring_service
         self._decision_cfg: DecisionConfig = config.ai.decision
-        # Предпочтения пользователя (SKIP/LIKE) — отдельный файл config/preferences.yaml.
-        # Если engine не передан — пустые правила (поведение не меняется).
         self._prefs = preferences if preferences is not None else PreferencesEngine()
+        self._extractor = FeatureExtractor()
+        self._score_engine = ScoreEngine()
 
     async def evaluate(
         self,
         profile_id: int,
-        image_data_list: list[bytes] | None = None,
-        filter_result: FilterResult | None = None,
+        filter_result=None,
     ) -> AIDecisionResult | None:
         """Оценивает профиль по ID и сохраняет решение.
 
         Args:
             profile_id: ID профиля.
-            image_data_list: Байты изображений (опционально) для CLIP.
-            filter_result: Уже вычисленный результат фильтра (опционально),
-                чтобы не оценивать фильтр повторно.
+            filter_result: Уже вычисленный результат фильтра (опционально).
 
         Returns:
             AIDecisionResult или None, если профиль не найден.
@@ -71,42 +82,55 @@ class DecisionService:
         if profile is None:
             logger.warning(f"Decision: profile {profile_id} не найден")
             return None
-        return await self.evaluate_profile(
-            profile, image_data_list=image_data_list, filter_result=filter_result,
-        )
+        return await self.evaluate_profile(profile, filter_result=filter_result)
 
     async def evaluate_profile(
         self,
         profile: Profile,
-        image_data_list: list[bytes] | None = None,
-        filter_result: FilterResult | None = None,
+        filter_result=None,
     ) -> AIDecisionResult:
         """Принимает решение по объекту Profile и сохраняет его.
 
-        Если filter_result не передан — вычисляет фильтр самостоятельно.
-        Передача готового результата устраняет повторную оценку фильтра
-        (и лишнюю запись в БД) при вызове из коллектора.
+        Полностью детерминированный pipeline:
+        1. PreferencesEngine (user SKIP/LIKE).
+        2. FeatureExtractor (hard negatives / positive factors).
+        3. ScoreEngine (числовой score).
+        4. Decision logic (LIKE/REVIEW/DISLIKE).
         """
         if filter_result is None:
             filter_result = await self._filter_service.evaluate(profile)
         filter_decision = filter_result.decision if filter_result else None
 
-        # evaluate() сохраняет AIScore в ai_scores и возвращает его —
-        # один вызов шлюза даёт и скор, и решение (без двойных сетевых запросов)
-        ai_score = await self._ai.evaluate(
-            profile, image_data_list=image_data_list,
+        # 1. Preferences: user SKIP/LIKE
+        skip_labels: list[str] = []
+        like_labels: list[str] = []
+        text = profile.description or ""
+        if self._prefs.enabled and text:
+            skip_labels, like_labels = self._prefs.evaluate(text)
+
+        # 2. Feature Extraction (детерминированно)
+        extraction = self._extractor.extract(
+            name=profile.name,
+            age=profile.age,
+            city=profile.normalized_city,
+            description=profile.description or "",
         )
 
+        # 3. Score Engine (детерминированно)
+        scoring = self._score_engine.compute(
+            profile_id=profile.id,
+            hard_negatives=extraction.hard_negatives,
+            positive_factors=extraction.positive_factors,
+        )
+
+        # 4. Decision Logic
         decision, combined, reasons = self._decide(
             filter_decision=filter_decision,
-            llm_score=ai_score.llm_score,
-            clip_score=ai_score.clip_score,
-            confidence=ai_score.confidence_score,
-            ai_reasons=ai_score.reasons,
-            text=profile.description or "",
-            hard_negatives=ai_score.hard_negatives,
-            positive_factors=ai_score.positive_factors,
-            unknown=ai_score.unknown,
+            score=scoring.score,
+            skip_labels=skip_labels,
+            like_labels=like_labels,
+            hard_negatives=scoring.hard_negatives,
+            positive_factors=scoring.positive_factors,
         )
 
         now = datetime.now(timezone.utc).isoformat()
@@ -115,153 +139,103 @@ class DecisionService:
             profile_id=profile.id,
             decision=decision,
             combined_score=combined,
-            llm_score=ai_score.llm_score,
-            clip_score=ai_score.clip_score,
-            confidence=ai_score.confidence_score,
+            llm_score=None,  # LLM removed
+            clip_score=None,  # CLIP removed from decision
+            confidence=scoring.score,
             reasons=reasons,
-            hard_negatives=ai_score.hard_negatives,
-            positive_factors=ai_score.positive_factors,
-            unknown=ai_score.unknown,
+            hard_negatives=[h.model_dump() for h in scoring.hard_negatives],
+            positive_factors=[p.model_dump() for p in scoring.positive_factors],
+            unknown=[],
             evaluated_at=now,
-            scoring_version=self._decision_cfg.scoring_version,
-            prompt_version=ai_score.prompt_version,
+            scoring_version=SCORING_VERSION,
+            prompt_version="deterministic-v2",
         )
 
         await self._save(result)
         self._log(result, profile)
         return result
 
-    # ── Логика решения ───────────────────────────────────────────────
-
-    def _combine(
-        self,
-        llm_score: float | None,
-        clip_score: float | None,
-    ) -> float:
-        """Комбинирует скоры весами Decision Engine.
-
-        Если доступен только один сигнал — используется он целиком.
-        Отсутствующие изображения не считаются нулём.
-        """
-        weights = self._decision_cfg.weights
-        has_llm = llm_score is not None
-        has_clip = clip_score is not None
-
-        if has_llm and has_clip:
-            raw = llm_score * weights.llm + clip_score * weights.clip
-            return min(max(raw, 0.0), 1.0)
-
-        if has_llm:
-            return min(max(llm_score, 0.0), 1.0)
-
-        if has_clip:
-            return min(max(clip_score, 0.0), 1.0)
-
-        return 0.0
+    # ── Decision Logic ───────────────────────────────────────────────
 
     def _decide(
         self,
         filter_decision: FilterDecision | None,
-        llm_score: float | None,
-        clip_score: float | None,
-        confidence: float,
-        ai_reasons: list[str],
-        text: str = "",
-        *,
+        score: float,
+        skip_labels: list[str],
+        like_labels: list[str],
         hard_negatives: list | None = None,
         positive_factors: list | None = None,
-        unknown: list[str] | None = None,
     ) -> tuple[AIDecision, float, list[str]]:
-        """Вычисляет решение на основе hard negatives + порогов + правил.
+        """Вычисляет решение по правилам.
 
-        Главный инвариант (см. NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE):
-        семантический DISLIKE возможен ТОЛЬКО при подтверждённом hard negative
-        (пользовательский SKIP из preferences, признак LLM или REJECT-фильтр).
-        Низкий скор, отсутствие positive factors, пустая/короткая анкета, эмодзи
-        или «неинтересность» НЕ являются причиной DISLIKE — такие анкеты
-        уходят в REVIEW. Транспортное действие 👎 (движение ленты Leo) при
-        REVIEW выполняется на уровне AutoActionEngine и не является
-        семантическим DISLIKE.
+        Приоритет:
+        1. HARD USER SKIP (из preferences.yaml) → DISLIKE.
+        2. HARD NEGATIVE (извлечён из текста) → DISLIKE.
+        3. HARD FILTER REJECT (age/city) → DISLIKE.
+        4. FILTER REVIEW → REVIEW.
+        5. LIKE conditions (positive factors + score) → LIKE.
+        6. Всё остальное → REVIEW (НИКОГДА не DISLIKE без hard-negative).
 
         Returns:
-            (decision, combined_score, reasons)
+            (decision, score, reasons)
         """
-        combined = self._combine(llm_score, clip_score)
-        reasons = list(ai_reasons)
-        cfg = self._decision_cfg
         hard_negatives = list(hard_negatives or [])
         positive_factors = list(positive_factors or [])
-        unknown = list(unknown or [])
+        reasons: list[str] = []
 
-        # Предпочтения пользователя — оценка текста анкеты (единый источник
-        # бизнес-правил: config/preferences.yaml → PreferencesEngine).
-        skip_labels, like_labels = (), ()
-        scoring = self._prefs.scoring
-        if self._prefs.enabled and text:
-            skip_labels, like_labels = self._prefs.evaluate(text)
+        # 1. HARD USER SKIP
+        if skip_labels and self._prefs.scoring.skip_is_hard:
+            reasons.append(f"USER_SKIP:{skip_labels[0]}")
+            for hn in hard_negatives:
+                reasons.append(f"HARD_NEGATIVE:{hn.name}:{hn.evidence}")
+            for pf in positive_factors:
+                reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
+            return AIDecision.DISLIKE, score, reasons
 
-        # HARD USER SKIP: явный негатив пользователя → DISLIKE (самый высокий
-        # приоритет; высокий CLIP / high combined не может перевернуть).
-        if skip_labels and scoring.skip_is_hard:
-            return AIDecision.DISLIKE, combined, [
-                f"USER_SKIP:{skip_labels[0]}", *reasons,
-            ]
-
-        # HARD LLM NEGATIVE: подтверждённый признак из анкеты (criterion+evidence)
-        # → DISLIKE. Критерий и evidence фиксируются в reasons.
+        # 2. HARD NEGATIVE (from FeatureExtractor)
         if hard_negatives:
             hn = hard_negatives[0]
-            ev = f"«{hn.evidence}»" if getattr(hn, "evidence", "") else ""
-            return AIDecision.DISLIKE, combined, [
-                f"LLM_SKIP:{hn.criterion}", *reasons, f"skip:{hn.criterion}:{ev}",
-            ]
+            reasons.append(f"HARD_NEGATIVE:{hn.name}:{hn.evidence}")
+            if like_labels:
+                reasons.append(f"USER_LIKE:{like_labels[0]}")
+            for pf in positive_factors:
+                reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
+            return AIDecision.DISLIKE, score, reasons
 
-        # HARD FILTER: REJECT → всегда DISLIKE (возраст/город вне диапазона).
+        # 3. HARD FILTER REJECT
         if filter_decision == FilterDecision.REJECT:
-            return AIDecision.DISLIKE, combined, [
-                "FILTER_REJECTED", *reasons,
-            ]
+            reasons.append("FILTER_REJECTED")
+            if like_labels:
+                reasons.append(f"USER_LIKE:{like_labels[0]}")
+            return AIDecision.DISLIKE, score, reasons
 
-        # HARD FILTER: REVIEW → только REVIEW (нет hard negative — DISLIKE
-        # невозможен; LIKE тоже не берём, т.к. данные фильтра неполные).
+        # 4. FILTER REVIEW
         if filter_decision == FilterDecision.REVIEW:
-            return AIDecision.REVIEW, combined, [
-                "FILTER_REVIEW", *reasons,
-            ]
+            reasons.append("FILTER_REVIEW")
+            if like_labels:
+                reasons.append(f"USER_LIKE:{like_labels[0]}")
+            for pf in positive_factors:
+                reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
+            return AIDecision.REVIEW, score, reasons
 
-        # PASS (или нет данных фильтра → трактуем как PASS)
-        # AI недоступен (нет ни LLM, ни CLIP) → REVIEW/AI_UNAVAILABLE
-        if llm_score is None and clip_score is None:
-            return AIDecision.REVIEW, combined, [
-                "AI_UNAVAILABLE", *reasons,
-            ]
+        # 5. PASS (или нет данных фильтра)
+        # LIKE по положительным factors + score
+        if positive_factors:
+            reasons.extend([f"POSITIVE:{pf.name}:{pf.evidence}" for pf in positive_factors])
+            if like_labels:
+                reasons.append(f"USER_LIKE:{like_labels[0]}")
 
-        # LIKE по порогу (positive factors дают детерминированный score 0.9;
-        # при CLIP off combined ≈ 0.9 → LIKE) + достаточно уверенности.
-        if combined >= cfg.like_threshold:
-            if confidence >= cfg.min_confidence:
-                return AIDecision.LIKE, combined, [
-                    "LIKE_THRESHOLD", *reasons,
-                ]
-            return AIDecision.REVIEW, combined, [
-                "LOW_CONFIDENCE", *reasons,
-            ]
+            # LIKE: есть positive factors И score >= like_threshold
+            if score >= self._decision_cfg.like_threshold:
+                return AIDecision.LIKE, score, reasons
+            # REVIEW: есть positive factors, но score ниже порога
+            return AIDecision.REVIEW, score, reasons
 
-        # REVIEW по порогу (нейтральные анкеты: score 0.6, combined ≈ 0.6).
-        # LIKE-фактор пользователя фиксируется как причина, но сам факт
-        # наличия интереса не поднимает решение выше REVIEW без порога.
-        if combined >= cfg.review_threshold:
-            note = f"USER_LIKE:{like_labels[0]}" if like_labels else None
-            return AIDecision.REVIEW, combined, [
-                "REVIEW_THRESHOLD", *([note] if note else []), *reasons,
-            ]
-
-        # BELOW_THRESHOLDS и нет hard negative → REVIEW, НЕ DISLIKE.
-        # Недостаточно данных / низкий скор не являются причиной отказа.
-        note = f"USER_LIKE:{like_labels[0]}" if like_labels else None
-        return AIDecision.REVIEW, combined, [
-            "INSUFFICIENT_DATA", *([note] if note else []), *reasons,
-        ]
+        # 6. Нет ни positive, ни negative → REVIEW (НИКОГДА не DISLIKE)
+        if like_labels:
+            reasons.append(f"USER_LIKE:{like_labels[0]}")
+        reasons.append("NO_FEATURES_FOUND")
+        return AIDecision.REVIEW, score, reasons
 
     # ── Сохранение и чтение ──────────────────────────────────────────
 
@@ -282,14 +256,14 @@ class DecisionService:
         result.id = row_id
 
     async def get_latest(self, profile_id: int) -> AIDecisionResult | None:
-        """Получает последнее AI-решение для профиля."""
+        """Получает последнее решение для профиля."""
         row = await self._db.get_latest_ai_decision(profile_id)
         if row is None:
             return None
         return self._row_to_result(row)
 
     async def get_history(self, profile_id: int) -> list[AIDecisionResult]:
-        """Получает историю AI-решений для профиля."""
+        """Получает историю решений для профиля."""
         rows = await self._db.get_ai_decision_history(profile_id)
         return [self._row_to_result(row) for row in rows]
 
@@ -298,7 +272,6 @@ class DecisionService:
         """Преобразует dict из БД в AIDecisionResult."""
         reasons_raw = row.get("reasons", "[]")
         reasons = json.loads(reasons_raw) if isinstance(reasons_raw, str) else reasons_raw
-
         return AIDecisionResult(
             id=row.get("id", 0),
             profile_id=row["profile_id"],
@@ -310,15 +283,14 @@ class DecisionService:
             reasons=reasons,
             evaluated_at=row.get("evaluated_at", ""),
             scoring_version=row.get("scoring_version", "v1"),
-            prompt_version=row.get("prompt_version", "llm-v1"),
+            prompt_version=row.get("prompt_version", "deterministic-v2"),
         )
 
     def _log(self, result: AIDecisionResult, profile: Profile) -> None:
-        """Логирует решение (OBSERVE — никаких действий)."""
+        """Логирует решение."""
         logger.info(
-            f"AI DECISION: profile={profile.name} (#{result.profile_id}), "
-            f"decision={result.decision}, combined={result.combined_score:.2f}, "
-            f"confidence={result.confidence:.2f}, "
+            f"DECISION: profile={profile.name} (#{result.profile_id}), "
+            f"decision={result.decision}, score={result.combined_score:.2f}, "
             f"reasons={result.reasons[:3]}, "
             f"scoring_version={result.scoring_version}"
         )
