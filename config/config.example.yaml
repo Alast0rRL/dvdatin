@@ -72,7 +72,6 @@ ai:
     clip_weight: 0.5
     llm_weight: 0.5
     like_threshold: 0.75
-    dislike_threshold: 0.35
   decision:
     like_threshold: 0.75
     review_threshold: 0.50

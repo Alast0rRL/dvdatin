@@ -70,7 +70,6 @@ class AutoActionEngine:
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
-        self._processed_profile_ids: set[int] = set()
 
     @property
     def mode(self) -> Mode:
@@ -114,6 +113,9 @@ class AutoActionEngine:
 
         Возвращает строку-описание совершённого действия ("SKIP", "LIKE",
         "DISLIKE") либо слово "GATE" если авто-действия выключены.
+
+        Идемпотентность по ``telegram_message_id`` обеспечивается на уровне
+        collector'а (``has_auto_action_for_message`` в БД), а не движка.
         """
         if not self.enabled:
             return "GATE"
@@ -133,13 +135,8 @@ class AutoActionEngine:
             action = decision.value
 
         async with self._lock:
-            if profile_id is not None and profile_id in self._processed_profile_ids:
-                logger.warning(f"AutoAction: profile={profile_id} уже обработан")
-                return "DUPLICATE"
             await self._rate_limit_locked()
             await self._send(text)
-            if profile_id is not None:
-                self._processed_profile_ids.add(profile_id)
         logger.info(f"AutoAction: отправил {text!r} ({action}) на chat={self._chat_id}")
         self._print_action(action, text)
         await self._notify(action, message_id=message_id, reasons=reasons)
@@ -182,11 +179,6 @@ class AutoActionEngine:
         except Exception as e:
             logger.error(f"AutoAction: ошибка отправки {text!r}: {e}")
             raise AutoActionError(str(e)) from e
-
-    async def _rate_limit(self) -> None:
-        """Интервальный rate-limiter: ждёт, пока не пройдёт interval_sec."""
-        async with self._lock:
-            await self._rate_limit_locked()
 
     async def _rate_limit_locked(self) -> None:
         """Применяет rate-limit при уже взятой блокировке движка."""

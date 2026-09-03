@@ -31,8 +31,6 @@ class ScoringPrefs(BaseModel):
 
     # SKIP-сигнал → всегда DISLIKE (CLIP не переворачивает).
     skip_is_hard: bool = True
-    # LIKE-фактор → поднимает потенциальный DISLIKE до REVIEW (не теряется).
-    like_lifts_review: bool = True
     # CLIP (эстетика фото) не может отменить SKIP/поднять в LIKE без LIKE-фактора.
     clip_cannot_override_skip: bool = True
 

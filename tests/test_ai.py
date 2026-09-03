@@ -22,7 +22,13 @@ from models.ai import (
 from models.profile import Profile
 from services.ai_scoring_service import AIScoringService
 from services.clip_service import BaseCLIPService, CLIPService
-from services.llm_service import BaseLLMService, LLMService
+from services.llm_service import (
+    BaseLLMService,
+    HARD_NEGATIVE_SCORE,
+    LLMService,
+    NEUTRAL_SCORE,
+    POSITIVE_SCORE,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -34,7 +40,6 @@ def make_config(
     clip_weight: float = 0.5,
     llm_weight: float = 0.5,
     like_threshold: float = 0.75,
-    dislike_threshold: float = 0.35,
 ) -> AppConfig:
     """Создаёт конфиг для тестов."""
     return AppConfig(**{
@@ -55,7 +60,6 @@ def make_config(
                 "clip_weight": clip_weight,
                 "llm_weight": llm_weight,
                 "like_threshold": like_threshold,
-                "dislike_threshold": dislike_threshold,
             },
         },
     })
@@ -352,6 +356,159 @@ class TestLLMService:
 
 
 # ═════════════════════════════════════════════════════════════════════
+# 5b. H/P Whitelist regression tests (FIX #1)
+# ═════════════════════════════════════════════════════════════════════
+
+class TestHPWhitelist:
+    """Неизвестные H/P-критерии игнорируются, валидные — проходят."""
+
+    def test_unknown_h999_ignored(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [{"criterion": "H999:unknown", "evidence": "test"}],
+            "positive_factors": [],
+            "confidence": 0.9,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert len(result.hard_negatives) == 0
+        assert result.score == NEUTRAL_SCORE
+
+    def test_unknown_p999_ignored(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [],
+            "positive_factors": [{"criterion": "P999:unknown", "evidence": "test"}],
+            "confidence": 0.9,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert len(result.positive_factors) == 0
+        assert result.score == NEUTRAL_SCORE
+
+    def test_valid_h1_with_unknown_h999_only_h1_remains(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [
+                {"criterion": "H1:not_looking", "evidence": "ищу друга"},
+                {"criterion": "H999:fake", "evidence": "spam"},
+            ],
+            "positive_factors": [],
+            "confidence": 0.8,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert len(result.hard_negatives) == 1
+        assert result.hard_negatives[0].criterion == "H1:not_looking"
+        assert result.score == HARD_NEGATIVE_SCORE
+
+    def test_valid_p1_with_unknown_p999_only_p1_remains(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [],
+            "positive_factors": [
+                {"criterion": "P1:spbpu", "evidence": "Политех"},
+                {"criterion": "P999:fake", "evidence": "spam"},
+            ],
+            "confidence": 0.8,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert len(result.positive_factors) == 1
+        assert result.positive_factors[0].criterion == "P1:spbpu"
+        assert result.score == POSITIVE_SCORE
+
+    def test_unknown_features_do_not_affect_score(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [
+                {"criterion": "H999:bad", "evidence": "x"},
+                {"criterion": "H500:bad", "evidence": "y"},
+            ],
+            "positive_factors": [
+                {"criterion": "P999:bad", "evidence": "x"},
+                {"criterion": "P500:bad", "evidence": "y"},
+            ],
+            "confidence": 0.9,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert len(result.hard_negatives) == 0
+        assert len(result.positive_factors) == 0
+        assert result.score == NEUTRAL_SCORE
+        assert result.status == ProfileStatus.INSUFFICIENT_DATA
+
+    def test_malformed_structure_does_not_break_pipeline(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": "not a list",
+            "positive_factors": 42,
+            "unknown": None,
+            "confidence": "invalid",
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        # Полностью битый ответ → fallback REVIEW (score=0.0), pipeline не падает.
+        assert result.recommendation == AIRecommendation.REVIEW
+        assert len(result.hard_negatives) == 0
+        assert len(result.positive_factors) == 0
+
+    def test_empty_arrays_produce_neutral_score(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [],
+            "positive_factors": [],
+            "unknown": [],
+            "confidence": 0.5,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert result.score == NEUTRAL_SCORE
+        assert result.status == ProfileStatus.INSUFFICIENT_DATA
+        assert "insufficient_data" in result.reasons
+
+    def test_valid_h_codes_all_accepted(self) -> None:
+        from services.llm_service import parse_feature_response
+        for code in ("H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8"):
+            data = {
+                "hard_negatives": [{"criterion": f"{code}:test", "evidence": "e"}],
+                "positive_factors": [],
+                "confidence": 0.5,
+            }
+            result = parse_feature_response(data, "{}", "model", "llm-v3")
+            assert len(result.hard_negatives) == 1, f"{code} should be accepted"
+            assert result.hard_negatives[0].criterion == f"{code}:test"
+
+    def test_valid_p_codes_all_accepted(self) -> None:
+        from services.llm_service import parse_feature_response
+        for code in ("P1", "P2", "P3", "P4"):
+            data = {
+                "hard_negatives": [],
+                "positive_factors": [{"criterion": f"{code}:test", "evidence": "e"}],
+                "confidence": 0.5,
+            }
+            result = parse_feature_response(data, "{}", "model", "llm-v3")
+            assert len(result.positive_factors) == 1, f"{code} should be accepted"
+            assert result.positive_factors[0].criterion == f"{code}:test"
+
+    def test_unknown_h_does_not_become_dislike(self) -> None:
+        """Unknown H-criterion must NOT cause DISLIKE — it's ignored entirely."""
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [{"criterion": "H999:evil", "evidence": "x"}],
+            "positive_factors": [],
+            "confidence": 1.0,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert len(result.hard_negatives) == 0
+        assert result.score == NEUTRAL_SCORE
+        assert result.status == ProfileStatus.INSUFFICIENT_DATA
+
+    def test_valid_h_beats_valid_p_when_both_present(self) -> None:
+        from services.llm_service import parse_feature_response
+        data = {
+            "hard_negatives": [{"criterion": "H1:not_looking", "evidence": "друг"}],
+            "positive_factors": [{"criterion": "P3:gaming", "evidence": "игры"}],
+            "confidence": 0.8,
+        }
+        result = parse_feature_response(data, "{}", "model", "llm-v3")
+        assert result.score == HARD_NEGATIVE_SCORE
+
+
+# ═════════════════════════════════════════════════════════════════════
 # 6. AIScoringService: combined scoring
 # ═════════════════════════════════════════════════════════════════════
 
@@ -425,8 +582,8 @@ class TestAIScoringCombined:
 # ═════════════════════════════════════════════════════════════════════
 
 class TestRecommendationThresholds:
-    def _make_svc(self, like: float, dislike: float) -> tuple[AIScoringService, Database]:
-        config = make_config(clip_enabled=False, llm_enabled=True, like_threshold=like, dislike_threshold=dislike)
+    def _make_svc(self, like: float) -> tuple[AIScoringService, Database]:
+        config = make_config(clip_enabled=False, llm_enabled=True, like_threshold=like)
         clip = make_clip_service(enabled=False)
         llm = make_llm_service(enabled=False)
         db = Database(path=Path("data/test_thresh.db"))
@@ -1001,27 +1158,6 @@ class TestRowToScore:
         assert score.clip_score is None
         assert score.llm_score is None
         assert score.confidence == ConfidenceLevel.LOW
-
-
-# ═════════════════════════════════════════════════════════════════════
-# 16. Config validation: ScoringConfig thresholds order
-# ═════════════════════════════════════════════════════════════════════
-
-class TestScoringConfigValidation:
-    def test_dislike_less_than_like(self) -> None:
-        """dislike_threshold must be strictly less than like_threshold."""
-        config = make_config(like_threshold=0.75, dislike_threshold=0.35)
-        assert config.ai.scoring.dislike_threshold < config.ai.scoring.like_threshold
-
-    def test_equal_thresholds_raises(self) -> None:
-        """Equal thresholds should raise ValueError."""
-        with pytest.raises(Exception):
-            make_config(like_threshold=0.5, dislike_threshold=0.5)
-
-    def test_dislike_greater_than_like_raises(self) -> None:
-        """dislike > like should raise ValueError."""
-        with pytest.raises(Exception):
-            make_config(like_threshold=0.3, dislike_threshold=0.7)
 
 
 # ═════════════════════════════════════════════════════════════════════

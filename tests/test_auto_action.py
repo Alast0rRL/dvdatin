@@ -397,3 +397,54 @@ class TestFormatReason:
     def test_returns_empty_for_none(self) -> None:
         assert AutoActionEngine._format_reason("LIKE", None) == ""
         assert AutoActionEngine._format_reason("LIKE", []) == ""
+
+
+class TestAutoActionIdempotency:
+    """TEST GAP #13: same profile + new telegram_message_id → action allowed.
+
+    Идемпотентность по telegram_message_id обеспечивается на уровне collector
+    (has_auto_action_for_message в БД), а не в движке. Движок НЕ блокирует
+    повторные действия по profile_id — это позволяет ленте Leo не замирать
+    при повторных показах одного и того же человека.
+    """
+
+    def test_same_profile_id_allows_repeated_actions(self) -> None:
+        """Один profile_id, два разных действия — оба отправляются."""
+        client = make_client()
+        e = make_engine(client=client)
+        loop = asyncio.get_event_loop()
+        r1 = loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=42, message_id=100)
+        )
+        r2 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=42, message_id=200)
+        )
+        assert r1 == "LIKE"
+        assert r2 == "DISLIKE"
+        assert client.send_message.await_count == 2
+
+    def test_same_profile_id_allows_same_action_twice(self) -> None:
+        """Два одинаковых действия подряд на один profile_id — оба проходят."""
+        client = make_client()
+        e = make_engine(client=client)
+        loop = asyncio.get_event_loop()
+        r1 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=7, message_id=301)
+        )
+        r2 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=7, message_id=302)
+        )
+        assert r1 == "DISLIKE"
+        assert r2 == "DISLIKE"
+        assert client.send_message.await_count == 2
+
+    def test_no_profile_id_still_allows_repeated_actions(self) -> None:
+        """Без profile_id — движок не отслеживает дубликаты."""
+        client = make_client()
+        e = make_engine(client=client)
+        loop = asyncio.get_event_loop()
+        r1 = loop.run_until_complete(e.maybe_act(AIDecision.LIKE))
+        r2 = loop.run_until_complete(e.maybe_act(AIDecision.LIKE))
+        assert r1 == "LIKE"
+        assert r2 == "LIKE"
+        assert client.send_message.await_count == 2

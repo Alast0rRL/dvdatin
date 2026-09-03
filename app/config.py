@@ -283,7 +283,6 @@ class ScoringConfig(BaseModel):
     clip_weight: float = 0.5
     llm_weight: float = 0.5
     like_threshold: float = 0.75
-    dislike_threshold: float = 0.35
 
     @field_validator("clip_weight", "llm_weight")
     @classmethod
@@ -293,24 +292,13 @@ class ScoringConfig(BaseModel):
             raise ValueError(msg)
         return v
 
-    @field_validator("like_threshold", "dislike_threshold")
+    @field_validator("like_threshold")
     @classmethod
     def threshold_in_range(cls, v: float) -> float:
         if not (0.0 <= v <= 1.0):
             msg = "Порог должен быть от 0.0 до 1.0"
             raise ValueError(msg)
         return v
-
-    @model_validator(mode="after")
-    def validate_thresholds_order(self) -> ScoringConfig:
-        """dislike_threshold должен быть строго меньше like_threshold."""
-        if self.dislike_threshold >= self.like_threshold:
-            msg = (
-                f"dislike_threshold ({self.dislike_threshold}) должен быть "
-                f"строго меньше like_threshold ({self.like_threshold})"
-            )
-            raise ValueError(msg)
-        return self
 
 
 class AIConfig(BaseModel):

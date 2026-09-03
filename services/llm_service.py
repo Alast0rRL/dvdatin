@@ -33,6 +33,16 @@ POSITIVE_SCORE = 0.9
 #: Версия промпта (bump при изменении контракта извлечения признаков).
 PROMPT_VERSION = "llm-v3"
 
+#: Строгий whitelist разрешённых H-критериев (llm-v3 контракт).
+HARD_NEGATIVE_CODES: frozenset[str] = frozenset({
+    "H1", "H2", "H3", "H4", "H5", "H6", "H7", "H8",
+})
+
+#: Строгий whitelist разрешённых P-критериев (llm-v3 контракт).
+POSITIVE_FACTOR_CODES: frozenset[str] = frozenset({
+    "P1", "P2", "P3", "P4",
+})
+
 
 def detect_score_status(
     hard_negatives: list[HardNegative],
@@ -192,6 +202,14 @@ class LLMService(BaseLLMService):
         )
 
 
+def _criterion_code(criterion: str) -> str:
+    """Извлекает базовый код критерия (до ':') из строки.
+
+    Примеры: ``"H1:not_looking"`` → ``"H1"``, ``"P3"`` → ``"P3"``.
+    """
+    return criterion.split(":", 1)[0].strip() if criterion else ""
+
+
 def parse_feature_response(
     data: dict,
     raw: str,
@@ -202,25 +220,45 @@ def parse_feature_response(
 
     Ответ не является «мнением модели»: жёсткие/положительные признаки берутся
     из структуры, а score вычисляется по правилу (см. ``detect_score_status``).
+
+    Неизвестные критерии (вне H1-H8 / P1-P4) игнорируются и логируются,
+    но НЕ попадают в итоговые features/reasons и НЕ влияют на score/decision.
     """
     try:
         hard_raw = data.get("hard_negatives", []) or []
         pos_raw = data.get("positive_factors", []) or []
 
-        hard_negatives = [
-            HardNegative(
-                criterion=str(h.get("criterion", "")),
+        hard_negatives: list[HardNegative] = []
+        for h in hard_raw:
+            if not isinstance(h, dict):
+                continue
+            criterion = str(h.get("criterion", ""))
+            code = _criterion_code(criterion)
+            if code not in HARD_NEGATIVE_CODES:
+                logger.debug(
+                    f"LLM: неизвестный H-критерий '{criterion}' — игнорируется"
+                )
+                continue
+            hard_negatives.append(HardNegative(
+                criterion=criterion,
                 evidence=str(h.get("evidence", "")),
-            )
-            for h in hard_raw if isinstance(h, dict)
-        ]
-        positive_factors = [
-            PositiveFactor(
-                criterion=str(p.get("criterion", "")),
+            ))
+
+        positive_factors: list[PositiveFactor] = []
+        for p in pos_raw:
+            if not isinstance(p, dict):
+                continue
+            criterion = str(p.get("criterion", ""))
+            code = _criterion_code(criterion)
+            if code not in POSITIVE_FACTOR_CODES:
+                logger.debug(
+                    f"LLM: неизвестный P-критерий '{criterion}' — игнорируется"
+                )
+                continue
+            positive_factors.append(PositiveFactor(
+                criterion=criterion,
                 evidence=str(p.get("evidence", "")),
-            )
-            for p in pos_raw if isinstance(p, dict)
-        ]
+            ))
         unknown = [
             str(u) for u in (data.get("unknown", []) or [])
             if isinstance(u, str) and u

@@ -103,5 +103,4 @@ like:
 # Тонкая настройка (не трогаем пороги 0.75/0.50)
 scoring:
   skip_is_hard: true            # SKIP → DISLIKE, CLIP не переворачивает
-  like_lifts_review: true       # LIKE-фактор → DISLIKE подтягивается до REVIEW
   clip_cannot_override_skip: true

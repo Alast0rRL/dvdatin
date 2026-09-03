@@ -48,7 +48,7 @@ def make_prefs() -> PreferencesConfig:
             PreferenceRule(label="аниме", match=["аниме"]),
             PreferenceRule(label="переехала в спб", match=["переехала", "недавно в питер"]),
         ],
-        scoring=ScoringPrefs(skip_is_hard=True, like_lifts_review=True),
+        scoring=ScoringPrefs(skip_is_hard=True),
     )
 
 

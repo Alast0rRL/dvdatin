@@ -2037,6 +2037,15 @@ class TestCollectorAutoActions:
         auto_client.forward_messages.assert_awaited_once()
 
     def test_log_failure_does_not_resend_action(self) -> None:
+        """DB failure after Telegram send: action CAN repeat on retry.
+
+        После удаления _processed_profile_ids (HIGH-1 fix) дублирование
+        действий при ошибке БД становится возможным — это принятый trade-off
+        (HIGH-2). Идемпотентность по telegram_message_id обеспечивается
+        на уровне DB (has_auto_action_for_message), а не в памяти движка.
+        Если record_auto_action упал — БД не знает об отправке, и повторный
+        вызов _process_message отправит действие снова.
+        """
         from models.decision import AIDecision
 
         auto_client = AsyncMock()
@@ -2058,14 +2067,14 @@ class TestCollectorAutoActions:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(collector._process_message(task))
         loop.run_until_complete(collector._process_message(task))
-        # Действие отправлено один раз (второй проход пропускает действие,
-        # но уведомление-пересылка остаётся в логе).
-        auto_client.forward_messages.assert_awaited_once()
+        # Оба прохода отправляют действие (дублирование при ошибке БД —
+        # принятый trade-off). Второй проход также пытается переслать
+        # уведомление (notify), т.к. maybe_act снова вызывается.
         action_calls = [
             c for c in auto_client.send_message.call_args_list
             if c.args[1] in ("\u2764\ufe0f", "\U0001F44E")
         ]
-        assert len(action_calls) == 1
+        assert len(action_calls) == 2
 
     def test_no_action_when_message_on_other_account(self) -> None:
         from models.decision import AIDecision
@@ -2446,13 +2455,51 @@ class TestCollectorAutoActions:
             yield self._iter_msg(auto_client, 719, "\U0001F44E", out=True)
             yield self._iter_msg(auto_client, 718, "Margo, 18, Санкт-Петербург")
 
-        auto_client.iter_messages = iter_messages
+            auto_client.iter_messages = iter_messages
 
         ok = asyncio.get_event_loop().run_until_complete(
             collector.start_auto_stream()
         )
         assert ok is False
         auto_client.send_message.assert_not_called()
+
+    def test_live_ad_message_presses_view_button_on_separate_message(self) -> None:
+        """Реклама приходит БЕЗ кнопки, а «🚀 Смотреть анкеты» — на ОТДЕЛЬНОМ
+        сообщении после неё. Живая обработка рекламного UNKNOWN-сообщения должна
+        отсканировать чат и нажать кнопку, а не застрять на этом экране."""
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        button_text = "\U0001F680 Смотреть анкеты"  # 🚀 Смотреть анкеты
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: промо с кнопкой (ОТДЕЛЬНОЕ сообщение) →
+            # рекламное сообщение БЕЗ кнопки.
+            yield self._iter_msg(
+                auto_client, 705, "твоя анкета может больше", buttons=[button_text]
+            )
+            yield self._iter_msg(auto_client, 704, "реклама канала, без кнопки")
+
+        auto_client.iter_messages = iter_messages
+
+        # Обрабатываем именно рекламное сообщение — на нём самом кнопки нет.
+        ad_msg = self._iter_msg(auto_client, 704, "реклама канала, без кнопки")
+        task = RawTask(
+            chat_id=1234060895, message_id=704, sender_id=1234060895,
+            sender_username="", sender_name="",
+            text="реклама канала, без кнопки",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=ad_msg, raw_id=2,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        # Кнопка на отдельном сообщении после рекламы — бот не застревает.
+        auto_client.send_message.assert_called_once_with(1234060895, button_text)
 
 class TestCollectorSetMode:
     """Динамическое переключение режима коллектора (Stage 7.5)."""

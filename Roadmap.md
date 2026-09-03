@@ -130,7 +130,6 @@ ai:
     clip_weight: 0.5
     llm_weight: 0.5
     like_threshold: 0.75
-    dislike_threshold: 0.35  # validated: must be < like_threshold
 ```
 
 **Stage 4.3 — что сделано (реальный E2E):**
