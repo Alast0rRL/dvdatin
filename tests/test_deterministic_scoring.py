@@ -154,6 +154,13 @@ class TestFeatureExtractor:
         result = self.extractor.extract(description="пью пиво по выходным")
         assert any(f.code == "H04" for f in result.hard_negatives)
 
+    def test_alcohol_piva_h04(self) -> None:
+        """«пива» (род. падеж) — тоже негатив, а не пропуск."""
+        result = self.extractor.extract(
+            description="вьебашить бы галон пива да и обоссаться под кустом"
+        )
+        assert any(f.code == "H04" for f in result.hard_negatives)
+
     def test_bad_habits_h05(self) -> None:
         result = self.extractor.extract(description="вредные привычки")
         assert any(f.code == "H05" for f in result.hard_negatives)

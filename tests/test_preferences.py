@@ -91,6 +91,13 @@ class TestPreferencesEngine:
         e = PreferencesEngine(PreferencesConfig())
         assert e.evaluate("ищу друга игры аниме") == ([], [])
 
+    def test_live_config_detects_piva(self) -> None:
+        """Живой config/preferences.yaml ловит «пива» (род. падеж пива)."""
+        from app.preferences import load_preferences
+        e = load_preferences()
+        skip, _ = e.evaluate("вьебашить бы галон пива да и обоссаться под кустом")
+        assert "пьёт" in skip
+
 
 class TestDecisionHardRules:
     """Слой правил поверх порогов (прямой вызов _decide)."""
