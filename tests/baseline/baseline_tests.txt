@@ -1,7 +1,7 @@
 ﻿# DvAI Test Baseline (FROZEN)
-# count=480
-# generated=2026-09-03 23:17:03
-# status=480 passed (Stage 8: deterministic scoring migrates off LLM/CLIP)
+# count=484
+# generated=2026-09-04 13:24:50
+# status=484 passed (Stage 8: deterministic scoring migrates off LLM/CLIP)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
 tests/test_ai.py::TestAIConfigBackend::test_remote_backend
@@ -130,6 +130,7 @@ tests/test_auto_action.py::TestAutoActionNotify::test_like_forwards_and_explains
 tests/test_auto_action.py::TestAutoActionNotify::test_no_notify_when_disabled
 tests/test_auto_action.py::TestAutoActionNotify::test_no_notify_without_message_id
 tests/test_auto_action.py::TestAutoActionNotify::test_notify_error_does_not_break_action
+tests/test_auto_action.py::TestAutoActionNotify::test_review_notify_explains_no_data
 tests/test_auto_action.py::TestAutoActionNotify::test_user_skip_label_humanized
 tests/test_auto_action.py::TestAutoActionRateLimit::test_rate_limit_delays_between_actions
 tests/test_auto_action.py::TestAutoActionRateLimit::test_start_stream_without_command_does_not_send
@@ -139,7 +140,10 @@ tests/test_auto_action.py::TestAutoActionRuntimeMode::test_turn_off_at_runtime
 tests/test_auto_action.py::TestFormatReason::test_filters_decision_codes
 tests/test_auto_action.py::TestFormatReason::test_filters_prefix_labels
 tests/test_auto_action.py::TestFormatReason::test_formats_filter_and_ai_reasons
+tests/test_auto_action.py::TestFormatReason::test_no_features_found_in_dislike_is_humanized
 tests/test_auto_action.py::TestFormatReason::test_returns_empty_for_none
+tests/test_auto_action.py::TestFormatReason::test_review_labels_as_review_not_dislike
+tests/test_auto_action.py::TestFormatReason::test_review_no_features_is_humanized
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_failed_telegram_action_has_no_log
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_migration_adds_log_to_existing_database
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_repeat_show_of_same_profile_gets_another_action

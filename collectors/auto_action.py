@@ -130,16 +130,20 @@ class AutoActionEngine:
             )
             text = DISLIKE_TEXT
             action = "DISLIKE"
+            # Для уведомления показываем «На ревью», а не «Дизлайк»: это
+            # транспортный сброс ленты, а не семантическое отклонение анкеты.
+            notify_action = "REVIEW"
         else:
             text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
             action = decision.value
+            notify_action = action
 
         async with self._lock:
             await self._rate_limit_locked()
             await self._send(text)
         logger.info(f"AutoAction: отправил {text!r} ({action}) на chat={self._chat_id}")
         self._print_action(action, text)
-        await self._notify(action, message_id=message_id, reasons=reasons)
+        await self._notify(notify_action, message_id=message_id, reasons=reasons)
         return action
 
     async def start_stream(self) -> bool:
@@ -284,7 +288,14 @@ class AutoActionEngine:
             "LIKE_THRESHOLD", "LOW_CONFIDENCE", "REVIEW_THRESHOLD",
             "BELOW_THRESHOLDS", "FILTER_REJECTED", "FILTER_REVIEW",
             "USER_SKIP", "USER_LIKE", "AI_UNAVAILABLE",
-            "NO_FEATURES_FOUND",
+        }
+
+        # Review-коды скоринга, которые показываем человеко-читаемо (а не
+        # вырезаем как внутренние). Stage 8: частое REVIEW из-за отсутствия
+        # описания → «Мало информации в анкете».
+        _REVIEW_DATA_LABELS: dict[str, str] = {
+            "NO_FEATURES_FOUND": "Мало информации в анкете",
+            "INSUFFICIENT_DATA": "Недостаточно данных",
         }
 
         _NEGATIVE_LABELS: dict[str, str] = {
@@ -306,7 +317,12 @@ class AutoActionEngine:
             "relocated_to_spb": "Переехала в СПб",
         }
 
-        label = "❤️ Лайк" if action == "LIKE" else "👎 Дизлайк"
+        if action == "REVIEW":
+            label = "👎 На ревью"
+        elif action == "LIKE":
+            label = "❤️ Лайк"
+        else:
+            label = "👎 Дизлайк"
         lines = [label]
 
         for reason in reasons:
@@ -336,6 +352,8 @@ class AutoActionEngine:
                     lines.append(f"• {label_text}: {evidence}")
                 else:
                     lines.append(f"• {label_text}")
+            elif reason in _REVIEW_DATA_LABELS:
+                lines.append(f"• {_REVIEW_DATA_LABELS[reason]}")
             elif reason in _FILTER_LABELS:
                 lines.append(f"• {_FILTER_LABELS[reason]}")
             else:

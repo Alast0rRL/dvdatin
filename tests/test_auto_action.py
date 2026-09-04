@@ -268,6 +268,23 @@ class TestAutoActionNotify:
         assert "Город не в списке" in text
         assert "Возраст не подходит" in text
 
+    def test_review_notify_explains_no_data(self) -> None:
+        """REVIEW → 👎 транспортно, но уведомление «На ревью» с причиной."""
+        client, e = self._notify_engine()
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.REVIEW, profile_id=1,
+                message_id=901, reasons=["NO_FEATURES_FOUND"],
+            )
+        )
+        # Первое сообщение — 👎 в чат Leo, второе — уведомление владельцу.
+        assert client.send_message.call_count == 2
+        explain_call = client.send_message.call_args_list[1]
+        text = explain_call.args[1]
+        assert text.startswith("👎 На ревью")
+        assert "Мало информации в анкете" in text
+        assert "Дизлайк" not in text
+
     def test_decision_codes_are_filtered_out(self) -> None:
         client, e = self._notify_engine()
         reasons = ["LIKE_THRESHOLD", "BELOW_THRESHOLDS", "Фото выше среднего"]
@@ -397,6 +414,24 @@ class TestFormatReason:
     def test_returns_empty_for_none(self) -> None:
         assert AutoActionEngine._format_reason("LIKE", None) == ""
         assert AutoActionEngine._format_reason("LIKE", []) == ""
+
+    def test_review_labels_as_review_not_dislike(self) -> None:
+        """REVIEW-уведомление — «На ревью», а не «Дизлайк»."""
+        text = AutoActionEngine._format_reason(
+            "REVIEW", ["NO_FEATURES_FOUND"],
+        )
+        assert text == "👎 На ревью\n• Мало информации в анкете"
+
+    def test_review_no_features_is_humanized(self) -> None:
+        """Детерминированный REVIEW с NO_FEATURES_FOUND пишет причину, а не вырезает её."""
+        text = AutoActionEngine._format_reason("REVIEW", ["NO_FEATURES_FOUND"])
+        assert "Дизлайк" not in text
+        assert "Мало информации в анкете" in text
+
+    def test_no_features_found_in_dislike_is_humanized(self) -> None:
+        """NO_FEATURES_FOUND больше не вырезается как внутренний код."""
+        text = AutoActionEngine._format_reason("DISLIKE", ["NO_FEATURES_FOUND"])
+        assert "Мало информации в анкете" in text
 
 
 class TestAutoActionIdempotency:
