@@ -106,15 +106,43 @@ class TestAutoActionExec:
         args, _ = client.send_message.call_args
         assert args[1] == DISLIKE_TEXT
 
-    def test_review_sends_dislike_to_keep_stream_moving(self) -> None:
+    def test_review_returns_review_and_sends_nothing(self) -> None:
+        """REVIEW → бот не действует сам: ждёт ручное решение владельца.
+
+        Никакого транспортного 👎: анкета остаётся активной, чтобы владелец
+        сам поставил лайк/дизлайк (или написал). Возврат "REVIEW" — сигнал,
+        что авто-действие не отправлено.
+        """
         client = make_client()
         e = make_engine(client=client)
         result = asyncio.get_event_loop().run_until_complete(
             e.maybe_act(AIDecision.REVIEW)
         )
-        assert result == "DISLIKE"
-        args, _ = client.send_message.call_args
-        assert args[1] == DISLIKE_TEXT
+        assert result == "REVIEW"
+        # Основное действие НЕ отправлено (нет ❤️/👎 в чат Leo).
+        client.send_message.assert_not_called()
+        client.forward_messages.assert_not_called()
+
+    def test_review_notifies_owner_when_message_id_given(self) -> None:
+        """REVIEW с card → владельцу уведомление «нужно действие» (без 👎)."""
+        client = make_client()
+        e = make_engine(
+            client=client, config=make_auto_config(notify_chat_id=8525808108),
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.REVIEW, profile_id=1,
+                message_id=900, reasons=["NO_FEATURES_FOUND"],
+            )
+        )
+        assert result == "REVIEW"
+        # Карточка пересылается владельцу.
+        client.forward_messages.assert_awaited_once()
+        # Сообщение-действие в чат Leo НЕ отправлено; есть только уведомление.
+        assert client.send_message.call_count == 1
+        text = client.send_message.call_args.args[1]
+        assert "Нужно твоё решение" in text
+        assert "дизлайк" in text.lower()
 
     def test_none_decision_skips(self) -> None:
         client = make_client()
@@ -269,7 +297,7 @@ class TestAutoActionNotify:
         assert "Возраст не подходит" in text
 
     def test_review_notify_explains_no_data(self) -> None:
-        """REVIEW → 👎 транспортно, но уведомление «На ревью» с причиной."""
+        """REVIEW → уведомление «нужно решение» с причиной, без отправки 👎."""
         client, e = self._notify_engine()
         asyncio.get_event_loop().run_until_complete(
             e.maybe_act(
@@ -277,13 +305,13 @@ class TestAutoActionNotify:
                 message_id=901, reasons=["NO_FEATURES_FOUND"],
             )
         )
-        # Первое сообщение — 👎 в чат Leo, второе — уведомление владельцу.
-        assert client.send_message.call_count == 2
-        explain_call = client.send_message.call_args_list[1]
-        text = explain_call.args[1]
-        assert text.startswith("👎 На ревью")
+        # Действие в чат Leo не отправляется (нет ❤️/👎); владельцу — одно
+        # уведомление «нужно решение» + пересылка карточки.
+        client.forward_messages.assert_awaited_once()
+        assert client.send_message.call_count == 1
+        text = client.send_message.call_args.args[1]
+        assert "Нужно твоё решение" in text
         assert "Мало информации в анкете" in text
-        assert "Дизлайк" not in text
 
     def test_decision_codes_are_filtered_out(self) -> None:
         client, e = self._notify_engine()
@@ -330,6 +358,26 @@ class TestAutoActionNotify:
         # Пересылка есть, но пояснение не отправляется (нет причин).
         client.forward_messages.assert_awaited_once()
         assert client.send_message.call_count == 1
+
+    def test_notify_drops_stale_evidence_for_truncated_card(self) -> None:
+        """Уведомление «нужно решение» не цитирует старое описание усечённой карточки."""
+        client, e = self._notify_engine()
+        reasons = [
+            "POSITIVE:relocated_to_spb:алина санкт-петербург ток переехала в питер",
+        ]
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.REVIEW, profile_id=1,
+                message_id=906, reasons=reasons,
+                card_text="Алина, 18, Санкт-Петербург",
+            )
+        )
+        # Одно уведомление владельцу: цитата «переехала» должна отсутствовать.
+        explain_call = client.send_message.call_args
+        text = explain_call.args[1]
+        assert "Нужно твоё решение" in text
+        assert "переехала" not in text
+        assert "Переехала в СПб" in text
 
     def _notify_client_with_me(self, user_id: int = 1753676469) -> AsyncMock:
         nc = make_client()
@@ -432,6 +480,41 @@ class TestFormatReason:
         """NO_FEATURES_FOUND больше не вырезается как внутренний код."""
         text = AutoActionEngine._format_reason("DISLIKE", ["NO_FEATURES_FOUND"])
         assert "Мало информации в анкете" in text
+
+    def test_evidence_quoted_from_full_card(self) -> None:
+        """Evidence цитируется, если описание реально есть в текущей карточке."""
+        reasons = [
+            "POSITIVE:relocated_to_spb:ток переехала в питер,друзьяшек надо там да адаптация",
+        ]
+        full = "алина, 18, питер – ток переехала в питер,друзьяшек надо там да адаптация"
+        text = AutoActionEngine._format_reason("REVIEW", reasons, card_text=full)
+        assert "Переехала в СПб: ток переехала в питер" in text
+
+    def test_evidence_quote_dropped_for_truncated_card(self) -> None:
+        """Усечённая карточка без описания НЕ цитирует Евиденс из старого показа.
+
+        Ключевой баг: повторный показ карточки «Алина, 18, Санкт-Петербург»
+        (без описания) получал цитату «переехала в питер...» из старого полного
+        описания профиля. Такая цитата вводит в заблуждение — текст не виден
+        в текущей карточке. Остаётся только смысловой ярлык.
+        """
+        reasons = [
+            "POSITIVE:relocated_to_spb:алина санкт-петербург ток переехала в питер,друзьяшек надо там да адаптация",
+        ]
+        truncated = "Алина, 18, Санкт-Петербург"
+        text = AutoActionEngine._format_reason(
+            "REVIEW", reasons, card_text=truncated,
+        )
+        assert "переехала" not in text
+        assert "Переехала в СПб" in text
+
+    def test_evidence_quoted_when_no_card_text_legacy(self) -> None:
+        """Без card_text (legacy) evidence цитируется как раньше."""
+        reasons = [
+            "POSITIVE:relocated_to_spb:ток переехала в питер",
+        ]
+        text = AutoActionEngine._format_reason("REVIEW", reasons)
+        assert "Переехала в СПб: ток переехала в питер" in text
 
 
 class TestAutoActionIdempotency:

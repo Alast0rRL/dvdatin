@@ -107,5 +107,15 @@ control:
   allowed_user_ids:
     - 8525808108     # ваш собственный account-id (оператор)
 
+# Stage 8: ручное ревью REVIEW-анкет.
+# Когда scoring выдаёт REVIEW (бот «не справляется»), бот НЕ действует сам:
+# уведомляет владельца, что нужно его решение, и ждёт ручного действия в
+# Дайвинчике (❤️/👎/сообщение с того же аккаунта). Пойманное действие
+# привязывается к REVIEW-анкете и дописывается в файл (JSON или Markdown).
+manual_review:
+  enabled: false
+  file: "data/reviews/review_log.json"   # data/reviews/review_log.md для Markdown
+  format: json                            # json | md
+
 logging:
   level: INFO

@@ -59,7 +59,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_ai (46), test_collector (99), test_parser (47), test_decision (20), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (5), test_preferences (10), test_review_ui (5), test_auto_action (40), test_auto_action_audit (4), test_control_bot (12), test_deterministic_scoring (73) → 484 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_ai (46), test_collector (99), test_parser (47), test_decision (24), test_audit (29), test_filter (26), test_human_review (23), test_analytics (22), test_profile (19), test_ai_scoring (5), test_preferences (10), test_review_ui (5), test_auto_action (45), test_auto_action_audit (4), test_control_bot (12), test_deterministic_scoring (73), test_manual_review (13) → 502 total. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -87,7 +87,7 @@ Currently at **Stage 8 (deterministic scoring)** on top of **Stage 7 (SEMI_AUTO)
 
 - Live in `collectors/auto_action.py`: `AutoActionEngine(client, config, mode, chat_id)`.
 - Gate: `enabled` only when mode ∈ {SEMI_AUTO, AUTO} AND `auto_actions.enabled` AND a client exists (matched via `account_session` to `telegram.accounts`/`self._clients` by index).
-- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, REVIEW→`👎` (двигаем ленту), disabled→`GATE`. Фильтровые не-PASS (REJECT/REVIEW) на авто-аккаунте тоже шлют `👎` через `maybe_act(AIDecision.DISLIKE)` — иначе Leo ждёт реакцию и лента замирает; профиль и фильтр-решение остаются в БД.
+- `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, **AI REVIEW→ не действует сам** (возвращает `"REVIEW"`, уведомляет владельца, что нужно его ручное решение — см. Manual Review ниже), disabled→`GATE`. Фильтровые не-PASS (REJECT/REVIEW) на авто-аккаунте по-прежнему шлют `👎` через `maybe_act(AIDecision.DISLIKE)` — иначе Leo ждёт реакцию и лента замирает; профиль и фильтр-решение остаются в БД.
 - Sent only when the profile arrived on the auto account (`task.msg.client is auto_engine.client`).
 - `REPLY-markup` mechanic (KeyboardButton, not inline): the bot's profile card has buttons `❤️ 💌 📹 🎤 👎 💤`; the action is plain text `❤️`/`👎`, valid only while a profile is active.
 - `auto_actions` config: `enabled`, `account_session`, `interval_sec` (rate limit, default 10s), `start_command` (default `✨🔍`, unicode-escape — не отправляется стартом), `notify_chat_id` (default 0, user_id владельца для уведомлений о лайке/дизлайке; `0` = авто-режим «другой аккаунт»: уведомление уходит на аккаунт из `accounts`, чей user_id ≠ авто-аккаунта — в нашем случае с Бармалея (dvai_2) на Меланхолика (dvai)).
@@ -95,6 +95,14 @@ Currently at **Stage 8 (deterministic scoring)** on top of **Stage 7 (SEMI_AUTO)
 - Капчи/проверки Leo (сделки, подписки, подтверждения и т.п.): на `UNKNOWN`-сообщение в чате Дайвинчика на авто-аккаунте авто-аккаунт нажимает **последнюю** кнопку (`_press_captcha_button`, идемпотентно) — сбрасывает диалог и продолжает ленту. Реагирует ТОЛЬКО на явные капчи/сделки: текст должен содержать один из маркеров `CAPTCHA_MARKERS` (сделк/подписываешься/подтверд/верификац и т.п.), а reply-кнопок должно быть `>= CAPTCHA_MIN_BUTTONS`. Это НЕ трогает главное меню Leo и Premium-промо (иначе бот зацикливается: жмёт «Активировать Premium»/«← Назад» каждые 1-2 сек). Работает и при старте (`start_auto_stream` fallback после view-кнопки), и в live-обработке (`UNKNOWN`-ветка).
 - Кнопка «🚀 Смотреть анкеты» может прийти на **отдельном сообщении** после рекламного/промо-текста (а не на самом промо). В live-`UNKNOWN`-ветке, если у текущего сообщения нет ни view-кнопки, ни капчи, авто-аккаунт всё равно вызывает `_press_view_button_if_needed()` — он сам сканирует последние 15 сообщений и жмёт кнопку только если она реально есть и ещё не нажата (идемпотентность), поэтому меню/Premium без такой кнопки не зацикливаются.
 - Идемпотентность авто-действий — по **конкретной карточке** (`telegram_message_id`), НЕ по `profile_id`/имени: `has_auto_action_for_message(chat_id, tm_id)` / `record_auto_action(..., tm_id)`. Повторная карточка той же личности (новый `telegram_message_id` в ленте) получает реакцию снова, чтобы лента не замирала при повторах Leo. `auto_actions_log` хранит `telegram_message_id` (partial unique index `chat_id`+`telegram_message_id` WHERE `telegram_message_id IS NOT NULL`), `UNIQUE(profile_id)` убран; `record_auto_action` по-прежнему обновляет статус профиля `LIKED`/`DISLIKED`. Миграция старой схемы — полное пересоздание таблицы с переносом записей (SQLite не умеет DROP CONSTRAINT).
+
+## Manual Review (Stage 8)
+
+- Логика в `services/manual_review.py` (Telegram-free): `ManualReviewRecorder(db, path, enabled, file_format)` — фиксирует РУЧНОЕ решение владельца по REVIEW-анкете в файл (`data/reviews/review_log.json` или `.md`). `classify_outgoing(text)`: `❤️`→LIKE, `👎`→DISLIKE, иначе MESSAGE.
+- Сценарий: детерминированный scoring выдал REVIEW (бот «не справляется»). `AutoActionEngine.maybe_act(REVIEW)` НЕ шлёт авто-`👎` (`_notify_needs_action`: пересылает карточку владельцу и пишет «Нужно твоё решение»), ждёт ручного действия. Анкета остаётся активной в ленте.
+- Владелец действует с того же аккаунта, под которым слушает collector (тот же, что `dvinchik.chat_id`). Исходящее действие перехватывается в `_handle_outgoing_message` → `_maybe_record_manual_review`: через `get_chat_profile_context(chat_id)`/`_pending_profiles` берёт «текущую» анкету чата и, если последнее AI-решение == REVIEW, вызывает `manual_review.handle_outgoing(...)` → запись в файл.
+- Только активная REVIEW-анкета: бот и сам шлёт `❤️`/`👎` (LIKE/DISLIKE), но recorder записывает лишь когда последнее AI-решение профиля == REVIEW → ложных записей нет.
+- Проводка: `main.py` создаёт `ManualReviewRecorder` (гейт `config.manual_review.enabled`) и передаёт в `DvinchikCollector(..., manual_review=...)`. Конфиг — `manual_review: enabled / file / format (json|md)` в `config.yaml`/`config.example.yaml`. Ошибки файла/БД не ломают перехват исходящих (RAW уже сохранён).
 
 ## Control Panel (Stage 7.5)
 

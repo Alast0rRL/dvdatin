@@ -185,6 +185,35 @@ class ControlConfig(BaseModel):
     allowed_user_ids: list[int] = [8525808108]
 
 
+class ManualReviewConfig(BaseModel):
+    """Настройки ручного ревью анкет REVIEW (Stage 8).
+
+    Когда детерминированный scoring выдаёт REVIEW (не хватает информации/не
+    уверен), бот НЕ действует сам: уведомляет владельца, что нужно его решение,
+    и ждёт ручного действия в Дайвинчике (❤️/👎/сообщение с того же аккаунта,
+    под которым слушает collector). Пойманное ручное действие привязывается к
+    REVIEW-анкете и дописывается в файл.
+
+    ``file`` — путь к файлу журнала; ``format`` — ``json`` (по умолчанию) или
+    ``md`` (Markdown-таблица/список). ``enabled`` гейтит и запись, и
+    «ждать ручное действие» на REVIEW.
+    """
+
+    enabled: bool = False
+    # Путь к файлу журнала ручных решений.
+    file: str = "data/reviews/review_log.json"
+    # Формат записи: json | md.
+    format: str = "json"
+
+    @field_validator("format")
+    @classmethod
+    def format_valid(cls, v: str) -> str:
+        if v not in {"json", "md"}:
+            msg = f"format должен быть json или md, получено: {v}"
+            raise ValueError(msg)
+        return v
+
+
 class CLIPConfig(BaseModel):
     """Настройки CLIP-анализа фото (оставлен для обратной совместимости)."""
 
@@ -362,6 +391,7 @@ class AppConfig(BaseModel):
     limits: LimitsConfig = LimitsConfig()
     auto_actions: AutoActionsConfig = AutoActionsConfig()
     control: ControlConfig = ControlConfig()
+    manual_review: ManualReviewConfig = ManualReviewConfig()
     logging: LoggingConfig = LoggingConfig()
 
     def model_post_init(self, __context: object) -> None:

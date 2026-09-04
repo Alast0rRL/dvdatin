@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import TYPE_CHECKING
 
@@ -108,11 +109,18 @@ class AutoActionEngine:
         *,
         message_id: int | None = None,
         reasons: list[str] | None = None,
+        card_text: str | None = None,
     ) -> str:
         """Выполняет действие по решению (LIKE/DISLIKE), если он enabled.
 
         Возвращает строку-описание совершённого действия ("SKIP", "LIKE",
         "DISLIKE") либо слово "GATE" если авто-действия выключены.
+
+        ``card_text`` — сырой текст ТЕКУЩЕЙ карточки (сообщения). Используется
+        в уведомлении: текст-свидетель из причин цитируется только если он
+        реально присутствует в показанной карточке (иначе это вводит в
+        заблуждение — причину мог найти прошлый повторный показ с описанием,
+        а сейчас карточка усечённая).
 
         Идемпотентность по ``telegram_message_id`` обеспечивается на уровне
         collector'а (``has_auto_action_for_message`` в БД), а не движка.
@@ -122,28 +130,37 @@ class AutoActionEngine:
         if decision is None:
             return "SKIP"
         if decision == AIDecision.REVIEW:
-            # REVIEW → 👎: Leo не движет ленту, пока не получит реакцию.
-            # Шлём дизлайк, чтобы поток не замирал; сам REVIEW-результат и
-            # профиль остаются в БД (ReviewBot всё равно видит его).
+            # REVIEW → НЕ действуем сами: бот «не справляется», ждём решение
+            # владельца. Анкета остаётся активной, владельцу отправляется
+            # уведомление, что нужно его ручное действие (❤️/👎/сообщение) в
+            # Дайвинчике. Пойманное действие фиксируется в журнале ручных
+            # решений. Возврат "REVIEW" — сигнал, что действие не отправлено.
             logger.info(
-                "AutoAction: REVIEW → 👎 (двигаю ленту; профиль остаётся в БД)"
+                "AutoAction: REVIEW → жду ручное решение владельца "
+                "(авто-👎 не отправляю, анкета остаётся активной)"
             )
-            text = DISLIKE_TEXT
-            action = "DISLIKE"
-            # Для уведомления показываем «На ревью», а не «Дизлайк»: это
-            # транспортный сброс ленты, а не семантическое отклонение анкеты.
-            notify_action = "REVIEW"
-        else:
-            text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
-            action = decision.value
-            notify_action = action
+            await self._notify_needs_action(
+                message_id=message_id,
+                reasons=reasons,
+                card_text=card_text,
+            )
+            return "REVIEW"
+
+        text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
+        action = decision.value
+        notify_action = action
 
         async with self._lock:
             await self._rate_limit_locked()
             await self._send(text)
         logger.info(f"AutoAction: отправил {text!r} ({action}) на chat={self._chat_id}")
         self._print_action(action, text)
-        await self._notify(notify_action, message_id=message_id, reasons=reasons)
+        await self._notify(
+            notify_action,
+            message_id=message_id,
+            reasons=reasons,
+            card_text=card_text,
+        )
         return action
 
     async def start_stream(self) -> bool:
@@ -216,6 +233,7 @@ class AutoActionEngine:
         action: str,
         message_id: int | None = None,
         reasons: list[str] | None = None,
+        card_text: str | None = None,
     ) -> None:
         """Пересылает карточку анкеты владельцу с объяснением причины.
 
@@ -233,7 +251,7 @@ class AutoActionEngine:
             await self._client.forward_messages(
                 target, message_id, from_peer=self._chat_id,
             )
-            text = self._format_reason(action, reasons)
+            text = self._format_reason(action, reasons, card_text=card_text)
             if text:
                 await self._client.send_message(target, text)
             logger.info(
@@ -241,6 +259,45 @@ class AutoActionEngine:
             )
         except Exception as e:
             logger.error(f"AutoAction: ошибка уведомления: {e}")
+
+    async def _notify_needs_action(
+        self,
+        message_id: int | None = None,
+        reasons: list[str] | None = None,
+        card_text: str | None = None,
+    ) -> None:
+        """Уведомляет владельца, что нужно его РУЧНОЕ решение по REVIEW-анкете.
+
+        REVIEW → бот не действует сам; владельцу пересылается карточка анкеты
+        и сообщение, что нужно поставить лайк/дизлайк (или написать) в
+        Дайвинчике с того же аккаунта. Пересылаем даже без причины — главное,
+        что владельцу нужно действие.
+        """
+        if self._client is None or message_id is None:
+            return
+        target = await self._resolve_notify_target()
+        if target is None:
+            return
+        try:
+            await self._client.forward_messages(
+                target, message_id, from_peer=self._chat_id,
+            )
+            lines = ["⚠️ Нужно твоё решение (REVIEW)", ""]
+            if reasons:
+                reason_text = self._format_reason("REVIEW", reasons, card_text=card_text)
+                if reason_text:
+                    lines.append(reason_text)
+                    lines.append("")
+            lines.append(
+                "Зайди в Дайвинчик и поставь лайк (❤️), дизлайк (👎) "
+                "или напиши сообщение этой анкете — я запишу твой выбор."
+            )
+            await self._client.send_message(target, "\n".join(lines))
+            logger.info(
+                f"AutoAction: уведомление «нужно действие» отправлено в chat={target}"
+            )
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка уведомления «нужно действие»: {e}")
 
     async def _resolve_notify_target(self) -> int | None:
         """Определяет chat_id получателя уведомления.
@@ -266,12 +323,23 @@ class AutoActionEngine:
         return None
 
     @staticmethod
-    def _format_reason(action: str, reasons: list[str] | None) -> str:
+    def _format_reason(
+        action: str,
+        reasons: list[str] | None,
+        card_text: str | None = None,
+    ) -> str:
         """Формирует человеко-читаемое объяснение причины лайка/дизлайка.
 
         Поддерживает как старый формат (HARD_NEGATIVE:..., POSITIVE:...),
         так и legacy формат (USER_SKIP:..., FILTER_REJECTED и т.д.).
         Коды решений пропускаются — показываются только смысловые причины.
+
+        ``card_text`` — сырой текст текущей карточки (необязательно). Если
+        передан, текст-свидетель для HARD_NEGATIVE/POSITIVE цитируется ТОЛЬКО
+        когда он реально присутствует в показанной карточке. Иначе цитата
+        опускается (остаётся только смысловой ярлык) — иначе уведомление
+        цитирует текст из старого повторного показа, которого в текущей
+        усечённой карточке нет.
         """
         if not reasons:
             return ""
@@ -339,7 +407,9 @@ class AutoActionEngine:
                 name = parts[1] if len(parts) > 1 else ""
                 evidence = parts[2].strip("«»") if len(parts) > 2 else ""
                 label_text = _NEGATIVE_LABELS.get(name, name)
-                if evidence:
+                if evidence and AutoActionEngine._evidence_in_card(
+                    evidence, card_text
+                ):
                     lines.append(f"• {label_text}: {evidence}")
                 else:
                     lines.append(f"• {label_text}")
@@ -348,7 +418,9 @@ class AutoActionEngine:
                 name = parts[1] if len(parts) > 1 else ""
                 evidence = parts[2].strip("«»") if len(parts) > 2 else ""
                 label_text = _POSITIVE_LABELS.get(name, name)
-                if evidence:
+                if evidence and AutoActionEngine._evidence_in_card(
+                    evidence, card_text
+                ):
                     lines.append(f"• {label_text}: {evidence}")
                 else:
                     lines.append(f"• {label_text}")
@@ -360,3 +432,33 @@ class AutoActionEngine:
                 lines.append(f"• {reason}")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _evidence_in_card(evidence: str, card_text: str | None) -> bool:
+        """Проверяет, что текст-свидетель реально присутствует в карточке.
+
+        Если ``card_text`` не передан — считаем, что цитату показывать можно
+        (обратная совместимость: раньше evidence всегда цитировался).
+
+        Иначе вырезаем из карточки шапку «Имя, Возраст, Город» (по разделителю
+        ``–``/``—``) и смотрим, что осталось — описание. Цитируем только если
+        описание карточки пересекается с evidence (нормализованно). Это чинит
+        случай повторного показа усечённой карточки (только заголовок, без
+        описания): тогда evidence из старого полного описания цитировать нельзя.
+        """
+        if card_text is None:
+            return True
+        if not evidence:
+            return False
+        # Шапка «... – описание»: описание — всё после первого –/—.
+        header = re.split(r"\s*[–—]\s*", card_text, maxsplit=1)
+        card_desc = header[1] if len(header) > 1 else ""
+        if not card_desc:
+            return False
+        norm_ev = "".join(evidence.lower().split())
+        norm_card = "".join(card_desc.lower().split())
+        # Сравниваем по пересечению (evidence часто включает шапку целиком).
+        return norm_ev in norm_card or (
+            len(norm_ev) >= 6 and
+            any(norm_ev[i:i + 6] in norm_card for i in range(0, max(len(norm_ev) - 5, 1), 3))
+        )

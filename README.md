@@ -1,7 +1,7 @@
 # DvAI — Система автоматизации знакомств в Telegram
 
 > **D**ayvinchik **AI** — умный коллектор + детерминированный скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» в Telegram.
-> Текущий этап: **v0.7 / Stage 7 (SEMI_AUTO)** — AI отправляет ❤️/👎 на анкеты с авто-аккаунта, управление через Telegram-панель.
+> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO)** — детерминированный скоринг; AI отправляет ❤️/👎 на анкеты с авто-аккаунта, на REVIEW ждёт ручного решения владельца, управление через Telegram-панель.
 
 ---
 
@@ -215,9 +215,9 @@ LLM-промпте — детерминированный движок чита�
   reply-клавиатуре анкеты (`KeyboardButton`, не inline). Без активной анкеты бот отвечает
   «Нет такого варианта ответа».
 - **`AutoActionEngine`** (`collectors/auto_action.py`): `maybe_act(decision)` →
-  LIKE→`❤️`, DISLIKE→`👎`, REVIEW→`👎` (двигаем ленту Leo — он не продолжает
-  поток, пока на показанную анкету не отправлена реакция; профиль и
-  AI-результат REVIEW остаются в БД для ReviewBot), None→`SKIP`, выключено→`GATE`.
+  LIKE→`❤️`, DISLIKE→`👎`, **AI REVIEW→ не действует сам** (возвращает `"REVIEW"`,
+  уведомляет владельца, что нужно его ручное решение — см. «Manual Review (Stage 8)»;
+  анкета остаётся активной), None→`SKIP`, выключено→`GATE`.
   Rate-limit `interval_sec` (default 10s).
 - **Фильтровые REJECT/REVIEW → тоже `👎`:** если FilterService вернул не-PASS
   решение (REJECT/REVIEW), AI не считается (архитектурный гейт), но карточка
@@ -288,7 +288,49 @@ LLM-промпте — детерминированный движок чита�
   фильтра (город/возраст) и AI-анализ (детерминированные причины на русском). Внутренние коды
   скоринга (`LIKE_THRESHOLD`, `BELOW_THRESHOLDS` и т.п.) **не** показываются.
   `0` — уведомления выключены. Ошибки пересылки ловятся и не ломают пайплайн.
+- **Цитирование текста-свидетель в уведомлении — только из показанной карточки.**
+  Скоринг работает по `profile.description` (аккумулированному из повторных показов),
+  поэтому `POSITIVE`/`HARD_NEGATIVE` могут ссылаться на текст, которого нет в текущей
+  усечённой карточке (Leo переслал её без описания). Чтобы уведомление не цитировало
+  невидный текст, `maybe_act(..., card_text=<raw-текст текущей карточки>)` прокидывает
+  сырой текст в `_format_reason`/`_evidence_in_card`: цитата показывается, только если
+  описание карточки (всё после `–`/`—`) реально пересекается с evidence. Иначе остаётся
+  только смысловой ярлык («Переехала в СПб» без длинной цитаты). Без `card_text`
+  поведение — прежнее (цитата всегда).
 - Полный AUTO / диалог-менеджер не реализуются до явной команды (см. Roadmap).
+
+### Manual Review (Stage 8)
+
+Когда детерминированный scoring выдаёт **REVIEW** (бот «не справляется» — мало
+информации/уверенности), бот **не действует сам**: авто-`👎` НЕ отправляется
+(реверс прежней «двигаем ленту»-механики для AI-REVIEW; фильтровые не-PASS
+по-прежнему шлют `👎`, чтобы лента Leo не замирала).
+
+- **`ManualReviewRecorder`** (`services/manual_review.py` — Telegram-free) фиксирует
+  РУЧНОЕ решение владельца по REVIEW-анкете в файл журнала
+  (`data/reviews/review_log.json` — JSON-список, или `.md` — Markdown-таблица;
+  конфиг `manual_review.file` / `manual_review.format`).
+- **Уведомление владельцу:** `AutoActionEngine.maybe_act(REVIEW)` → `_notify_needs_action`
+  пересылает карточку анкеты владельцу и пишет «⚠️ Нужно твоё решение (REVIEW)» +
+  причина + инструкцию поставить лайк/дизлайк (или написать) в Дайвинчике.
+- **Перехват действия:** владелец действует с того же аккаунта, под которым слушает
+  collector (тот же чат, что `dvinchik.chat_id`). Исходящее сообщение перехватывается
+  в `_handle_outgoing_message` → `_maybe_record_manual_review` → по «текущей» анкете чата
+  (`get_chat_profile_context` / `_pending_profiles`) профиль → если последнее AI-решение
+  профиля == REVIEW → `handle_outgoing(...)` записывает действие в файл.
+- **Классификация:** `❤️`→LIKE, `👎`→DISLIKE, любой другой текст→MESSAGE (с сохранением
+  текста). Запись в файл происходит ТОЛЬКО для REVIEW-анкет — авто-`❤️`/`👎` (LIKE/DISLIKE)
+  не дают ложных записей.
+- **Структура проекта:** `services/manual_review.py` (Telegram-free); `main.py` создаёт
+  recorder (гейт `manual_review.enabled`) и передаёт в `DvinchikCollector(..., manual_review=...)`.
+  Ошибки файла/БД не ломают перехват исходящих (RAW уже сохранён).
+- **Конфиг:**
+  ```yaml
+  manual_review:
+    enabled: true
+    file: "data/reviews/review_log.json"   # или review_log.md
+    format: json                            # json | md
+  ```
 
 ### Контрольная панель (Stage 7.5)
 
@@ -358,6 +400,7 @@ dvdatin/
 │   ├── profile_service.py       #   CRUD + upsert + fingerprint
 │   ├── filter_engine.py         #   AgeRule / CityRule / DataCompletenessRule
 │   ├── filter_service.py        #   Оценка + история в БД
+│   ├── manual_review.py         #   Stage 8: запись ручных решений владельца по REVIEW (JSON/MD)
 │   ├── profile_normalizer.py    #   Stage 8: нормализация текста анкеты
 │   ├── feature_extractor.py     #   Stage 8: детерминированные правила H01–H09 / P01–P04
 │   ├── score_engine.py          #   Stage 8: расчёт скора (ScoreConfig)
@@ -600,7 +643,7 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 
 ## 6. Планы развития (Roadmap)
 
-### Завершено (текущее состояние — Stage 7)
+### Завершено (текущее состояние — Stage 8)
 
 - [x] **Stage 0** — конфиг (Pydantic), логирование (Loguru/Rich), БД, Telethon client, banner, `main.py`.
 - [x] **Stage 1 / 1.5** — парсер, классификатор, RAW-first, city-normalizer, MEDIA_ONLY, dedup, rate-limiter, stats.
@@ -620,8 +663,9 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW→`👎` (двигаем ленту Leo, профиль остаётся в БД), None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`. Автозапуск потока не шлёт `✨🔍` (невалидна вне состояния Leo): при старте обрабатывается уже показанная активная анкета, а при исчерпании ленты автоматически нажимается кнопка «🚀 Смотреть анкеты» (`start_auto_stream` + live-хук в `UNKNOWN`). Фильтровые REJECT/REVIEW (не-PASS от FilterService) тоже получают `👎`, чтобы лента не замирала и при неподходящих карточках. Финальный реверс механики LIKE/👎 как plain-text reply-кнопок. Автоответ на капчи/проверки Leo: на `UNKNOWN`-сообщение, текст которого содержит маркер `CAPTCHA_MARKERS` и имеет `>= 2` reply-кнопок, авто-аккаунт нажимает последнюю кнопку (идемпотентно) — сбрасывает диалог и продолжает ленту, не трогая главное меню/Premium.
 - [x] **Stage 7.5 — контрольная панель** — `ControlBot` (`telegram/control_bot.py`): /status /mode on|off /stream /recent /help + inline-кнопки; runtime-переключение режима (`collector.set_mode`) с персистентностью в `config.yaml`; авторизация по `control.allowed_user_ids`.
 - [x] **Stage 8 — детерминированный скоринг (без LLM/CLIP)** — LLM/CLIP полностью исключены из scoring-пайплайна. Вместо внешнего шлюза — детерминированный движок правил: `services/profile_normalizer.py` (нормализация), `services/feature_extractor.py` (признаки H01–H09 / P01–P04 из `config/preferences.yaml`), `services/score_engine.py` (расчёт скора), `models/features.py` (модели). `DecisionService.evaluate()` вызывается для **всех** результатов фильтра (PASS/REJECT/REVIEW). Один и тот же текст → один и тот же результат; без сети/GPU/промптов; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` сохранён (missing/unknown → REVIEW, никогда DISLIKE); версия scoring `deterministic-v2`; `ImagesConfig.enabled` по умолчанию `false`. Legacy-модули (`llm_service`, `clip_service`, `ai_scoring_service`, `remote_*_client`) остаются пассивными.
+- [x] **Stage 8 — Manual Review (ручные решения по REVIEW-анкетам)** — на AI-REVIEW бот не отправляет авто-`👎` (`AutoActionEngine.maybe_act` → `_notify_needs_action`: пересылка карточки владельцу + «Нужно твоё решение»), анкета остаётся активной. Владелец действует в Дайвинчике с того же аккаунта; исходящее действие перехватывается (`_handle_outgoing_message` → `_maybe_record_manual_review`) и через `ManualReviewRecorder` (`services/manual_review.py`, Telegram-free) привязывается к REVIEW-профилю и дописывается в `data/reviews/review_log.json`/`.md` (`❤️`→LIKE, `👎`→DISLIKE, иначе MESSAGE). Фильтровые не-PASS по-прежнему шлют `👎` (лента Leo не замирает).
 
-Проверено: **480 тестов проходят** (baseline в `tests/baseline/`).
+Проверено: **502 теста проходят** (baseline в `tests/baseline/`).
 
 ### В разработке / планируется
 

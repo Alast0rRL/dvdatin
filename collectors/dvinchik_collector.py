@@ -123,6 +123,7 @@ class DvinchikCollector:
         stats: object | None = None,
         worker: DvinchikRawWorker | None = None,
         config_path: Path = Path("config/config.yaml"),
+        manual_review: object | None = None,
     ) -> None:
         # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
         # регистрируются на каждом клиенте. Один и тот же message из одного
@@ -160,6 +161,8 @@ class DvinchikCollector:
         self._profile_service = profile_service
         self._filter_service = filter_service
         self._decision_service = decision_service
+        # Stage 8: запись ручных решений владельца по REVIEW-анкетам.
+        self._manual_review = manual_review
         # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
         # (config.auto_actions.account_session) среди accounts/clients (они
         # параллельны: main.py строит clients в том же порядке, что accounts).
@@ -800,6 +803,36 @@ class DvinchikCollector:
 
         self._print_outgoing_message(chat_id, msg.id, text, msg_date)
 
+        await self._maybe_record_manual_review(chat_id, msg.id, text)
+
+    async def _maybe_record_manual_review(
+        self, chat_id: int, outgoing_tm_id: int, text: str,
+    ) -> None:
+        """Фиксирует ручное решение владельца по активной REVIEW-анкете.
+
+        Исходящее действие (❤️/👎/сообщение) в чате Дайвинчика привязывается к
+        «текущей» анкете чата (chat_context / _pending_profiles). Если последнее
+        AI-решение этой анкеты — REVIEW, действие записывается в журнал ручных
+        решений. Ошибки не ломают перехват исходящих (RAW уже сохранён).
+        """
+        if not self._manual_review or not getattr(
+            self._manual_review, "enabled", False
+        ):
+            return
+        if chat_id != self._dvinchik_chat_id:
+            return
+        context = await self._db.get_chat_profile_context(chat_id)
+        if context is None:
+            context = self._pending_profiles.get(chat_id)
+        if context is None:
+            return
+        try:
+            await self._manual_review.handle_outgoing(
+                chat_id, context, outgoing_tm_id, text,
+            )
+        except Exception as e:
+            logger.error(f"ManualReview: ошибка обработки исходящего: {e}")
+
     def _print_outgoing_message(
         self, chat_id: int, message_id: int, text: str, msg_date: str,
     ) -> None:
@@ -959,6 +992,7 @@ class DvinchikCollector:
                                                         decision.decision, profile.id,
                                                         message_id=task.message_id,
                                                         reasons=decision.reasons,
+                                                        card_text=text,
                                                     )
                                                     if action in ("LIKE", "DISLIKE"):
                                                         try:
@@ -1003,6 +1037,7 @@ class DvinchikCollector:
                                                     AIDecision.DISLIKE, profile.id,
                                                     message_id=task.message_id,
                                                     reasons=[r.value for r in filter_result.reasons],
+                                                    card_text=text,
                                                 )
                                             )
                                             if action in ("LIKE", "DISLIKE"):

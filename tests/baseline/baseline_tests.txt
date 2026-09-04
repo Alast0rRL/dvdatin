@@ -1,7 +1,7 @@
-﻿# DvAI Test Baseline (FROZEN)
-# count=484
-# generated=2026-09-04 13:24:50
-# status=484 passed (Stage 8: deterministic scoring migrates off LLM/CLIP)
+# DvAI Test Baseline (FROZEN)
+# count=502
+# generated=2026-09-04 14:25:05
+# status=502 passed (Stage 8: deterministic scoring migrates off LLM/CLIP)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
 tests/test_ai.py::TestAIConfigBackend::test_remote_backend
@@ -110,7 +110,8 @@ tests/test_auto_action.py::TestAutoActionExec::test_dislike_sends_thumbsdown
 tests/test_auto_action.py::TestAutoActionExec::test_error_on_send_raises_auto_action_error
 tests/test_auto_action.py::TestAutoActionExec::test_like_sends_heart
 tests/test_auto_action.py::TestAutoActionExec::test_none_decision_skips
-tests/test_auto_action.py::TestAutoActionExec::test_review_sends_dislike_to_keep_stream_moving
+tests/test_auto_action.py::TestAutoActionExec::test_review_notifies_owner_when_message_id_given
+tests/test_auto_action.py::TestAutoActionExec::test_review_returns_review_and_sends_nothing
 tests/test_auto_action.py::TestAutoActionGate::test_disabled_in_observe_mode
 tests/test_auto_action.py::TestAutoActionGate::test_disabled_when_config_off
 tests/test_auto_action.py::TestAutoActionGate::test_disabled_without_client
@@ -129,6 +130,7 @@ tests/test_auto_action.py::TestAutoActionNotify::test_empty_reasons_skips_explan
 tests/test_auto_action.py::TestAutoActionNotify::test_like_forwards_and_explains
 tests/test_auto_action.py::TestAutoActionNotify::test_no_notify_when_disabled
 tests/test_auto_action.py::TestAutoActionNotify::test_no_notify_without_message_id
+tests/test_auto_action.py::TestAutoActionNotify::test_notify_drops_stale_evidence_for_truncated_card
 tests/test_auto_action.py::TestAutoActionNotify::test_notify_error_does_not_break_action
 tests/test_auto_action.py::TestAutoActionNotify::test_review_notify_explains_no_data
 tests/test_auto_action.py::TestAutoActionNotify::test_user_skip_label_humanized
@@ -137,6 +139,9 @@ tests/test_auto_action.py::TestAutoActionRateLimit::test_start_stream_without_co
 tests/test_auto_action.py::TestAutoActionRuntimeMode::test_mode_setter_persists_value
 tests/test_auto_action.py::TestAutoActionRuntimeMode::test_mode_setter_updates_gate
 tests/test_auto_action.py::TestAutoActionRuntimeMode::test_turn_off_at_runtime
+tests/test_auto_action.py::TestFormatReason::test_evidence_quote_dropped_for_truncated_card
+tests/test_auto_action.py::TestFormatReason::test_evidence_quoted_from_full_card
+tests/test_auto_action.py::TestFormatReason::test_evidence_quoted_when_no_card_text_legacy
 tests/test_auto_action.py::TestFormatReason::test_filters_decision_codes
 tests/test_auto_action.py::TestFormatReason::test_filters_prefix_labels
 tests/test_auto_action.py::TestFormatReason::test_formats_filter_and_ai_reasons
@@ -405,6 +410,19 @@ tests/test_human_review.py::TestSaveDecision::test_privacy_no_pii_in_history
 tests/test_human_review.py::TestSaveDecision::test_reject_save
 tests/test_human_review.py::TestSaveDecision::test_save_missing_ai_raises
 tests/test_human_review.py::TestSaveDecision::test_skip_save
+tests/test_manual_review.py::TestClassifyOutgoing::test_empty_is_message_not_crash
+tests/test_manual_review.py::TestClassifyOutgoing::test_heart_is_like
+tests/test_manual_review.py::TestClassifyOutgoing::test_text_is_message
+tests/test_manual_review.py::TestClassifyOutgoing::test_thumbs_is_dislike
+tests/test_manual_review.py::TestManualReviewJSON::test_appends_preserving_history
+tests/test_manual_review.py::TestManualReviewJSON::test_message_records_text
+tests/test_manual_review.py::TestManualReviewJSON::test_writes_single_record
+tests/test_manual_review.py::TestManualReviewLogic::test_disabled_does_nothing
+tests/test_manual_review.py::TestManualReviewLogic::test_no_context_returns_false
+tests/test_manual_review.py::TestManualReviewLogic::test_profile_not_review_not_recorded
+tests/test_manual_review.py::TestManualReviewLogic::test_unknown_context_profile_not_recorded
+tests/test_manual_review.py::TestManualReviewMD::test_creates_header_and_row
+tests/test_manual_review.py::TestManualReviewMD::test_header_not_repeated_on_second_row
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u041f\u0438\u0442\u0435\u0440-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0421\u041f\u0431-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0421\u0430\u043d\u043a\u0442 \u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
@@ -415,8 +433,8 @@ tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2013\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2014\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
-tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
+tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_unknown_city
 tests/test_parser.py::TestCityNormalization::test_unknown_district_not_mapped_to_city
 tests/test_parser.py::TestCityNormalization::test_whitespace

@@ -31,6 +31,7 @@ from services.decision_service import DecisionService
 from services.review_service import ReviewService
 from services.analytics_service import AnalyticsService
 from services.review_export import EXPORTS_DIR, export_review_csv
+from services.manual_review import ManualReviewRecorder
 from telegram.review_bot import ReviewBot
 from telegram.control_bot import ControlBot
 from telegram.client import authorize, create_client
@@ -142,6 +143,19 @@ async def main() -> None:
     )
     review_bot.register()
 
+    # Stage 8: ручные решения владельца по REVIEW-анкетам (журнал в файле).
+    mr_cfg = config.manual_review
+    manual_review = ManualReviewRecorder(
+        db,
+        path=Path(mr_cfg.file),
+        enabled=mr_cfg.enabled,
+        file_format=mr_cfg.format,
+    )
+    if mr_cfg.enabled:
+        logger.info(
+            f"ManualReview: запись ручных решений активна (файл: {mr_cfg.file})"
+        )
+
     collector = DvinchikCollector(
         clients, db, config,
         profile_service=profile_service,
@@ -149,6 +163,7 @@ async def main() -> None:
         decision_service=decision_service,
         stats=stats,
         config_path=CONFIG_PATH,
+        manual_review=manual_review,
     )
     collector.register()
 
