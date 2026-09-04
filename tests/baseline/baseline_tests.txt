@@ -1,7 +1,7 @@
 # DvAI Test Baseline (FROZEN)
-# count=502
-# generated=2026-09-04 14:25:05
-# status=502 passed (Stage 8: deterministic scoring migrates off LLM/CLIP)
+# count=508
+# generated=2026-09-04 15:12:00
+# status=508 passed (Stage 8: deterministic scoring migrates off LLM/CLIP)
 tests/test_ai.py::TestAIConfigBackend::test_invalid_backend_raises
 tests/test_ai.py::TestAIConfigBackend::test_local_backend
 tests/test_ai.py::TestAIConfigBackend::test_remote_backend
@@ -305,17 +305,22 @@ tests/test_deterministic_scoring.py::TestDecisionServiceWithPositive::test_spbpu
 tests/test_deterministic_scoring.py::TestDecisionServiceWithPositive::test_spbpu_review
 tests/test_deterministic_scoring.py::TestDeterminism::test_different_profiles_different_results
 tests/test_deterministic_scoring.py::TestDeterminism::test_same_input_same_output
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_age_matches_no_h10
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_age_mismatch_h10
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_alcohol_h04
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_anime_p02
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_bad_habits_h05
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_evidence_includes_context
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_evidence_is_extracted
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_fake_age_phrase_h10_without_parsed_age
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_fake_age_phrase_h10_without_number
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_games_p03
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_has_boyfriend_h02
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_instagram_h08
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_looking_for_friend_h01
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_multiple_positive_factors
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_my_boyfriend_h02
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_no_age_claim_no_h10
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_not_relationships_h01
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_pokatayte_h06
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_relocated_to_spb_p04
@@ -342,6 +347,7 @@ tests/test_deterministic_scoring.py::TestReasonsFormat::test_dislike_has_negativ
 tests/test_deterministic_scoring.py::TestReasonsFormat::test_positive_has_positive_reason
 tests/test_deterministic_scoring.py::TestReasonsFormat::test_reasons_json_is_valid
 tests/test_deterministic_scoring.py::TestReasonsFormat::test_scoring_version_in_result
+tests/test_deterministic_scoring.py::TestRegressionNoUnknownToDislike::test_alinochka_age_mismatch_is_dislike
 tests/test_deterministic_scoring.py::TestRegressionNoUnknownToDislike::test_alyona_not_from_spb
 tests/test_deterministic_scoring.py::TestRegressionNoUnknownToDislike::test_arina_18_spb
 tests/test_deterministic_scoring.py::TestRegressionNoUnknownToDislike::test_empty_description

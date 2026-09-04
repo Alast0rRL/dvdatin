@@ -208,6 +208,40 @@ class TestFeatureExtractor:
         # Evidence should contain surrounding context
         assert "курю" in hn[0].evidence.lower()
 
+    # ── H10: Подмена возраста ───────────────────────────────────────
+
+    def test_age_mismatch_h10(self) -> None:
+        """Заявленный 18, в тексте «мне 16» → H10 (подмена возраста)."""
+        result = self.extractor.extract(
+            name="алиночка", age=18, city="Санкт Петербург",
+            description="мне 16,дв не дает поставить этот возраст :(",
+        )
+        assert any(f.code == "H10" for f in result.hard_negatives)
+
+    def test_age_matches_no_h10(self) -> None:
+        """«мне 18» при заявленном 18 → НЕ H10, остальные признаки работают."""
+        result = self.extractor.extract(
+            age=18, description="мне 18, люблю аниме",
+        )
+        assert not any(f.code == "H10" for f in result.hard_negatives)
+        assert any(f.code == "P02" for f in result.positive_factors)
+
+    def test_fake_age_phrase_h10_without_number(self) ->None:
+        """Фраза «не даёт поставить этот возраст» (без числа) → H10."""
+        result = self.extractor.extract(age=18, description="не дает поставить этот возраст")
+        assert any(f.code == "H10" for f in result.hard_negatives)
+
+    def test_fake_age_phrase_h10_without_parsed_age(self) -> None:
+        """Возраст не распознан (None), но фраза о фейковом возрасте → H10."""
+        result = self.extractor.extract(age=None, description="дв не даёт поставить возраст")
+        assert any(f.code == "H10" for f in result.hard_negatives)
+
+    def test_no_age_claim_no_h10(self) -> None:
+        """Нет ни возраста, ни фразы → H10 не срабатывает."""
+        result = self.extractor.extract(age=None, description="привет, люблю котиков")
+        assert not any(f.code == "H10" for f in result.hard_negatives)
+
+
 
 # ══════════════════════════════════════════════════════════════════
 # 3. Negative Pattern Edge Cases (CRITICAL)
@@ -739,6 +773,25 @@ class TestRegressionNoUnknownToDislike:
     def test_alyona_not_from_spb(self) -> None:
         """Алёна: «Сама не из Питера, просто ищу общение» → DISLIKE (H01)."""
         assert self._evaluate("Пишите первые 😉\nСама не из Питера, просто ищу общение") == AIDecision.DISLIKE
+
+    def test_alinochka_age_mismatch_is_dislike(self) -> None:
+        """алиночка 18 с «мне 16…» → DISLIKE (H10: подмена возраста).
+
+        Это ЯВНЫЙ признак (противоречие возраста), а не отсутствие данных —
+        поэтому DISLIKE корректен и не нарушает инвариант
+        NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE.
+        """
+        profile = make_profile(
+            name="алиночка", age=18, city="Санкт Петербург",
+            description="мне 16,дв не дает поставить этот возраст :(",
+        )
+        filter_result = make_filter_result("PASS")
+        result = asyncio.get_event_loop().run_until_complete(
+            self.service.evaluate_profile(profile, filter_result=filter_result)
+        )
+        assert result.decision == AIDecision.DISLIKE
+        assert any("HARD_NEGATIVE:age_mismatch" in r for r in result.reasons)
+
 
 
 # ══════════════════════════════════════════════════════════════════

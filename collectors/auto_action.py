@@ -376,6 +376,7 @@ class AutoActionEngine:
             "short_hair": "Волосы короче каре",
             "instagram": "Instagram",
             "plus_size": "+size",
+            "age_mismatch": "Возраст в анкете не совпадает",
         }
 
         _POSITIVE_LABELS: dict[str, str] = {

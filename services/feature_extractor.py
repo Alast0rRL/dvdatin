@@ -53,6 +53,9 @@ class FeatureExtractor:
         # Извлекаем жёсткие негативы
         self._extract_hard_negatives(full_text_norm, full_text, result)
 
+        # Извлекаем подмену/противоречие возраста (H10)
+        self._extract_age_mismatch(full_text_norm, full_text, age, result)
+
         # Извлекаем положительные факторы
         self._extract_positive_factors(full_text_norm, full_text, result)
 
@@ -95,6 +98,70 @@ class FeatureExtractor:
                     source="description",
                 )
         return None
+
+    # ── H10: Подмена / противоречие возраста ─────────────────────────
+
+    def _extract_age_mismatch(
+        self,
+        text_norm: str,
+        raw_text: str,
+        age: int | None,
+        result: ExtractionResult,
+    ) -> None:
+        """Ловит «подмену» возраста: реальный возраст в тексте противоречит
+        заявленному в карточке, либо текст явно говорит о фейковом/заблокированном
+        возрасте («не даёт поставить возраст»).
+
+        Пример: карточка «алиночка, 18, СПб – мне 16,дв не даёт поставить этот
+        возраст» → заявленный 18, но в описании «мне 16» → H10 (hard negative).
+
+        Это ЯВНЫЙ сигнал (противоречие/самопризнание), а не отсутствие данных —
+        поэтому не нарушает инвариант NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE.
+        """
+        # 1) Фейковый/заблокированный возраст (без числа требуется только фраза).
+        for pattern in _FAKE_AGE_PATTERNS:
+            match = re.search(pattern, text_norm)
+            if match is not None:
+                evidence = _extract_evidence(raw_text, match, text_norm)
+                result.hard_negatives.append(
+                    Feature(
+                        code="H10",
+                        type=FeatureType.HARD_NEGATIVE,
+                        name="age_mismatch",
+                        value=True,
+                        evidence=evidence,
+                        source="description",
+                    )
+                )
+                return
+
+        # 2) Самообъявленный возраст в тексте, который НЕ совпадает с заявленным.
+        if age is None:
+            return
+        for pattern in _AGE_CLAIM_PATTERNS:
+            match = re.search(pattern, text_norm)
+            if match is None:
+                continue
+            claimed = match.group(1)
+            try:
+                claimed_age = int(claimed)
+            except ValueError:
+                continue
+            if claimed_age not in _AGE_CLAIM_RANGE:
+                continue
+            if claimed_age != age:
+                evidence = _extract_evidence(raw_text, match, text_norm)
+                result.hard_negatives.append(
+                    Feature(
+                        code="H10",
+                        type=FeatureType.HARD_NEGATIVE,
+                        name="age_mismatch",
+                        value=True,
+                        evidence=evidence,
+                        source="description",
+                    )
+                )
+                return
 
     # ── Positive Factors ──────────────────────────────────────────────
 
@@ -231,6 +298,32 @@ HARD_NEGATIVE_RULES: list[NegativeRule] = [
         allow_negation_check=True,
         check_third_person=False,
     ),
+]
+
+
+# ── Age mismatch (H10) ──────────────────────────────────────────────
+
+# Диапазон «реального» возраста, который имеет смысл сравнивать с карточным.
+_AGE_CLAIM_RANGE = range(13, 31)
+
+# Паттерны самообъявления возраста в тексте (для сравнения с заявленным).
+_AGE_CLAIM_PATTERNS: list[str] = [
+    r"мне\s+(?:уже\s+|всего\s+|сейчас\s+)?(\d{1,2})",
+    r"мне\s+было\s+(\d{1,2})",
+    r"возраст\s+(?:у\s+меня\s+)?(\d{1,2})",
+    r"исполнилось\s+(\d{1,2})",
+    r"стукнуло\s+(\d{1,2})",
+]
+
+# Паттерны «фейкового»/заблокированного возраста (срабатывает без числа).
+_FAKE_AGE_PATTERNS: list[str] = [
+    r"не\s+(?:дает|даёт|могу)\s+поставить\s+(?:этот\s+)?(?:настоящий\s+)?возраст",
+    r"не\s+(?:дает|даёт)\s+поставить\s+(?:этот\s+)?возраст",
+    r"не\s+позволяет\s+поставить\s+(?:этот\s+)?возраст",
+    r"нельзя\s+поставить\s+возраст",
+    r"(?:поставила|написала|указала)\s+другой\s+возраст",
+    r"возраст\s+не\s+настоящий",
+    r"возраст\s+не\s+тот",
 ]
 
 

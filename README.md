@@ -94,7 +94,7 @@ Telegram NewMessage (входящее)
    ├─ Фильтр FilterService.evaluate(profile) → PASS / REJECT / REVIEW
    │     └─ Все результаты (PASS/REJECT/REVIEW):
    │         ├─ DecisionService.evaluate(profile, filter_result) — детерминированные
-   │         │   правила (нормализация → извлечение признаков H01–H09, P01–P04 → score → решение)
+   │         │   правила (нормализация → извлечение признаков H01–H10, P01–P04 → score → решение)
    ├─ MEDIA_ONLY → привязка к последней анкете чата (profile_messages)
    └─ mark_raw_processed (processed_at=now → W3-backlog не повторяет)
 ```
@@ -155,7 +155,8 @@ ai_decisions ← human_decisions`.
 Profile.text (сырой)
    → profile_normalizer.normalize_text()  (нижний регистр, лемматизация, склейка слов)
    → feature_extractor.extract_features() — детерминированные правила:
-        H01–H09: жёсткие негативы (ищу общение, курю, есть парень, instagram, фото, ...)
+         H01–H10: жёсткие негативы (ищу общение, курю, есть парень, instagram, фото,
+                   подмена возраста (H10: реальный возраст в тексте ≠ заявленному, «не даёт поставить возраст»), ...)
         P01–P04: положительные факторы (СПбПУ, аниме, игры, переехала в СПб, ...)
    → score_engine.compute_score(features, config) — базовый скор +/– веса
    → decision_service._decide(filter_decision, score, skip_labels, like_labels, ...)
@@ -191,7 +192,7 @@ LLM-промпте — детерминированный движок чита�
 ### Главный инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`
 
 Семантический DISLIKE в `decision_service._decide()` возможен **только** при
-подтверждённом жёстком негативе (пользовательский SKIP, признак H01–H09, REJECT-фильтр).
+подтверждённом жёстком негативе (пользовательский SKIP, признак H01–H10, REJECT-фильтр).
 Низкий скор, отсутствие положительных факторов, малоинформативная/пустая/эмодзи-анкета →
 **REVIEW**, а не DISLIKE: **missing/unknown информация никогда не наказывается**. Транспортное
 `👎` при REVIEW выполняется на уровне `AutoActionEngine` (движение ленты Leo) и не является
@@ -402,7 +403,7 @@ dvdatin/
 │   ├── filter_service.py        #   Оценка + история в БД
 │   ├── manual_review.py         #   Stage 8: запись ручных решений владельца по REVIEW (JSON/MD)
 │   ├── profile_normalizer.py    #   Stage 8: нормализация текста анкеты
-│   ├── feature_extractor.py     #   Stage 8: детерминированные правила H01–H09 / P01–P04
+│   ├── feature_extractor.py     #   Stage 8: детерминированные правила H01–H10 / P01–P04
 │   ├── score_engine.py          #   Stage 8: расчёт скора (ScoreConfig)
 │   ├── decision_service.py      #   AI Decision Engine (+ предпочтения) — Stage 8 детерминированный
 │   ├── review_service.py        #   Human Review очередь/сохранение
@@ -662,10 +663,10 @@ diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
 - [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.
 - [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW→`👎` (двигаем ленту Leo, профиль остаётся в БД), None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`. Автозапуск потока не шлёт `✨🔍` (невалидна вне состояния Leo): при старте обрабатывается уже показанная активная анкета, а при исчерпании ленты автоматически нажимается кнопка «🚀 Смотреть анкеты» (`start_auto_stream` + live-хук в `UNKNOWN`). Фильтровые REJECT/REVIEW (не-PASS от FilterService) тоже получают `👎`, чтобы лента не замирала и при неподходящих карточках. Финальный реверс механики LIKE/👎 как plain-text reply-кнопок. Автоответ на капчи/проверки Leo: на `UNKNOWN`-сообщение, текст которого содержит маркер `CAPTCHA_MARKERS` и имеет `>= 2` reply-кнопок, авто-аккаунт нажимает последнюю кнопку (идемпотентно) — сбрасывает диалог и продолжает ленту, не трогая главное меню/Premium.
 - [x] **Stage 7.5 — контрольная панель** — `ControlBot` (`telegram/control_bot.py`): /status /mode on|off /stream /recent /help + inline-кнопки; runtime-переключение режима (`collector.set_mode`) с персистентностью в `config.yaml`; авторизация по `control.allowed_user_ids`.
-- [x] **Stage 8 — детерминированный скоринг (без LLM/CLIP)** — LLM/CLIP полностью исключены из scoring-пайплайна. Вместо внешнего шлюза — детерминированный движок правил: `services/profile_normalizer.py` (нормализация), `services/feature_extractor.py` (признаки H01–H09 / P01–P04 из `config/preferences.yaml`), `services/score_engine.py` (расчёт скора), `models/features.py` (модели). `DecisionService.evaluate()` вызывается для **всех** результатов фильтра (PASS/REJECT/REVIEW). Один и тот же текст → один и тот же результат; без сети/GPU/промптов; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` сохранён (missing/unknown → REVIEW, никогда DISLIKE); версия scoring `deterministic-v2`; `ImagesConfig.enabled` по умолчанию `false`. Legacy-модули (`llm_service`, `clip_service`, `ai_scoring_service`, `remote_*_client`) остаются пассивными.
+- [x] **Stage 8 — детерминированный скоринг (без LLM/CLIP)** — LLM/CLIP полностью исключены из scoring-пайплайна. Вместо внешнего шлюза — детерминированный движок правил: `services/profile_normalizer.py` (нормализация), `services/feature_extractor.py` (признаки H01–H10 / P01–P04 из `config/preferences.yaml`), `services/score_engine.py` (расчёт скора), `models/features.py` (модели). `DecisionService.evaluate()` вызывается для **всех** результатов фильтра (PASS/REJECT/REVIEW). Один и тот же текст → один и тот же результат; без сети/GPU/промптов; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` сохранён (missing/unknown → REVIEW, никогда DISLIKE); версия scoring `deterministic-v2`; `ImagesConfig.enabled` по умолчанию `false`. Legacy-модули (`llm_service`, `clip_service`, `ai_scoring_service`, `remote_*_client`) остаются пассивными. **H10 (подмена возраста):** если текст сам сообщает возраст, противоречащий карточке («алиночка, 18, СПб – мне 16,дв не даёт поставить этот возраст») — это **явный** сигнал (не отсутствие данных), поэтому детерминированно даёт DISLIKE по H10, а не REVIEW.
 - [x] **Stage 8 — Manual Review (ручные решения по REVIEW-анкетам)** — на AI-REVIEW бот не отправляет авто-`👎` (`AutoActionEngine.maybe_act` → `_notify_needs_action`: пересылка карточки владельцу + «Нужно твоё решение»), анкета остаётся активной. Владелец действует в Дайвинчике с того же аккаунта; исходящее действие перехватывается (`_handle_outgoing_message` → `_maybe_record_manual_review`) и через `ManualReviewRecorder` (`services/manual_review.py`, Telegram-free) привязывается к REVIEW-профилю и дописывается в `data/reviews/review_log.json`/`.md` (`❤️`→LIKE, `👎`→DISLIKE, иначе MESSAGE). Фильтровые не-PASS по-прежнему шлют `👎` (лента Leo не замирает).
 
-Проверено: **502 теста проходят** (baseline в `tests/baseline/`).
+Проверено: **508 тестов проходят** (baseline в `tests/baseline/`).
 
 ### В разработке / планируется
 
