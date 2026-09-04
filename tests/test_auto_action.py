@@ -42,6 +42,7 @@ def make_engine(
     config: AutoActionsConfig | None = None,
     chat_id: int = 1234060895,
     notify_client: AsyncMock | None = None,
+    db: object | None = None,
 ) -> AutoActionEngine:
     return AutoActionEngine(
         client=client if client is not None else make_client(),
@@ -49,6 +50,7 @@ def make_engine(
         mode=mode,
         chat_id=chat_id,
         notify_client=notify_client,
+        db=db,
     )
 
 
@@ -232,7 +234,6 @@ class TestAutoActionNotify:
     Два режима: явный ``notify_chat_id > 0`` и авто-режим (0 + notify_client),
     когда уведомление уходит на «другой» аккаунт (Бармалей↔Меланхолик).
     """
-
     def _notify_engine(self, notify_chat_id: int = 8525808108) -> tuple[AsyncMock, AutoActionEngine]:
         client = make_client()
         e = make_engine(
@@ -566,3 +567,140 @@ class TestAutoActionIdempotency:
         assert r1 == "LIKE"
         assert r2 == "LIKE"
         assert client.send_message.await_count == 2
+
+
+class TestForwardAllPhotos:
+    """Пересылка ВСЕХ фото анкеты (PROFILE + MEDIA_ONLY) владельцу.
+
+    Дайвинчик шлёт анкету текстом + 1 фото (PROFILE), а дополнительные фото —
+    отдельными MEDIA_ONLY-сообщениями, привязанными к профилю через
+    ``profile_messages``. Раньше пересылалось только одно PROFILE-сообщение;
+    теперь движок запрашивает все связанные message_id из БД через
+    ``get_profile_messages`` и пересылает их списком.
+    """
+
+    def make_db(self, rows: list[dict]) -> AsyncMock:
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=rows)
+        return db
+
+    def test_forwards_all_photos_for_like(self) -> None:
+        """LIKE с profile_id → пересылаются все 3 сообщения анкеты."""
+        client = make_client()
+        db = self.make_db([
+            {"telegram_message_id": 900},
+            {"telegram_message_id": 901},
+            {"telegram_message_id": 902},
+        ])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=7,
+                message_id=900, reasons=["Фото выше среднего"],
+            )
+        )
+        db.get_profile_messages.assert_awaited_once_with(7)
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, [900, 901, 902], from_peer=1234060895
+        )
+
+    def test_forwards_all_photos_for_review(self) -> None:
+        """REVIEW с profile_id → пересылаются все фото для ручного решения."""
+        client = make_client()
+        db = self.make_db([
+            {"telegram_message_id": 910},
+            {"telegram_message_id": 911},
+            {"telegram_message_id": 912},
+        ])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.REVIEW, profile_id=7,
+                message_id=910, reasons=["NO_FEATURES_FOUND"],
+            )
+        )
+        assert result == "REVIEW"
+        chain = client.forward_messages.await_args
+        assert chain.args[1] == [910, 911, 912]
+
+    def test_single_message_stays_single(self) -> None:
+        """Одно фото → пересылается одно сообщение (не список)."""
+        client = make_client()
+        db = self.make_db([{"telegram_message_id": 900}])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=7,
+                message_id=900, reasons=["ok"],
+            )
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 900, from_peer=1234060895
+        )
+
+    def test_no_db_falls_back_to_single_message(self) -> None:
+        """Без БД (None) → прежнее поведение: пересылается только message_id."""
+        client = make_client()
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=None,
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=7, message_id=900, reasons=["a"])
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 900, from_peer=1234060895
+        )
+
+    def test_fallback_message_included_when_missing_in_db(self) -> None:
+        """PROFILE-месседж подставляется, если его нет в списке из БД."""
+        client = make_client()
+        db = self.make_db([
+            {"telegram_message_id": 901},
+            {"telegram_message_id": 902},
+        ])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=7, message_id=900, reasons=["a"])
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, [901, 902, 900], from_peer=1234060895
+        )
+
+    def test_db_error_does_not_break_forward(self) -> None:
+        """Ошибка запроса к БД → пересылается fallback, действие не падает."""
+        client = make_client()
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(side_effect=RuntimeError("db"))
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=7,
+                message_id=900, reasons=["a"],
+            )
+        )
+        assert result == "LIKE"
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 900, from_peer=1234060895
+        )

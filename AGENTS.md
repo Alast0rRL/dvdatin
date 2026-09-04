@@ -85,7 +85,7 @@ Currently at **Stage 8 (deterministic scoring)** on top of **Stage 7 (SEMI_AUTO)
 
 ## Auto-Actions (Stage 7)
 
-- Live in `collectors/auto_action.py`: `AutoActionEngine(client, config, mode, chat_id)`.
+- Live in `collectors/auto_action.py`: `AutoActionEngine(client, config, mode, chat_id, notify_client=None, db=None)`. `db` (Database) нужен, чтобы при уведомлении владельцу пересылать **все** фото анкеты (PROFILE + связанные MEDIA_ONLY из `profile_messages` через `get_profile_messages(profile_id)`), а не только одно PROFILE-сообщение. Без `db`/`profile_id` — прежнее поведение (один `message_id`); ошибки БД ловятся.
 - Gate: `enabled` only when mode ∈ {SEMI_AUTO, AUTO} AND `auto_actions.enabled` AND a client exists (matched via `account_session` to `telegram.accounts`/`self._clients` by index).
 - `maybe_act(decision)`: LIKE→`❤️`, DISLIKE→`👎`, **AI REVIEW→ не действует сам** (возвращает `"REVIEW"`, уведомляет владельца, что нужно его ручное решение — см. Manual Review ниже), disabled→`GATE`. Фильтровые не-PASS (REJECT/REVIEW) на авто-аккаунте по-прежнему шлют `👎` через `maybe_act(AIDecision.DISLIKE)` — иначе Leo ждёт реакцию и лента замирает; профиль и фильтр-решение остаются в БД.
 - Sent only when the profile arrived on the auto account (`task.msg.client is auto_engine.client`).

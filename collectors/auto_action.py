@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from telethon import TelegramClient
 
     from app.config import AutoActionsConfig
+    from database.database import Database
 
 console = Console(force_terminal=True)
 
@@ -56,12 +57,16 @@ class AutoActionEngine:
         mode: Mode,
         chat_id: int,
         notify_client: TelegramClient | None = None,
+        db: Database | None = None,
     ) -> None:
         self._client = client
         self._config = config
         self._mode = mode
         self._chat_id = chat_id
         self._notify_chat_id = config.notify_chat_id
+        # БД нужна для пересылки ВСЕХ фото анкеты (PROFILE + связанные
+        # MEDIA_ONLY) владельцу, а не только одного PROFILE-сообщения.
+        self._db = db
         # Клиент «другого» аккаунта для авто-уведомлений (0 в конфиге): движок
         # сам определяет его user_id и шлёт уведомления туда. Так пересылка
         # идёт с Бармалея на Меланхолика и обратно, независимо от того, какой
@@ -140,6 +145,7 @@ class AutoActionEngine:
                 "(авто-👎 не отправляю, анкета остаётся активной)"
             )
             await self._notify_needs_action(
+                profile_id=profile_id,
                 message_id=message_id,
                 reasons=reasons,
                 card_text=card_text,
@@ -157,6 +163,7 @@ class AutoActionEngine:
         self._print_action(action, text)
         await self._notify(
             notify_action,
+            profile_id=profile_id,
             message_id=message_id,
             reasons=reasons,
             card_text=card_text,
@@ -231,6 +238,7 @@ class AutoActionEngine:
     async def _notify(
         self,
         action: str,
+        profile_id: int | None = None,
         message_id: int | None = None,
         reasons: list[str] | None = None,
         card_text: str | None = None,
@@ -240,6 +248,8 @@ class AutoActionEngine:
         Получатель: если ``notify_chat_id > 0`` — явный user_id; если 0 —
         авто-режим: user_id «другого» аккаунта (``notify_client``), чтобы
         уведомления шли с Бармалея на Меланхолика и обратно.
+        Пересылаются ВСЕ сообщения анкеты (PROFILE + связанные MEDIA_ONLY
+        фото через ``_profile_message_ids``), а не только одно.
         Ошибки пересылки не ломают основной пайплайн.
         """
         if self._client is None or message_id is None:
@@ -248,8 +258,9 @@ class AutoActionEngine:
         if target is None:
             return
         try:
+            ids = await self._profile_message_ids(profile_id, message_id)
             await self._client.forward_messages(
-                target, message_id, from_peer=self._chat_id,
+                target, ids, from_peer=self._chat_id,
             )
             text = self._format_reason(action, reasons, card_text=card_text)
             if text:
@@ -262,6 +273,7 @@ class AutoActionEngine:
 
     async def _notify_needs_action(
         self,
+        profile_id: int | None = None,
         message_id: int | None = None,
         reasons: list[str] | None = None,
         card_text: str | None = None,
@@ -269,9 +281,9 @@ class AutoActionEngine:
         """Уведомляет владельца, что нужно его РУЧНОЕ решение по REVIEW-анкете.
 
         REVIEW → бот не действует сам; владельцу пересылается карточка анкеты
-        и сообщение, что нужно поставить лайк/дизлайк (или написать) в
-        Дайвинчике с того же аккаунта. Пересылаем даже без причины — главное,
-        что владельцу нужно действие.
+        (все фото + текст) и сообщение, что нужно поставить лайк/дизлайк (или
+        написать) в Дайвинчике с того же аккаунта. Пересылаем даже без причины
+        — главное, что владельцу нужно действие.
         """
         if self._client is None or message_id is None:
             return
@@ -279,8 +291,9 @@ class AutoActionEngine:
         if target is None:
             return
         try:
+            ids = await self._profile_message_ids(profile_id, message_id)
             await self._client.forward_messages(
-                target, message_id, from_peer=self._chat_id,
+                target, ids, from_peer=self._chat_id,
             )
             lines = ["⚠️ Нужно твоё решение (REVIEW)", ""]
             if reasons:
@@ -321,6 +334,44 @@ class AutoActionEngine:
         except Exception as e:
             logger.error(f"AutoAction: не удалось определить user_id получателя: {e}")
         return None
+
+    async def _profile_message_ids(
+        self,
+        profile_id: int | None,
+        fallback: int | None,
+    ) -> list[int] | int:
+        """Возвращает список telegram_message_id анкеты для пересылки.
+
+        Профиль приходит от Дайвинчика как минимум одним PROFILE-сообщением,
+        а дополнительные фото — отдельными MEDIA_ONLY-сообщениями, привязанными
+        к профилю через ``profile_messages``. Чтобы владелец увидел ВСЕ фото
+        (1–3), а не только одно, пересылаем все связанные сообщения.
+
+        Если по profile_id нельзя получить доп. сообщения (нет БД / нет
+        профиля / связан только сам fallback) — возвращаем fallback как есть,
+        чтобы сохранить прежнее поведение.
+        """
+        if profile_id is None or self._db is None:
+            return fallback if fallback is not None else []
+        try:
+            rows = await self._db.get_profile_messages(profile_id)
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось получить сообщения профиля: {e}")
+            return fallback if fallback is not None else []
+        if not rows:
+            return fallback if fallback is not None else []
+        msg_ids = [
+            row["telegram_message_id"]
+            for row in rows
+            if row.get("telegram_message_id") is not None
+        ]
+        # Помимо связанных сообщений из БД всегда включаем сам PROFILE-месседж
+        # (fallback), если его там вдруг нет — чтобы карточка не потерялась.
+        if fallback is not None and fallback not in msg_ids:
+            msg_ids.append(fallback)
+        if len(msg_ids) <= 1:
+            return msg_ids[0] if msg_ids else (fallback if fallback is not None else [])
+        return msg_ids
 
     @staticmethod
     def _format_reason(

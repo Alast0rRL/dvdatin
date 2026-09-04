@@ -245,6 +245,7 @@ class DvinchikCollector:
             mode=mode,
             chat_id=self._dvinchik_chat_id,
             notify_client=notify_client,
+            db=self._db,
         )
 
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
