@@ -417,20 +417,25 @@ def _is_negated(text: str, position: int, allow: bool) -> bool:
     if not allow:
         return False
 
-    # Берём контекст перед совпадением (до 60 символов)
-    prefix = text[max(0, position - 60) : position].strip()
+    # Берём контекст перед совпадением (до 40 символов).
+    prefix = text[max(0, position - 40) : position].strip()
     if not prefix:
         return False
 
-    # Проверяем паттерны отрицания
+    # Отрицание — слово/оборот, стоящий НЕПОСРЕДСТВЕННО перед паттерном
+    # («не курю», «не пью»). Ищем его в конце префикса (прилегает к позиции),
+    # а не привязываясь к началу строки: в анкетах перед «не курю» почти всегда
+    # стоят имя/город («Полина, Санкт-Петербург, не курю, не пью»).
     for neg_pattern in _NEGATION_PREFIXES:
-        regex = re.compile(neg_pattern + r".*$", re.IGNORECASE)
-        m = regex.match(prefix)
+        regex = re.compile(
+            r"(?<!\w)" + neg_pattern + r"(?=[\s,.;:!?…\-–—]*$)",
+            re.IGNORECASE,
+        )
+        m = regex.search(prefix)
         if m:
-            # Дополнительно: «парень курит» — «курит» не отрицание
-            # Но «не курю» — отрицание. Проверяем, что перед negate-словом
-            # нет归属ного слова (парень/он/она).
-            remaining = prefix[:m.end()]
+            # «парень не курит» — «курит» относится к парню, а не к анкете,
+            # и не является отрицанием в нашем смысле.
+            remaining = text[max(0, position - 40) : m.start()]
             if not _has_third_person_before_negative(remaining):
                 return True
     return False

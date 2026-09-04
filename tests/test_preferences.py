@@ -98,6 +98,16 @@ class TestPreferencesEngine:
         skip, _ = e.evaluate("вьебашить бы галон пива да и обоссаться под кустом")
         assert "пьёт" in skip
 
+    def test_non_smoker_non_drinker_not_skipped(self) -> None:
+        """«Не курю, не пью» → НЕ даёт SKIP «курит»/«пьёт» (ложный негатив)."""
+        from app.preferences import load_preferences
+        e = load_preferences()
+        text = ("Полина, 18, Санкт-Петербург – Не курю, не пью и против "
+                "плохих привычек. Ищу спортивного брюнета ростом +180")
+        skip, _ = e.evaluate(text)
+        assert "курит" not in skip
+        assert "пьёт" not in skip
+
 
 class TestDecisionHardRules:
     """Слой правил поверх порогов (прямой вызов _decide)."""

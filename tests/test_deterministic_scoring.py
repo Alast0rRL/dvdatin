@@ -161,6 +161,18 @@ class TestFeatureExtractor:
         )
         assert any(f.code == "H04" for f in result.hard_negatives)
 
+    def test_not_smoking_not_drinking_with_name_prefix_h03_h04(self) -> None:
+        """«... – Не курю, не пью» негатив НЕ срабатывает, даже когда перед
+        «не курю» стоят имя/город (баг: отрицание привязывалось к началу строки)."""
+        result = self.extractor.extract(
+            name="Полина", age=18, city="Санкт-Петербург",
+            description=("Не курю, не пью и против плохих привычек. "
+                         "Ищу спортивного брюнета ростом +180"),
+        )
+        codes = [f.code for f in result.hard_negatives]
+        assert "H03" not in codes
+        assert "H04" not in codes
+
     def test_bad_habits_h05(self) -> None:
         result = self.extractor.extract(description="вредные привычки")
         assert any(f.code == "H05" for f in result.hard_negatives)

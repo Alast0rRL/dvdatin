@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -63,12 +64,22 @@ class PreferencesEngine:
 
         Текстовый поиск по подстрокам (lowercase). Порядок: порядок правил в
         файле. Пустой текст → пустые списки (правила не применяются).
+
+        Отрицания учитываются: «не курю», «не пью», «никогда не пьёт» и т.п.
+        НЕ считаются срабатыванием правила (иначе анкета «Не курю, не пью
+        и против плохих привычек» ошибочно получала бы SKIP «курит»/«пьёт»).
         """
         if not text:
             return [], []
         low = text.lower()
-        skip = [r.label for r in self._prefs.skip if any(k in low for k in r.match)]
-        like = [r.label for r in self._prefs.like if any(k in low for k in r.match)]
+        skip = [
+            r.label for r in self._prefs.skip
+            if any(_match_aware(low, k) for k in r.match)
+        ]
+        like = [
+            r.label for r in self._prefs.like
+            if any(_match_aware(low, k) for k in r.match)
+        ]
         return skip, like
 
 
@@ -91,3 +102,42 @@ def load_preferences(path: Path | None = None) -> PreferencesEngine:
         except Exception:
             return PreferencesEngine(PreferencesConfig())
     return PreferencesEngine(PreferencesConfig())
+
+
+#: Отрицания: если keyword непосредственно предварён одним из них — не считаем.
+
+
+def _match_aware(low: str, keyword: str) -> bool:
+    """True, если ``keyword`` есть в ``low`` и не предварён отрицанием.
+
+    Отрицанием считается оборот «не/ни/без + глагол» непосредственно перед
+    keyword: «не курю» → «курю» НЕ матчит; «люблю пиво» → «пиво» матчит.
+
+    Args:
+        low: нижний регистр текста анкеты.
+        keyword: подстрока-правило из конфига.
+    """
+    start = 0
+    while True:
+        idx = low.find(keyword, start)
+        if idx == -1:
+            return False
+        if _before_is_negated(low, idx):
+            start = idx + 1
+            continue
+        return True
+
+
+def _before_is_negated(low: str, idx: int) -> bool:
+    """True, если непосредственно перед позицией ``idx`` стоит «не/ни/без»."""
+    prefix = low[:idx]
+    if not prefix.strip():
+        return False
+    for word in ("не", "ни", "без"):
+        pattern = re.compile(
+            r"(?<!\w)" + re.escape(word) + r"[\s,;.!?…\-\u2013\u2014]*$",
+            re.IGNORECASE,
+        )
+        if pattern.search(prefix):
+            return True
+    return False
