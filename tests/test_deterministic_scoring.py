@@ -48,7 +48,6 @@ def make_config(**kwargs) -> MagicMock:
     decision_cfg = MagicMock()
     decision_cfg.like_threshold = kwargs.get("like_threshold", 0.75)
     decision_cfg.review_threshold = kwargs.get("review_threshold", 0.50)
-    decision_cfg.min_confidence = kwargs.get("min_confidence", 0.60)
     decision_cfg.scoring_version = "deterministic-v2"
     config.ai.decision = decision_cfg
     return config

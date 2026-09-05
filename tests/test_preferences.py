@@ -53,11 +53,8 @@ def make_config() -> AppConfig:
         "telegram": {"api_id": 123, "api_hash": "abc"},
         "filters": {"age": {"min": 18, "max": 19}, "city": {"allowed": ["Санкт-Петербург"]}},
         "ai": {
-            "enabled": True,
-            "scoring": {},
             "decision": {
                 "like_threshold": 0.75, "review_threshold": 0.50,
-                "min_confidence": 0.60,
             },
         },
     })

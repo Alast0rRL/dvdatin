@@ -39,7 +39,6 @@ project:
   mode: OBSERVE
 
 dvinchik:
-  enabled: true
   chat_id: 1234060895   # Дайвинчик (Leo)
 
 # Allowlist источников. Сообщения из любых других чатов игнорируются ДО обработки.
@@ -55,35 +54,13 @@ filters:
     allowed:
       - "Санкт-Петербург"
 
+# Детерминированный scoring (Stage 8). Решение выносится ВСЕГДА, для каждого
+# профиля: пороги решают, LIKE/REVIEW/DISLIKE. Правила признаков — в preferences.
 ai:
-  enabled: true                # Включить детерминированный scoring (Stage 8)
-  backend: "local"
-  scoring:
-    # Веса для ScoreEngine (детерминированный)
-    base_score: 0.5            # Базовый score без признаков (REVIEW)
-    positive_weight: 0.10      # Бонус за каждый positive factor
-    positive_cap: 0.35         # Макс. бонус за все positive factors
-    negative_penalty: 0.50     # Штраф за hard negative
   decision:
     like_threshold: 0.75       # score >= + positive factors → LIKE
     review_threshold: 0.50     # score >= → REVIEW
-    min_confidence: 0.60
     scoring_version: "deterministic-v2"
-    weights:
-      llm: 0.7
-      clip: 0.3
-  remote:
-    base_url: "http://144.31.139.206:8000"
-    timeout: 90
-    max_retries: 1
-    api_key: ""
-  images:
-    enabled: false             # CLIP отключён (детерминированный scoring не использует фото)
-
-limits:
-  max_likes_per_day: 40
-  min_delay_minutes: 90
-  max_delay_minutes: 240
 
 # Stage 7 (SEMI_AUTO): авто-действия на анкетах (отправка ❤️/👎).
 # Работает только при project.mode: SEMI_AUTO (или AUTO) + enabled: true.
@@ -95,8 +72,6 @@ auto_actions:
   enabled: false
   account_session: "dvai_2"
   interval_sec: 10.0
-  # Оставьте пустым: клиент не определяет безопасное состояние для команды.
-  start_command: ""
   notify_chat_id: 0
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).

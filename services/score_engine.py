@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from models.features import Feature, FeatureType, ScoringResult, ScoringStatus, SCORING_VERSION
+from models.features import Feature, ScoringResult, ScoringStatus, SCORING_VERSION
 
 
 @dataclass

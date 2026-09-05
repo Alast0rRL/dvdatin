@@ -53,13 +53,10 @@ async def insert_review_profile(db: Database, pid: int = 1) -> int:
         profile_id=profile_id,
         decision="REVIEW",
         combined_score=0.55,
-        llm_score=0.55,
-        clip_score=None,
         confidence=0.5,
         reasons='["NO_FEATURES_FOUND"]',
         scoring_version="deterministic-v2",
         evaluated_at="2026-01-01T00:01:00",
-        prompt_version="det-v2",
     )
     return profile_id
 
@@ -171,9 +168,9 @@ class TestManualReviewLogic:
         run(
             tmp_db.save_ai_decision(
                 profile_id=pid, decision="LIKE", combined_score=0.9,
-                llm_score=0.9, clip_score=None, confidence=0.9,
+                confidence=0.9,
                 reasons="[]", scoring_version="deterministic-v2",
-                evaluated_at="2026-01-01T00:02:00", prompt_version="det-v2",
+                evaluated_at="2026-01-01T00:02:00",
             )
         )
         path = tmp_path / "review_log.json"

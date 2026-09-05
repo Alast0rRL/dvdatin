@@ -20,7 +20,6 @@ class ExtractionResult:
 
     hard_negatives: list[Feature] = field(default_factory=list)
     positive_factors: list[Feature] = field(default_factory=list)
-    neutral_features: list[Feature] = field(default_factory=list)
 
 
 class FeatureExtractor:
@@ -93,10 +92,8 @@ class FeatureExtractor:
                     code=rule.code,
                     type=FeatureType.HARD_NEGATIVE,
                     name=rule.name,
-                    value=True,
-                    evidence=evidence,
-                    source="description",
-                )
+                                        evidence=evidence,
+                                    )
         return None
 
     # ── H10: Подмена / противоречие возраста ─────────────────────────
@@ -128,10 +125,8 @@ class FeatureExtractor:
                         code="H10",
                         type=FeatureType.HARD_NEGATIVE,
                         name="age_mismatch",
-                        value=True,
-                        evidence=evidence,
-                        source="description",
-                    )
+                                                evidence=evidence,
+                                            )
                 )
                 return
 
@@ -156,10 +151,8 @@ class FeatureExtractor:
                         code="H10",
                         type=FeatureType.HARD_NEGATIVE,
                         name="age_mismatch",
-                        value=True,
-                        evidence=evidence,
-                        source="description",
-                    )
+                                                evidence=evidence,
+                                            )
                 )
                 return
 
@@ -186,10 +179,8 @@ class FeatureExtractor:
                     code=rule.code,
                     type=FeatureType.POSITIVE,
                     name=rule.name,
-                    value=True,
-                    evidence=evidence,
-                    source="description",
-                )
+                                        evidence=evidence,
+                                    )
         return None
 
 

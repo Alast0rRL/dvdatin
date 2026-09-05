@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from loguru import logger
-
 
 class RawQueue:
     """Асинхронная очередь для буферизации RAW-сообщений."""

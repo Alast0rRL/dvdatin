@@ -10,13 +10,12 @@ from app.config import AppConfig
 
 LOG_DIR = Path("data/logs")
 RUNTIME_LOG = LOG_DIR / "runtime.log"
-ANALYTICS_LOG = LOG_DIR / "analytics.log"
 
 console = Console(force_terminal=True, file=sys.stderr)
 
 
 def setup_logging(config: AppConfig) -> None:
-    """Настраивает Loguru-логгеры: консоль через Rich + два файла.
+    """Настраивает Loguru-логгеры: консоль через Rich + runtime.log.
 
     Args:
         config: Конфигурация приложения.
@@ -40,19 +39,4 @@ def setup_logging(config: AppConfig) -> None:
         format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
     )
 
-    logger.add(
-        str(ANALYTICS_LOG),
-        level="INFO",
-        rotation="10 MB",
-        retention="90 days",
-        encoding="utf-8",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
-        filter=lambda record: "analytics" in record["extra"],
-    )
-
     logger.info("Логирование инициализировано")
-
-
-def get_analytics_logger():
-    """Возвращает логгер для аналитики (пишет в analytics.log)."""
-    return logger.bind(analytics=True)

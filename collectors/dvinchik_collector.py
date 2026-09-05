@@ -470,11 +470,6 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка нажатия кнопки капчи: {e}")
             return False
 
-    def _has_action_buttons(self, msg: object) -> bool:
-        """Есть ли у сообщения кнопки действий (❤️/👎) — активная карточка."""
-        texts = self._extract_button_texts(msg)
-        return "\u2764" in texts or "\U0001F44E" in texts
-
     def _extract_button_texts(self, msg: object) -> list[str]:
         """Извлекает тексты reply-кнопок сообщения (пусто, если их нет)."""
         rm = getattr(msg, "reply_markup", None)

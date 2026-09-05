@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from database.database import Database
-from models.profile import Profile, ProfileStatus, compute_fingerprint
+from models.profile import Profile, compute_fingerprint
 from models.raw import FilterResult, ParsedProfile
 from services.profile_service import ProfileService
 
@@ -252,39 +252,6 @@ class TestAudit6RawCity:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 7. MATCH не создаёт новый Profile
-# ═════════════════════════════════════════════════════════════════════
-
-class TestAudit7Match:
-    def test_match_updates_existing(self, svc: ProfileService) -> None:
-        loop = asyncio.get_event_loop()
-        prof = loop.run_until_complete(svc.create_profile(p()))
-        loop.run_until_complete(svc.match_profile(prof.id))
-
-        fetched = loop.run_until_complete(svc.get_profile(prof.id))
-        assert fetched is not None
-        assert fetched.status == ProfileStatus.MATCHED
-
-    def test_match_does_not_create_profile(self, svc: ProfileService) -> None:
-        loop = asyncio.get_event_loop()
-        # match_profile only updates status, doesn't create
-        count_before = loop.run_until_complete(
-            svc._db.connection.execute("SELECT COUNT(*) FROM profiles")
-        )
-        before = loop.run_until_complete(count_before.fetchone())[0]
-
-        # match_profile on non-existent id should not crash
-        # (it won't create a new profile)
-        loop.run_until_complete(svc.match_profile(99999))
-
-        count_after = loop.run_until_complete(
-            svc._db.connection.execute("SELECT COUNT(*) FROM profiles")
-        )
-        after = loop.run_until_complete(count_after.fetchone())[0]
-        assert before == after == 0
-
-
-# ═════════════════════════════════════════════════════════════════════
 # 8. Transaction rollback
 # ═════════════════════════════════════════════════════════════════════
 
@@ -469,15 +436,10 @@ class TestAudit12Regression:
         assert len(row["fingerprint"]) == 64
 
     def test_status_transitions(self, svc: ProfileService) -> None:
-        """NEW → SEEN → MATCHED."""
+        """NEW → SEEN при повторной встрече."""
         loop = asyncio.get_event_loop()
         prof = loop.run_until_complete(svc.upsert_profile(p(msg_id=100)))
         assert prof.status == "NEW"
 
         prof2 = loop.run_until_complete(svc.upsert_profile(p(msg_id=101)))
         assert prof2.status == "SEEN"
-
-        loop.run_until_complete(svc.match_profile(prof.id))
-        prof3 = loop.run_until_complete(svc.get_profile(prof.id))
-        assert prof3 is not None
-        assert prof3.status == "MATCHED"

@@ -279,20 +279,6 @@ class TestRawFirst:
         assert profile.id > 0
 
 
-# ── 13. MATCH для существующего Profile ──────────────────────────────
-
-class TestMatchExisting:
-    def test_match_sets_status(self, service: ProfileService) -> None:
-        loop = asyncio.get_event_loop()
-        p = loop.run_until_complete(
-            service.create_profile(make_parsed())
-        )
-        loop.run_until_complete(service.match_profile(p.id))
-        fetched = loop.run_until_complete(service.get_profile(p.id))
-        assert fetched is not None
-        assert fetched.status == ProfileStatus.MATCHED
-
-
 # ── 14. Транзакционный rollback ─────────────────────────────────────
 
 class TestTransactionRollback:

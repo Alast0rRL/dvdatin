@@ -21,14 +21,11 @@ EXPORTS_DIR = Path("data/exports")
 CSV_FIELDS = [
     "profile_id",
     "ai_decision",
-    "llm_score",
-    "clip_score",
     "combined_score",
     "confidence",
     "human_decision",
     "agreement",
     "scoring_version",
-    "prompt_version",
     "created_at",
     "reviewed_at",
 ]
@@ -55,14 +52,11 @@ async def export_review_csv(db: Database, directory: Path = EXPORTS_DIR) -> Path
             writer.writerow({
                 "profile_id": r.get("profile_id"),
                 "ai_decision": r.get("ai_decision"),
-                "llm_score": _num(r.get("llm_score")),
-                "clip_score": _num(r.get("clip_score")),
                 "combined_score": _num(r.get("combined_score")),
                 "confidence": _num(r.get("confidence")),
                 "human_decision": r.get("human_decision"),
                 "agreement": r.get("agreement"),
                 "scoring_version": r.get("scoring_version"),
-                "prompt_version": r.get("prompt_version"),
                 "created_at": r.get("evaluated_at") or r.get("reviewed_at"),
                 "reviewed_at": r.get("reviewed_at"),
             })

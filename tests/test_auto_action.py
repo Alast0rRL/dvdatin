@@ -22,7 +22,6 @@ def make_auto_config(**overrides) -> AutoActionsConfig:
         "enabled": True,
         "account_session": "dvai_2",
         "interval_sec": 0.0,  # тесты: без реальной задержки
-        "start_command": "",
     }
     defaults.update(overrides)
     return AutoActionsConfig(**defaults)
@@ -182,13 +181,6 @@ class TestAutoActionRateLimit:
         elapsed = time.monotonic() - t0
         # Второе действие должно подождать >= interval_sec.
         assert elapsed >= 0.04
-
-    def test_start_stream_without_command_does_not_send(self) -> None:
-        client = make_client()
-        e = make_engine(client=client)
-        started = asyncio.get_event_loop().run_until_complete(e.start_stream())
-        assert started is False
-        client.send_message.assert_not_called()
 
 
 class TestAutoActionConfig:

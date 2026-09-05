@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 
 class HumanDecision(StrEnum):
@@ -77,11 +77,8 @@ class HumanReview(BaseModel):
     ai_decision_id: int = 0
     ai_decision: str = ""
     combined_score: float = 0.0
-    llm_score: float | None = None
-    clip_score: float | None = None
     confidence: float = 0.0
     scoring_version: str = "v1"
-    prompt_version: str = "llm-v1"
 
     def reasons_json(self) -> str:
         """Сериализует причины в JSON (заглушка для симметрии с решениями)."""

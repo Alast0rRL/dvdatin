@@ -91,35 +91,14 @@ CREATE TABLE IF NOT EXISTS filter_results (
 
 CREATE INDEX IF NOT EXISTS idx_fr_profile_id ON filter_results(profile_id);
 
-CREATE TABLE IF NOT EXISTS ai_scores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile_id INTEGER NOT NULL,
-    clip_score REAL,
-    llm_score REAL,
-    combined_score REAL NOT NULL DEFAULT 0.0,
-    recommendation TEXT NOT NULL DEFAULT 'REVIEW',
-    confidence TEXT NOT NULL DEFAULT 'LOW',
-    confidence_score REAL NOT NULL DEFAULT 0.0,
-    reasons TEXT NOT NULL DEFAULT '[]',
-    model_version TEXT DEFAULT '',
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_profile_id ON ai_scores(profile_id);
-CREATE INDEX IF NOT EXISTS idx_ai_created_at ON ai_scores(created_at);
-
 CREATE TABLE IF NOT EXISTS ai_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     profile_id INTEGER NOT NULL,
     decision TEXT NOT NULL,
     combined_score REAL NOT NULL DEFAULT 0.0,
-    llm_score REAL,
-    clip_score REAL,
     confidence REAL NOT NULL DEFAULT 0.0,
     reasons TEXT NOT NULL DEFAULT '[]',
     scoring_version TEXT DEFAULT 'v1',
-    prompt_version TEXT DEFAULT 'llm-v1',
     evaluated_at TEXT NOT NULL,
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
 );
@@ -191,17 +170,6 @@ class Database:
         таблицу, поэтому недостающие колонки добавляем здесь (backward
         compatible — существующие данные не трогаются).
         """
-        cursor = await self._connection.execute(
-            "PRAGMA table_info(ai_decisions)"
-        )
-        rows = await cursor.fetchall()
-        columns = {row[1] for row in rows}
-        if columns and "prompt_version" not in columns:
-            await self._connection.execute(
-                "ALTER TABLE ai_decisions ADD COLUMN prompt_version "
-                "TEXT DEFAULT 'llm-v1'"
-            )
-            logger.info("Миграция: ai_decisions.prompt_version добавлен")
         # C1/C2: уникальность исходного Telegram-сообщения. Авторитетная
         # защита от повторной доставки (restart/reconnect/telethon catch_up).
         await self._ensure_raw_unique_index()
@@ -604,16 +572,6 @@ class Database:
         )
         await self._connection.commit()
 
-    async def update_profile_status(
-        self, profile_id: int, status: str,
-    ) -> None:
-        """Обновляет статус профиля."""
-        await self._connection.execute(
-            "UPDATE profiles SET status = ? WHERE id = ?",
-            (status, profile_id),
-        )
-        await self._connection.commit()
-
     async def has_auto_action(self, profile_id: int) -> bool:
         """Проверяет, было ли для анкеты успешно отправлено авто-действие."""
         cursor = await self._connection.execute(
@@ -760,61 +718,6 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
 
-    # ── AI scores ────────────────────────────────────────────────────
-
-    async def save_ai_score(
-        self,
-        profile_id: int,
-        clip_score: float | None,
-        llm_score: float | None,
-        combined_score: float,
-        recommendation: str,
-        confidence: str,
-        confidence_score: float,
-        reasons: str,
-        model_version: str,
-        created_at: str,
-    ) -> int:
-        """Сохраняет результат AI-анализа."""
-        cursor = await self._connection.execute(
-            """INSERT INTO ai_scores
-            (profile_id, clip_score, llm_score, combined_score,
-             recommendation, confidence, confidence_score,
-             reasons, model_version, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                profile_id, clip_score, llm_score, combined_score,
-                recommendation, confidence, confidence_score,
-                reasons, model_version, created_at,
-            ),
-        )
-        await self._connection.commit()
-        return cursor.lastrowid  # type: ignore[return-value]
-
-    async def get_latest_ai_score(self, profile_id: int) -> dict | None:
-        """Получает последний AI-скор для профиля."""
-        cursor = await self._connection.execute(
-            """SELECT * FROM ai_scores
-            WHERE profile_id = ?
-            ORDER BY created_at DESC LIMIT 1""",
-            (profile_id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return self._row_to_dict(cursor, row)
-
-    async def get_ai_score_history(self, profile_id: int) -> list[dict]:
-        """Получает историю AI-скоров для профиля."""
-        cursor = await self._connection.execute(
-            """SELECT * FROM ai_scores
-            WHERE profile_id = ?
-            ORDER BY created_at DESC""",
-            (profile_id,),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_dict(cursor, row) for row in rows]
-
     # ── AI decisions ─────────────────────────────────────────────────
 
     async def save_ai_decision(
@@ -822,23 +725,20 @@ class Database:
         profile_id: int,
         decision: str,
         combined_score: float,
-        llm_score: float | None,
-        clip_score: float | None,
         confidence: float,
         reasons: str,
         scoring_version: str,
         evaluated_at: str,
-        prompt_version: str = "llm-v1",
     ) -> int:
-        """Сохраняет результат AI Decision Engine."""
+        """Сохраняет результат Decision Engine."""
         cursor = await self._connection.execute(
             """INSERT INTO ai_decisions
-            (profile_id, decision, combined_score, llm_score, clip_score,
-             confidence, reasons, scoring_version, prompt_version, evaluated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (profile_id, decision, combined_score,
+             confidence, reasons, scoring_version, evaluated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
-                profile_id, decision, combined_score, llm_score, clip_score,
-                confidence, reasons, scoring_version, prompt_version, evaluated_at,
+                profile_id, decision, combined_score,
+                confidence, reasons, scoring_version, evaluated_at,
             ),
         )
         await self._connection.commit()
@@ -1033,11 +933,8 @@ class Database:
                 hd.created_at AS reviewed_at,
                 ad.decision AS ai_decision,
                 ad.combined_score,
-                ad.llm_score,
-                ad.clip_score,
                 ad.confidence,
                 ad.scoring_version,
-                ad.prompt_version,
                 ad.evaluated_at
             FROM human_decisions hd
             JOIN ai_decisions ad ON ad.id = hd.ai_decision_id
@@ -1045,36 +942,6 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
-
-    async def get_all_filter_results(self) -> list[dict]:
-        """Получает все результаты фильтрации (для analytics)."""
-        cursor = await self._connection.execute(
-            "SELECT decision FROM filter_results"
-        )
-        rows = await cursor.fetchall()
-        return [{"decision": row[0]} for row in rows]
-
-    async def get_profiles_last_filter(self) -> list[dict]:
-        """Последний фильтр каждого профиля (для analytics breakdown).
-
-        Возвращает [{"profile_id": int, "filter_decision": str}].
-        Профили без результатов фильтрации вернут filter_decision == "".
-        """
-        cursor = await self._connection.execute(
-            """SELECT p.id AS profile_id, fr.decision AS filter_decision
-            FROM profiles p
-            LEFT JOIN filter_results fr ON fr.id = (
-                SELECT id FROM filter_results
-                WHERE profile_id = p.id
-                ORDER BY evaluated_at DESC LIMIT 1
-            )"""
-        )
-        rows = await cursor.fetchall()
-        return [
-            {"profile_id": row[0], "filter_decision": row[1] or ""}
-            for row in rows
-        ]
-
 
     async def get_ai_decision_for_profile_prompt(
         self, profile_id: int, ai_decision_id: int,

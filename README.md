@@ -1,720 +1,193 @@
 # DvAI — Система автоматизации знакомств в Telegram
 
-> **D**ayvinchik **AI** — умный коллектор + детерминированный скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» в Telegram.
-> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO)** — детерминированный скоринг; AI отправляет ❤️/👎 на анкеты с авто-аккаунта, на REVIEW ждёт ручного решения владельца, управление через Telegram-панель.
+> **D**ayvinchik **AI** — коллектор + детерминированный скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» (Telegram).
+> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO)** — детерминированный скоринг; на анкеты с авто-аккаунта отправляются `❤️`/`👎`, на AI-REVIEW бот ждёт ручного решения владельца. Полный AUTO не реализован.
 
 ---
 
-## 1. Цели и идеи
+## 1. Features
 
-### Какую боль закрывает проект
+- **RAW-first коллектор** (`collectors/dvinchik_collector.py`): каждое сообщение Telegram сохраняется в SQLite **до любого разбора**. Потеря RAW считается ошибкой. Фоновая обработка (`RawQueue`/`RawWorker`) не блокирует приём событий; после рестарта необработанные RAW доставляются повторно (at-least-once).
+- **Классификация и парсинг анкет** (`dvinchik_parser.py`): PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN; выделение имени/возраста/города/описания; нормализация городов (`city_normalizer.py`); дедупликация по fingerprint (in-memory + `UNIQUE` в БД).
+- **Multi-account**: несколько Telegram-аккаунтов в `telegram.accounts`, общий pipeline, одно сообщение обрабатывается один раз.
+- **Фильтрация** (`services/filter_engine.py`, `services/filter_service.py`): возраст/город/полнота данных → PASS / REJECT / REVIEW; правила из `config.yaml` (`filters:`), история в `filter_results`.
+- **Детерминированный скоринг (Stage 8)**: `Profile.text` → `profile_normalizer` → `feature_extractor` (правила H01–H09 / P01–P04 из `config/preferences.yaml`) → `score_engine` → `decision_service` → **LIKE / REVIEW / DISLIKE**. Без LLM/CLIP/сети: один и тот же текст всегда даёт один и тот же результат. `DecisionService.evaluate()` считается для **всех** результатов фильтра.
+- **Слой предпочтений (SKIP/LIKE)** (`app/preferences.py`): персональные правила в `config/preferences.yaml` (gitignored). SKIP → жёсткий DISLIKE; LIKE-фактор поднимает DISLIKE → REVIEW (анкета не теряется). Инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`: missing/unknown информация → REVIEW, никогда DISLIKE.
+- **Human Review (Stage 6)**: очередь профилей с AI-решением, ручная оценка APPROVE / REJECT / SKIP, метрика **AI/Human Agreement Rate** = AGREEMENT/(AGREEMENT+DISAGREEMENT) (SKIP исключён; `null` при нулевом знаменателе). Telegram-UI (`telegram/review_bot.py`): `/review`, `/profile`, `/stats`, `/ai_stats`, `/disagreements`. CSV-экспорт: `python main.py --export-review`.
+- **Авто-действия (Stage 7, SEMI_AUTO)** (`collectors/auto_action.py`): `❤️`/`👎` на авто-аккаунте по решениям LIKE/DISLIKE; rate-limit `interval_sec`; идемпотентность **по карточке** (`telegram_message_id`); фильтровые не-PASS тоже получают `👎` (лента Leo не замирает); автопродолжение ленты кнопкой «🚀 Смотреть анкеты»; обход капч/проверок Leo (нажимается последняя reply-кнопка, только на явные маркеры капчи). Гейт: режим `project.mode ∈ {SEMI_AUTO, AUTO}` + `auto_actions.enabled` + найден клиент по `account_session`. OBSERVE → действий нет.
+- **Manual Review (Stage 8)** (`services/manual_review.py`): когда скоринг выдаёт REVIEW, бот **не действует сам** — пересылает карточку владельцу и ждёт его ручного решения. Исходящее `❤️`/`👎` владельца перехватывается и записывается в файл `data/reviews/review_log.json`/`.md` (только для активных REVIEW-анкет).
+- **Control Panel (Stage 7.5)** (`telegram/control_bot.py`): `/status /mode on|off /stream /recent /help` (+ inline-кнопки) только от `control.allowed_user_ids`; режим меняется на лету и персистится в `config.yaml`.
+- **SAFE по умолчанию**: режимы `project.mode` (OBSERVE / SEMI_AUTO / AUTO). `OBSERVE` только наблюдает и рекомендует; авто-действия включаются только явно.
 
-Сервис знакомств «Дайвинчик» работает в Telegram: бот присылает анкеты (профили) и
-медиа, человек вручную просматривает каждую. На больших объёмах это превращается в
-рутину: нужно читать сотни анкет, оценивать фото, отсеивать неподходящих (по возрасту,
-городу, «своим» критериям), не пропустить взаимные мэтчи. Ручная обработка:
-- медленная и утомительная;
-- не масштабируется от множества аккаунтов;
-- непоследовательна (оценки «на глаз» плавают);
-- легко пропустить важное (мэтч, перспективная анкета) или наоборот потерять время на неподходящих.
+---
 
-### Что решает проект (глобальная задача)
+## 2. Architecture
 
-**DvAI автоматизирует весь цикл обработки анкет** — от перехвата сообщений до вынесения
-решения «подходит / на просмотр / не подходит» — оставляя человеку только самую
-ценную работу: ручную рецензию перспективных кандидатов. При этом система построена
-**безопасно по умолчанию**: режим **OBSERVE** только **наблюдает (OBSERVE)** и
-**рекомендует (REVIEW)** — *никогда не действует* в Telegram от вашего имени. Начиная
-со **Stage 7 (SEMI_AUTO)** авто-действия (⚠️/👎) включаются только явно через
-`project.mode: SEMI_AUTO` + `auto_actions.enabled: true`.
-
-### Концепция (поток данных)
+### Поток данных
 
 ```
 Telegram (RAW)
-   → сохранить всё ✅ (инвариант RAW-first)
-   → классифицировать / распарсить
-   → дедуплицировать в Profile
-    → отфильтровать (возраст/город)
-    → детерминированно извлечь признаки (правила из preferences.yaml)
-    → вынести решение LIKE / REVIEW / DISLIKE
-   → человек подтверждает/отклоняет решение (Human Review)
-   → аналитика согласия «AI ↔ человек» (калибровка AI)
+   → save RAW в SQLite (ВСЕГДА первым, UNIQUE(chat_id, telegram_message_id))
+   → classify: PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN
+   → PROFILE → upsert_profile (fingerprint-дедуп)
+   → FilterService.evaluate(profile) → PASS / REJECT / REVIEW
+   → DecisionService.evaluate(profile, filter_result)   # ДЛЯ ВСЕХ результатов
+        профиль → профиль                 normalizer → feature_extractor
+        (H01–H09/P01–P04 из preferences.yaml) → score_engine → решение
+   → AutoActionEngine.maybe_act(decision) # только SEMI_AUTO/AUTO (❤️/👎/REVIEW-уведомление)
+   → ReviewBot                            # человеческая рецензия (APPROVE/REJECT/SKIP)
 ```
 
-### Философия
-
-1. **RAW-first инвариант.** Каждое сообщение сохраняется в SQLite **до любого разбора**.
-   Данные первичны — потеря RAW считается ошибкой, а не штатной ситуацией.
-2. **Telegram-действия — только по явной команде.** Архитектурно OBSERVE/REVIEW
-   не умеют нажимать/отправлять. Автоматика (Stage 7) — отдельный слой (`AutoActionEngine`),
-   гейтируемый режимом `project.mode` и `auto_actions.enabled`, работает только на
-   сконфигурированном авто-аккаунте. Полный AUTO/диалог-менеджер — не раньше Stage 8.
-3. **AI — это советник, а не владелец.** Финальное решение остаётся за человеком
-   через Human Review; AI калибруется по метрике согласия, а не «учится на угадывании».
-4. **«Свои правила» живут в файле, а не в коде.** Персональная калибровка
-   (SKIP/LIKE-факторы) — в `config/preferences.yaml`, а не зашита в сервисы.
-5. **Устойчивость к падению ИИ.** Ошибки AI/шлюза не ломают сбор данных:
-   деградация до `AI_UNAVAILABLE → REVIEW`, RAW не теряется.
-
----
-
-## 2. Архитектура
-
-### Обзор компонентов
-
-Система состоит из трёх логических зон:
+### Компоненты
 
 | Зона | Процесс | Компоненты | Контакт с Telegram |
 |---|---|---|---|
-| **Collector (Windows/Linux)** | сбор и сохранение данных | `dvinchik_collector`, `raw_worker`, `raw_queue`, `dedup`, `city_normalizer`, `anti_block`, `stats` | ✅ Telethon |
-| **AI + Decision (Windows/Linux)** | анализ и решение | `filter_engine/service`, `profile_normalizer`, `feature_extractor`, `score_engine`, `decision_service`, `preferences` | ❌ Telegram-free |
-| **Review + Analytics (Windows)** | ручная рецензия и аналитика | `review_service`, `analytics_service`, `review_export`, `review_bot` | ✅ только `review_bot.py` |
+| **Collector** | сбор и сохранение | `dvinchik_collector`, `raw_worker`, `raw_queue`, `dedup`, `city_normalizer`, `stats`, `auto_action` | ✅ Telethon |
+| **Scoring (детерминированный)** | решение | `filter_engine`, `filter_service`, `profile_normalizer`, `feature_extractor`, `score_engine`, `decision_service`, `app/preferences` | ❌ Telegram-free |
+| **Review + Analytics** | ручная рецензия и аналитика | `review_service`, `analytics_service`, `review_export`, `manual_review` | ❌ Telegram-free |
+| **Telegram UI** | вывод и управление | `review_bot`, `control_bot` | ✅ Telethon |
 
-Отдельно живёт **Ubuntu AI Inference Server** (FastAPI): LLM (Ollama `qwen3:8b`) + CLIP
-на GPU. Windows/Linux обращается к нему по HTTP через **remote-клиенты** (`httpx`).
-> **Stage 8:** скоринг переведён на **детерминированный движок правил** (см. ниже) —
-> LLM/CLIP в scoring-пайплайне больше не используются. Legacy-модули
-> (`clip_service`, `llm_service`, `ai_scoring_service`, `remote_llm_client`,
-> `remote_clip_client`) остаются в кодовой базе как пассивные и не вызываются.
+> Единственные слои с Telethon: `collectors/dvinchik_collector.py`, `collectors/auto_action.py`, `telegram/`. Всё остальное — чистая логика (Profile/str/Config), тестируется без живого Telegram.
 
-### Пайплайн обработки сообщения (OBSERVE)
-
-```
-Telegram NewMessage (входящее)
-   │
-   ▼ 0. SOURCE FILTER (allowlist чатов)
-   ▼ 1. DEDUP (in-memory, атомарно)
-   ▼ 2. RAW save в SQLite (ВСЕГДА ПЕРВЫМ, UNIQUE(chat_id, telegram_message_id))
-   ▼ 3. enqueue в RawQueue (worker потребляет фоном — не блокирует Telegram-handler)
-   │
-   ▼ Постановка в worker: parse → filter → AI
-   ├─ classify → PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN
-   ├─ PROFILE → upsert_profile(Profile, fingerprint-дедуп)
-   ├─ Фильтр FilterService.evaluate(profile) → PASS / REJECT / REVIEW
-   │     └─ Все результаты (PASS/REJECT/REVIEW):
-   │         ├─ DecisionService.evaluate(profile, filter_result) — детерминированные
-   │         │   правила (нормализация → извлечение признаков H01–H10, P01–P04 → score → решение)
-   ├─ MEDIA_ONLY → привязка к последней анкете чата (profile_messages)
-   └─ mark_raw_processed (processed_at=now → W3-backlog не повторяет)
-```
-
-**Асинхронная обработка.** Хендлер Telegram делает минимум (RAW save + enqueue);
-дорогой пайплайн (сеть/AI) выполняется фоновым воркером `RawWorker`, что не блокирует
-приём входящих событий даже при медленном AI-шлюзе.
-
-**Устойчивость и видимость:** startup-backlog recovery (`recover_backlog`) доставляет
-необработанные RAW после рестарта (at-least-once); `processed_at=NULL` на ошибке pipeline
-гарантирует повтор. Per-chat блокировки сохраняют порядок PROFILE → MEDIA_ONLY.
-
-### Multi-account
-
-Поддерживается несколько Telegram-аккаунтов одновременно (`telegram.accounts: [...]`).
-Каждый аккаунт — отдельная сессия (`data/sessions/<session>.session`); один общий
-пайплайн (dedup / worker / БД); хендлеры регистрируются на каждом клиенте. Одно и то же
-сообщение, увиденное разными аккаунтами, дедуплицируется (in-memory + `UNIQUE` в БД) и
-обрабатывается ровно один раз.
-
-### База данных (SQLite, WAL)
-
-Схема идемпотентна (`CREATE TABLE IF NOT EXISTS`), внешние ключи включены через PRAGMA.
-
-| Таблица | Назначение |
-|---|---|
-| `raw_messages` | Сырые сообщения Telegram (append-only, никогда не удаляются; включает `raw_entities` и `reply_markup` = кнопки) |
-| `profiles` | Профили (name/age/city/description/fingerprint/status…) |
-| `profile_messages` | Связь профиль ↔ сообщения (в т.ч. MEDIA_ONLY) |
-| `chat_context` | Контекст «последняя анкета чата» (переживает restart) |
-| `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
-| `ai_scores` | Скоры CLIP/LLM/combined (legacy, не используется в Stage 8 скоринге) |
-| `ai_decisions` | Итоговые решения Decision Engine (LIKE/REVIEW/DISLIKE) |
-| `auto_actions_log` | Успешно отправленные Telegram LIKE/DISLIKE; запись на карточку (по `telegram_message_id`) |
-| `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
-
-Связи (FK ON DELETE CASCADE): `profiles ← profile_messages / filter_results / ai_scores /
-ai_decisions ← human_decisions`.
-
-### Два слоя решений (важно не путать)
-
-| Слой | Модуль | Модель | Что сохраняется | Смысл |
-|---|---|---|---|---|
-| AI Scoring (scoring) | `score_engine.py` | скор (0–1) + reason коды (`LIKE_THRESHOLD` и т.п.) | `ai_decisions` | Детерминированный расчёт по правилам |
-| AI Decision | `decision_service.py` | `AIDecision` (LIKE/REVIEW/DISLIKE) | `ai_decisions` | Итоговое решение + предпочтения пользователя |
-
-`DecisionService.evaluate()` — единый вызов шлюза: внутри нормализует текст, извлекает
-признаки, считает скор и выносит решение (сохраняет в `ai_decisions`). Решение считается
-**только на клиенте** (нет сервера/шлюза).
-
-### Детерминированный скоринг (Stage 8)
-
-**LLM/CLIP полностью исключены из scoring-пайплайна.** Оценка анкеты — это
-предсказуемый, воспроизводимый движок правил (без внешних шлюзов, без сети, без
-промптов). Пайплайн:
-
-```
-Profile.text (сырой)
-   → profile_normalizer.normalize_text()  (нижний регистр, лемматизация, склейка слов)
-   → feature_extractor.extract_features() — детерминированные правила:
-         H01–H10: жёсткие негативы (ищу общение, курю, есть парень, instagram, фото,
-                   подмена возраста (H10: реальный возраст в тексте ≠ заявленному, «не даёт поставить возраст»), ...)
-        P01–P04: положительные факторы (СПбПУ, аниме, игры, переехала в СПб, ...)
-   → score_engine.compute_score(features, config) — базовый скор +/– веса
-   → decision_service._decide(filter_decision, score, skip_labels, like_labels, ...)
-```
-
-Правила (негативы/позитивы/пороги) — в `config/preferences.yaml` (gitignored) —
-**единый источник истины**. `Services/profile_normalizer.py`, `services/feature_extractor.py`,
-`services/score_engine.py` применяют их детерминированно; ничего не зашито в
-`decision_service.py` (он только применяет итоговые labels/score).
-
-**Ключевые свойства:**
-- **Детерминизм:** один и тот же текст → один и тот же результат. Нет стохастики LLM.
-- **Без сети:** не нужен Ubuntu AI Server, GPU, ключи, промпты. Раньше при недоступном
-  шлюзе всё падало в `AI_UNAVAILABLE → REVIEW` — теперь это просто считается локально.
-- **Сопоставление паттернов** понимает инверсию («не курю» ≠ негатив) и третье лицо
-  («парень курит» — про другого человека).
-- **Evidence — фактические цитаты**, никогда не спекулятивные выводы.
-
-### Слой предпочтений пользователя (SKIP/LIKE)
-
-`config/preferences.yaml` (gitignored) содержит персональные правила — **единый источник
-истины** для SKIP/LIKE. `PreferencesEngine` (`app/preferences.py`) применяет их как высший
-приоритет (правила НЕ зашиты в `decision_service.py` — тот только применяет их):
-
-- **SKIP** (напр. «ищу друга», «курит», «есть парень», «покатайте», «под каре», «instagram»)
-  → **жёсткий DISLIKE**, правила не могут перевернуть;
-- **LIKE-фактор** (напр. «СПбПУ», «аниме», «игры», «переехала в СПб») → потенциальный
-  DISLIKE поднимается до **REVIEW** (анкета не теряется) или до LIKE при высоком скоре.
-
-Пороги `0.75 / 0.50` не меняются. Правила больше **не дублируются** в серверном
-LLM-промпте — детерминированный движок читает тот же `preferences.yaml` напрямую.
-
-### Главный инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`
-
-Семантический DISLIKE в `decision_service._decide()` возможен **только** при
-подтверждённом жёстком негативе (пользовательский SKIP, признак H01–H10, REJECT-фильтр).
-Низкий скор, отсутствие положительных факторов, малоинформативная/пустая/эмодзи-анкета →
-**REVIEW**, а не DISLIKE: **missing/unknown информация никогда не наказывается**. Транспортное
-`👎` при REVIEW выполняется на уровне `AutoActionEngine` (движение ленты Leo) и не является
-семантическим DISLIKE.
-
-
-### Human Review & Analytics (Stage 6)
-
-- **Queue:** только профили с существующим AI-решением; oldest-first; уже рассмотренное
-  комбо исключено; новая AI-оценка снова попадает в очередь.
-- **Решение человека:** `APPROVE` → AGREEMENT; `REJECT` → DISAGREEMENT; `SKIP` → UNRESOLVED.
-- **Метрика:** Agreement Rate = AGREEMENT/(AGREEMENT+DISAGREEMENT); SKIP исключён;
-  `null` при знаменателе 0. Называется **«AI/Human Agreement Rate»**, никогда не «AI accuracy».
-- **Telegram UI:** `ReviewBot` — команды `/review`, `/profile <id>`, `/stats`, `/ai_stats`,
-  `/disagreements [sort]` + inline-кнопки. Единственный Stage 6 компонент с Telethon.
-- **CSV:** `python main.py --export-review` → `data/exports/review_*.csv` (12 полей).
-
-### Auto-Actions (Stage 7, SEMI_AUTO)
-
-- **Механика:** лайк/дизлайк в «Дайвинчике» = текст `❤️`/`👎`, отправляемый при активной
-  reply-клавиатуре анкеты (`KeyboardButton`, не inline). Без активной анкеты бот отвечает
-  «Нет такого варианта ответа».
-- **`AutoActionEngine`** (`collectors/auto_action.py`): `maybe_act(decision)` →
-  LIKE→`❤️`, DISLIKE→`👎`, **AI REVIEW→ не действует сам** (возвращает `"REVIEW"`,
-  уведомляет владельца, что нужно его ручное решение — см. «Manual Review (Stage 8)»;
-  анкета остаётся активной), None→`SKIP`, выключено→`GATE`.
-  Rate-limit `interval_sec` (default 10s).
-- **Фильтровые REJECT/REVIEW → тоже `👎`:** если FilterService вернул не-PASS
-  решение (REJECT/REVIEW), AI не считается (архитектурный гейт), но карточка
-  уже показана Leo и без реакции лента замирает — поэтому на авто-аккаунте
-  отправляется `👎` (действие DISLIKE, в журнал пишется решение фильтра).
-  Профиль и причина фильтрации остаются в БД.
-- **Гейт:** авто-действия активны только при `project.mode ∈ {SEMI_AUTO, AUTO}` И
-  `auto_actions.enabled: true` И найден клиент по `account_session`. Решение↔аккаунт:
-  действие отправляется только если анкета пришла на авто-аккаунт
-  (`task.msg.client is auto_engine.client`).
-- **Журнал и идемпотентность:** действие пишется в `auto_actions_log` только после
-  успешной отправки; запись и статус профиля `LIKED`/`DISLIKED` фиксируются атомарно.
-  Идемпотентность — **по конкретной карточке (`telegram_message_id`)**: каждая показанная
-  анкета получает реакцию ровно один раз, а повторная карточка той же личности (новый
-  `telegram_message_id` в ленте) — снова. Так лента не замирает, даже когда Leo повторяет
-  человека. `auto_actions_log` хранит `telegram_message_id` (partial unique index по
-  `chat_id`+`telegram_message_id`); `UNIQUE(profile_id)` убран — на один профиль может
-  быть несколько записей по разным карточкам.
-- **Автозапуск потока (безопасный):** `collector.start_auto_stream()` вызывается
-  фоном при старте (`main.py`). Он сам гейтится по `enabled`.
-- **Обработка уже показанной анкеты:** перед запуском коллектор сканирует
-  последние сообщения чата Leo на авто-аккаунте. Если найдена активная анкета —
-  самая свежая `PROFILE`-текст («Имя, возраст, город – …»), на которую ещё не
-  отправлена реакция (нет исходящего `❤️`/`👎` после неё) — она обрабатывается
-  сразу через штатный pipeline (parse → filter → AI → авто-действие). Команда
-  `✨🔍` НЕ отправляется (она не приводит новые анкеты; показанная анкета уже
-  ждёт только лайк/дизлайк — простым текстом `❤️`/`👎`).
-- **Продолжение ленты через кнопку «Смотреть анкеты»:** когда активной анкеты
-  нет (все показанные уже обработаны/лента исчерпана), Leo присылает
-  промо-сообщение с reply-кнопкой «🚀 Смотреть анкеты» (частичное совпадение
-  `VIEW_BUTTON_FRAGMENT = "Смотреть анкеты"`). Нажатие = отправка текста кнопки
-  обычным сообщением (та же механика, что `❤️`/`👎`). Коллектор сканирует чат:
-  если есть сообщение с такой кнопкой и после него ещё нет исходящего текста
-  кнопки (идемпотентность) — нажимает её через `AutoActionEngine.send_text()`.
-  Срабатывает и при старте (`start_auto_stream`), и в live-обработке
-  (`UNKNOWN`-сообщение в чате Leo на авто-аккаунте). Кнопка может прийти как на
-  самом промо-сообщении, так и на **отдельном сообщении** после рекламы/промо —
-  в live-`UNKNOWN`-ветке при отсутствии view-кнопки и капчи на текущем сообщении
-  коллектор всё равно вызывает `_press_view_button_if_needed()`, который сканирует
-  последние 15 сообщений (идемпотентен, меню/Premium без такой кнопки не трогает).
-  Идемпотентность (`auto_actions_log` + in-memory) не даёт продублировать ❤️/👎.
-- **Обход капчи/проверок Leo:** на любые «проверки»/капчи (сделка, подписка,
-  подтверждение и т.п.) с reply-кнопками авто-аккаунт нажимает **последнюю**
-  кнопку — это сбрасывает диалог и продолжает ленту (в конкретном случае
-  «Возможно позже»). Реагирует **только на явные капчи/сделки**: текст
-  сообщения должен содержать один из маркеров `CAPTCHA_MARKERS`
-  (сделк/подписываешься/подтверд/верификац и т.п.), а reply-кнопок должно быть
-  `>= 2` (`CAPTCHA_MIN_BUTTONS`). Главное меню Leo и Premium-промо НЕ
-  трогаются (иначе бот зацикливается, нажимая «Активировать Premium»/«← Назад»).
-  Так же, как кнопка ленты, имеет идемпотентность (не нажимает повторно, если
-  текст последней кнопки уже отправлен после карточки) и работает и при старте
-  (`start_auto_stream`), и в live-обработке.
-- **Конфиг (`config/auto_actions`):**
-  ```yaml
-  project:
-    mode: SEMI_AUTO          # OBSERVE → действий нет (безопасно по умолчанию)
-  auto_actions:
-    enabled: true
-    account_session: dvai_2  # сессия авто-аккаунта (acc2, Бармалей)
-    interval_sec: 10.0       # rate-limit ~6 действий/мин
-    start_command: "✨🔍"      # не отправляется стартом; кнопку «Смотреть анкеты»
-                              # коллектор нажимает сам, когда нет активной анкеты
-    notify_chat_id: 0        # chat_id (user_id) владельца для уведомлений; 0 = выкл
-  ```
-- **Уведомления владельцу (`notify_chat_id`):** при каждом авто-лайке/дизлайке
-  авто-аккаунт пересылает карточку анкеты владельцу и прикладывает отдельным
-  сообщением понятное объяснение причины. Только смысловые причины: результаты
-  фильтра (город/возраст) и AI-анализ (детерминированные причины на русском). Внутренние коды
-  скоринга (`LIKE_THRESHOLD`, `BELOW_THRESHOLDS` и т.п.) **не** показываются.
-  `0` — уведомления выключены. Ошибки пересылки ловятся и не ломают пайплайн.
-- **Пересылка всех фото анкеты.** Дайвинчик шлёт анкету текстом + 1 фото (PROFILE),
-  а дополнительные фото (всего 1–3) — отдельными MEDIA_ONLY-сообщениями, привязанными
-  к профилю через `profile_messages`. `AutoActionEngine` для пересылки владельцу
-  запрашивает `db.get_profile_messages(profile_id)` через `_profile_message_ids()`
-  и пересылает **все** связанные сообщения списком (Telethon `forward_messages`
-  принимает `list[int]`), а не только одно PROFILE-сообщение. Без `profile_id`/БД —
-  прежнее поведение (один `message_id`). Ошибки запроса к БД ловятся и не ломают пайплайн.
-- **Цитирование текста-свидетель в уведомлении — только из показанной карточки.**
-  Скоринг работает по `profile.description` (аккумулированному из повторных показов),
-  поэтому `POSITIVE`/`HARD_NEGATIVE` могут ссылаться на текст, которого нет в текущей
-  усечённой карточке (Leo переслал её без описания). Чтобы уведомление не цитировало
-  невидный текст, `maybe_act(..., card_text=<raw-текст текущей карточки>)` прокидывает
-  сырой текст в `_format_reason`/`_evidence_in_card`: цитата показывается, только если
-  описание карточки (всё после `–`/`—`) реально пересекается с evidence. Иначе остаётся
-  только смысловой ярлык («Переехала в СПб» без длинной цитаты). Без `card_text`
-  поведение — прежнее (цитата всегда).
-- Полный AUTO / диалог-менеджер не реализуются до явной команды (см. Roadmap).
-
-### Manual Review (Stage 8)
-
-Когда детерминированный scoring выдаёт **REVIEW** (бот «не справляется» — мало
-информации/уверенности), бот **не действует сам**: авто-`👎` НЕ отправляется
-(реверс прежней «двигаем ленту»-механики для AI-REVIEW; фильтровые не-PASS
-по-прежнему шлют `👎`, чтобы лента Leo не замирала).
-
-- **`ManualReviewRecorder`** (`services/manual_review.py` — Telegram-free) фиксирует
-  РУЧНОЕ решение владельца по REVIEW-анкете в файл журнала
-  (`data/reviews/review_log.json` — JSON-список, или `.md` — Markdown-таблица;
-  конфиг `manual_review.file` / `manual_review.format`).
-- **Уведомление владельцу:** `AutoActionEngine.maybe_act(REVIEW)` → `_notify_needs_action`
-  пересылает карточку анкеты владельцу и пишет «⚠️ Нужно твоё решение (REVIEW)» +
-  причина + инструкцию поставить лайк/дизлайк (или написать) в Дайвинчике.
-- **Перехват действия:** владелец действует с того же аккаунта, под которым слушает
-  collector (тот же чат, что `dvinchik.chat_id`). Исходящее сообщение перехватывается
-  в `_handle_outgoing_message` → `_maybe_record_manual_review` → по «текущей» анкете чата
-  (`get_chat_profile_context` / `_pending_profiles`) профиль → если последнее AI-решение
-  профиля == REVIEW → `handle_outgoing(...)` записывает действие в файл.
-- **Классификация:** `❤️`→LIKE, `👎`→DISLIKE, любой другой текст→MESSAGE (с сохранением
-  текста). Запись в файл происходит ТОЛЬКО для REVIEW-анкет — авто-`❤️`/`👎` (LIKE/DISLIKE)
-  не дают ложных записей.
-- **Структура проекта:** `services/manual_review.py` (Telegram-free); `main.py` создаёт
-  recorder (гейт `manual_review.enabled`) и передаёт в `DvinchikCollector(..., manual_review=...)`.
-  Ошибки файла/БД не ломают перехват исходящих (RAW уже сохранён).
-- **Конфиг:**
-  ```yaml
-  manual_review:
-    enabled: true
-    file: "data/reviews/review_log.json"   # или review_log.md
-    format: json                            # json | md
-  ```
-
-### Контрольная панель (Stage 7.5)
-
-Управление ботом через Telegram-бота `ControlBot` (`telegram/control_bot.py`):
-- **Команды** (только от `control.allowed_user_ids`, default `8525808108`):
-  `/status` — текущий режим/статус, `/mode on|off` — SEMI_AUTO/OBSERVE,
-  `/stream` — запустить поток анкет сейчас, `/recent` — последние решения AI,
-  `/help` — справка. Плюс inline-кнопки (🟢 ON / ⭕ OFF / 📊 Статус / ▶ Поток).
-- **Переключение на лету:** `collector.set_mode(Mode)` меняет `AutoActionEngine.mode`
-  live (гейт `enabled` пересчитывается) и через `AppConfig.persist_mode()` пишет
-  `project.mode` в `config.yaml` — режим переживает restart.
-- Гейт: `config.control.enabled: true` регистрирует панель в `main.py` (на `accounts[0]`).
-- **Конфиг:**
-  ```yaml
-  control:
-    enabled: true
-    allowed_user_ids: [8525808108]   # ваш user_id — только от него принимаются команды
-  ```
-
----
-
-## 3. Структура проекта
+### Структура проекта
 
 ```
 dvdatin/
-│
 ├── main.py                      # Точка входа: конфиг, сборка стека, цикл, --export-review
 ├── run.bat                      # Запуск на Windows (chcp 65001, UTF-8)
-├── requirements.txt             # Prod-зависимости
-├── requirements-dev.txt         # Dev-зависимости (pytest)
-├── AGENTS.md                    # Правила/конвенции для агентов (и этот файл)
-├── Roadmap.md                   # План проекта, история этапов (Stages), roadmap
-│
-├── config/                      # Конфигурация
-│   ├── config.example.yaml      #   Шаблон (коммитится)
-│   ├── config.yaml              #   Живой конфиг (gitignored, секреты)
-│   ├── preferences.example.yaml #   Шаблон правил SKIP/LIKE (коммитится)
-│   └── preferences.yaml         #   Живые правила пользователя (gitignored)
-│
-├── app/                         # Прикладной слой
-│   ├── config.py                #   Pydantic-модели конфигурации + загрузчик YAML
-│   ├── preferences.py           #   PreferencesEngine (SKIP/LIKE)
-│   ├── logging.py               #   Loguru (+ Rich)
-│   └── banner.py                #   ASCII-баннер (версия)
-│
-├── core/
-│   └── types.py                 # Mode (OBSERVE/SEMI_AUTO/AUTO), LogLevel
-│
-├── database/
-│   └── database.py              # SQLite + aiosqlite (все таблицы, PRAGMA, миграции)
-│
-├── telegram/                    # Telethon-слой (единственный, кому можно Telethon)
-│   ├── client.py                #   create_client / authorize (multi-account)
-│   ├── review_bot.py            #   Telegram UI: /review, /stats, inline-кнопки
-│   └── control_bot.py           #   Панель управления: /status /mode /stream /recent (Stage 7.5)
-│
-├── models/                      # Pydantic/dataclass-модели домена
-│   ├── raw.py                   #   RawMessage, ParsedProfile, MessageType, FilterResult(raw)
-│   ├── profile.py               #   Profile, ProfileStatus, compute_fingerprint
-│   ├── filter.py                #   FilterDecision, FilterReason, FilterResult(filter)
-│   ├── ai.py                    #   AIScore, CLIPScore, LLMScore, AIRecommendation (legacy)
-│   ├── features.py              #   Stage 8: Feature/ScoringResult (детерминированный скоринг)
-│   ├── decision.py              #   AIDecision, AIDecisionResult
-│   └── human_decision.py        #   HumanDecision, AgreementStatus, HumanReview
-│
-├── services/                    # Бизнес-логика (Telegram-free, кроме review_export/…)
-│   ├── profile_service.py       #   CRUD + upsert + fingerprint
-│   ├── filter_engine.py         #   AgeRule / CityRule / DataCompletenessRule
-│   ├── filter_service.py        #   Оценка + история в БД
-│   ├── manual_review.py         #   Stage 8: запись ручных решений владельца по REVIEW (JSON/MD)
-│   ├── profile_normalizer.py    #   Stage 8: нормализация текста анкеты
-│   ├── feature_extractor.py     #   Stage 8: детерминированные правила H01–H10 / P01–P04
-│   ├── score_engine.py          #   Stage 8: расчёт скора (ScoreConfig)
-│   ├── decision_service.py      #   AI Decision Engine (+ предпочтения) — Stage 8 детерминированный
-│   ├── review_service.py        #   Human Review очередь/сохранение
-│   ├── analytics_service.py     #   Read-only аналитика (согласие, breakdowns)
-│   └── review_export.py         #   CSV-экспорт рецензий
-│
-│   # Legacy (Stage ≤7, НЕ вызываются в Stage 8 скоринге — пассивные):
-│   ├── clip_service.py          #   BaseCLIPService (ABC) + локальная заглушка (legacy)
-│   ├── llm_service.py           #   BaseLLMService (ABC) + локальная заглушка (legacy)
-│   ├── ai_scoring_service.py    #   Объединённый CLIP+LLM скоринг → AIScore (legacy)
-│   ├── remote_clip_client.py    #   httpx → Ubuntu AI (multipart field "files") (legacy)
-│   └── remote_llm_client.py     #   httpx → Ubuntu AI (Ollama /v1/llm/evaluate) (legacy)
-│
-├── collectors/                  # Сбор данных
-│   ├── dvinchik_collector.py    #   Перехват, RAW-first, per-chat locks, W3-recovery, outgoing+callback
-│   ├── dvinchik_parser.py       #   Классификация и парсинг анкет
-│   ├── raw_worker.py            #   Фоновый worker (parse→filter→AI вне хендлера)
-│   ├── raw_queue.py             #   Async-буфер (RawQueue)
-│   ├── dedup.py                 #   In-memory дедупликация
-│   ├── city_normalizer.py       #   Нормализация городов (map + ASCII нормализация)
-│   ├── anti_block.py            #   Rate-limiter (защита от блокировки)
-│   ├── media_analyzer.py        #   Анализ фото (photo_count → CLIP/NSFW)
-│   ├── auto_action.py           #   Stage 7: AutoActionEngine (❤️/👎, rate-limit, start_stream)
-│   └── stats.py                 #   Статистика коллектора
-│
-├── filters/  dialogs/  managers/  prompts/  utils/   # 🅡 ЗАРЕЗЕРВИРОВАНЫ (только __init__.py)
-│
-├── tests/                       # Тесты (480, без pytest-asyncio)
-│   ├── test_*.py                #   Unit/integration для модулей
-│   ├── e2e_ai.py                #   REAL_E2E против живого шлюза (не в обычном pytest)
-│   └── baseline/                #   Frozen baseline тестов (diff-сверка)
-│
-├── deploy/                      # Deploy-артефакты (Ubuntu/systemd)
-│   ├── dvai.service             #   systemd unit
-│   ├── run.sh                   #   Ручной запуск (UTF-8)
-│   ├── llm-v3_prompt.md         #   Серверный LLM-промпт (извлечение признаков, не судейство)
-│   └── README.md                #   Runbook деплоя
-│
-├── proxy/                       # Vendored xray-core + VLESS (НЕ коммитится)
-└── data/                        # Данные (gitignored)
-    ├── logs/                    #   runtime.log, analytics.log
-    ├── exports/                 #   CSV-экспорт рецензий
-    └── sessions/                #   Telegram session-файлы (.session)
+├── requirements.txt / requirements-dev.txt
+├── AGENTS.md / Roadmap.md / README.md / DvAI_SIMPLIFICATION_REPORT.md
+├── config/
+│   ├── config.example.yaml      # Шаблон (коммитится)
+│   ├── config.yaml              # Живой конфиг (gitignored, секреты)
+│   ├── preferences.example.yaml # Шаблон правил SKIP/LIKE (коммитится)
+│   └── preferences.yaml         # Живые правила пользователя (gitignored)
+├── app/                         # config.py (Pydantic), preferences.py, logging.py, banner.py
+├── core/types.py                # Mode (OBSERVE/SEMI_AUTO/AUTO), LogLevel
+├── database/database.py         # SQLite + aiosqlite (все таблицы, PRAGMA, миграции)
+├── telegram/                    # client.py (Telethon), review_bot.py, control_bot.py
+├── models/                      # raw.py, profile.py, filter.py, features.py, decision.py, human_decision.py
+├── services/                    # Telegram-free бизнес-логика (см. таблицу выше)
+├── collectors/                  # см. таблицу выше
+├── tests/                       # 463 теста (16 файлов), baseline в tests/baseline/
+├── deploy/                      # systemd unit + runbook
+├── proxy/                       # vendored xray-core + VLESS (НЕ коммитить)
+└── data/                        # БД, сессии, логи, экспорт (gitignored)
 ```
 
-> **Замечание про `filters/`:** это пустой плейсхолдер, зарезервированный для будущего.
-> Реальная логика фильтрации живёт в `services/filter_engine.py` и `services/filter_service.py`.
+### База данных (SQLite, WAL)
 
----
+Схема идемпотентна (`CREATE TABLE IF NOT EXISTS`), внешние ключи через PRAGMA.
 
-## 4. Принятые технические решения (ADR-lite)
+| Таблица | Назначение |
+|---|---|
+| `raw_messages` | Сырые сообщения (append-only; включает `raw_entities`, `reply_markup`) |
+| `profiles` | Профили (name/age/city/description/fingerprint/status…) |
+| `profile_messages` | Связь профиль ↔ сообщения (в т.ч. MEDIA_ONLY) |
+| `chat_context` | Контекст «последняя анкета чата» |
+| `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
+| `ai_decisions` | Решения DecisionService (LIKE/REVIEW/DISLIKE; `scoring_version=deterministic-v2`) |
+| `auto_actions_log` | Отправленные `❤️`/`👎` (per-card, `telegram_message_id`) |
+| `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
 
-### ADR-1: Python 3.12 + современный синтаксис
-**Почему:** чистый и выразительный код (`StrEnum`, `X | Y`, `list[str]`), совместимость с
-Telethon/aiosqlite. **Компромисс:** требует Python ≥ 3.12.
-
-### ADR-2: Telethon как единственный клиент Telegram
-**Почему:** асинхронный, удобные `events.NewMessage`, скачивание media через
-`msg.download_media`. **Компромисс:** Telethon разрешён только в `telegram/*` и
-`collectors/dvinchik_collector.py` — остальной стек тестируем без живого Telegram
-(моки/ABC).
-
-### ADR-3: Telegram-free ядро (инверсия зависимостей)
-**Почему:** вся аналитика/скоринг/решения проверяются офлайн и без реального аккаунта.
-**Как:** ABC (`BaseCLIPService`, `BaseLLMService`) + локальные заглушки для `backend: local`,
-и `Remote*Client` для `remote`. Тесты не зависят от сети.
-
-### ADR-4: SQLite + aiosqlite (WAL, FK, идемпотентная схема)
-**Почему:** ноль серверной инфраструктуры, транзакционность, достаточно для однопроцессного
-коллектора. **Миграции:** `_migrate` через `PRAGMA table_info` добавляет колонки обратно-совместимо.
-
-### ADR-5: RAW-first инвариант + UNIQUE в БД
-**Почему:** данные важнее обработки. Дубликаты переживают restart (в отличие от in-memory
-dedup); потеря RAW недопустима. **Компромисс:** нужен фон воркер, чтобы не блокировать handler.
-
-### ADR-6: Фоновая обработка (RawQueue + RawWorker) + backlog recovery (W3)
-**Почему:** сетевой AI не должен блокировать приём Telegram-событий; при рестарте
-необработанные RAW доставляются повторно (at-least-once).
-
-### ADR-7: AI как опция, деградация вместо краша
-**Почему:** шлюз (Ollama/CLIP) нестабилен/платный. **Как:** `ai.enabled`, все AI-вызовы в
-try/except, недоступность → `AI_UNAVAILABLE → REVIEW`, данные не теряются.
-
-### ADR-8: CLIP + LLM с раздельными весами, решение только на клиенте
-**Почему:** эстетика фото (CLIP) и содержание текста (LLM) дополняют друг друга; финальное
-решение и веса принадлежат клиенту, а не серверу. Веса `decision.weights` (llm 0.7 / clip 0.3)
-независимы от `scoring` (clip 0.5 / llm 0.5).
-
-### ADR-9: Многослойность решений (Scoring → Decision → Human)
-**Почему:** каждый слой решает свою задачу и сохраняется отдельно, что позволяет калибровать
-AI против человеческих решений (Agreement Rate) и менять политику на любом слое.
-
-### ADR-10: Правила пользователя — вне кода (preferences.yaml + серверный промпт)
-**Почему:** персональная калибровка не должна требовать правок кода/пересборки.
-**Компромисс:** текстовый поиск подстрок (простой, но грубый); нужен серверный LLM-промпт
-для семантики. Пороги не трогаются.
-
-### ADR-11: OBSERVE/REVIEW по умолчанию — «сначала безопасность»
-**Почему:** автолайки/сообщения необратимы и рискованны. Действия внедряются отдельным
-слоем (Stage 7) с лимитами (`limits.*`), только по явной команде.
-
-### ADR-12: Multi-account
-**Почему:** больше источников/объёма и распределение нагрузки по аккаунтам. **Компромисс:**
-один общий pipeline и жёсткая дедупликация, чтобы один chat не обрабатывался дважды.
-
-### ADR-13: Скромные зависимости (нет ОРМ, нет веб-фреймворка на клиенте)
-**Почему:** прямой SQL + Pydantic достаточно; меньше зависимостей — меньше атакующая
-поверхность и проще деплой. **Компромисс:** ручная работа со схемой/миграциями.
-
-### ADR-14: Двойной формат конфига с обратной совместимостью
-**Почему:** поддержка и `telegram: {accounts:[...]}`, и старого `telegram: {api_id,...}`
-через before-валидатор упрощает миграцию. `FiltersConfig` тоже поддерживает compat-поля.
-
----
-
-## 5. Инструкция по развертыванию и запуску
-
-### Локально (Windows / Linux)
-
-```bash
-# 1. Клонировать
-git clone <url> dvdatin && cd dvdatin
-
-# 2. Виртуальное окружение + зависимости
-python -m venv venv
-# Windows: venv\Scripts\activate ; Linux: source venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-dev.txt            # для тестов
-
-# 3. Конфигурация (секреты вне git)
-cp config/config.example.yaml config/config.yaml
-```
-
-Заполнить `config/config.yaml` (NONE из секретов в git):
+### Конфиг (config.yaml)
 
 ```yaml
 telegram:
   accounts:
-    - api_id: 0            # из https://my.telegram.org
-      api_hash: ""
+    - api_id: 0
+      api_hash: ""            # секрет
       phone: "+7..."
       session: dvai           # имя session-файла
-      proxy: { enabled: true, type: socks5, host: "127.0.0.1", port: 10808 }
-    # …можно несколько аккаунтов
+      proxy: { enabled: false, type: socks5, host: "", port: 0, username: "", password: "" }
+
+project:
+  mode: OBSERVE               # OBSERVE | SEMI_AUTO | AUTO
 
 dvinchik:
   chat_id: 1234060895         # Дайвинчик (Leo)
+
+sources:
+  allowed_chat_ids: [1234060895]
 
 filters:
   age:   { min: 18, max: 19 }
   city:  { allowed: ["Санкт-Петербург"] }
 
 ai:
-  enabled: false              # false = без AI (только сбор/фильтр); true = включить scoring
-  backend: "local"            # "local" (заглушки) | "remote" (Ubuntu AI)
-  remote: { base_url: "http://144.31.139.206:8000", timeout: 90, max_retries: 1 }
+  decision:
+    like_threshold: 0.75
+    review_threshold: 0.50
+    scoring_version: "deterministic-v2"
+
+auto_actions:
+  enabled: false
+  account_session: "dvai_2"   # сессия авто-аккаунта
+  interval_sec: 10.0          # rate-limit между действиями
+  notify_chat_id: 0           # уведомления владельцу (0 = выкл)
+
+control:
+  enabled: false
+  allowed_user_ids: [8525808108]
+
+manual_review:
+  enabled: false
+  file: "data/reviews/review_log.json"
+  format: json                # json | md
 
 logging:
   level: INFO
 ```
 
-Затем по желанию скопировать персональные правила:
+### Запуск и тесты
 
 ```bash
-cp config/preferences.example.yaml config/preferences.yaml   # SKIP/LIKE правила (gitignored)
+python -m venv venv
+# Windows: venv\Scripts\activate ; Linux: source venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+cp config/config.example.yaml config/config.yaml
+cp config/preferences.example.yaml config/preferences.yaml   # по желанию
+
+python main.py                 # или run.bat на Windows
+python main.py --export-review # CSV-экспорт рецензий
+
+python -m pytest tests/ -v     # 463 теста
 ```
-
-### Авторизация и запуск
-
-```bash
-# Windows (UTF-8) — run.bat, или напрямую:
-python main.py
-```
-
-При первом запуске Telethon запросит код подтверждения (вход выполняется интерактивно,
-сессия сохраняется в `data/sessions/`). После успешной авторизации коллектор начинает
-работать в режиме **OBSERVE**: перехватывает сообщения Дайвинчика, сохраняет RAW,
-фильтрует, при PASS скачивает фото и вызывает AI (если включён), выводит решение в консоль.
-
-> `dvinchik.chat_id == 0` → все входящие сообщения просто отображаются в консоли,
-> чтобы вы могли узнать реальный chat_id Дайвинчика.
-
-### Экспорт review-датасета (без Telegram)
-
-```bash
-python main.py --export-review        # → data/exports/review_YYYYMMDD_HHMMSS.csv
-```
-
-### Режим с реальным AI (remote, Ubuntu AI Server)
-
-Клиент обращается к AI-шлюзу `base_url` (прокладка SSH reverse tunnel → Ubuntu AI Server
-с Ollama `qwen3:8b` + CLIP на GPU):
-
-```bash
-python main.py            # при ai.enabled=true, backend=remote
-```
-
-Проверка шлюза:
-
-```bash
-curl -s http://144.31.139.206:8000/health      # → HTTP 200
-```
-
-При падении шлюза сбор не останавливается — AI деградирует до `AI_UNAVAILABLE → REVIEW`.
-
-### Docker
-
-Официального Docker-образа пока нет (см. Roadmap). Для systemd-деплоя на Ubuntu
-используйте `deploy/` (runbook подробно в `deploy/README.md`):
-
-```bash
-sudo cp deploy/dvai.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dvai
-sudo journalctl -u dvai -f
-
-# ручной запуск
-./deploy/run.sh
-```
-
-### Тесты
-
-```bash
-python -m pytest tests/ -v                  # все 396
-python -m pytest tests/test_ai.py -v        # AI (105)
-python -m pytest tests/test_preferences.py -v   # предпочтения (10)
-python -m pytest tests/test_decision.py -v  # Decision Engine (27)
-
-# REAL_E2E против живого шлюза (не в обычном pytest)
-python tests/e2e_ai.py
-
-# Сверка с frozen baseline
-diff <(grep '::' tests/baseline/baseline_tests.txt | sort) \
-     <(python -m pytest tests/ --collect-only -q | grep '::' | sort)
-```
-
----
-
-## 6. Планы развития (Roadmap)
-
-### Завершено (текущее состояние — Stage 8)
-
-- [x] **Stage 0** — конфиг (Pydantic), логирование (Loguru/Rich), БД, Telethon client, banner, `main.py`.
-- [x] **Stage 1 / 1.5** — парсер, классификатор, RAW-first, city-normalizer, MEDIA_ONLY, dedup, rate-limiter, stats.
-- [x] **Stage 2 / 2.5** — модель Profile, `profiles` + `profile_messages`, fingerprint, ProfileService, upsert, DB Audit.
-- [x] **Stage 3** — Filter Engine (возраст/город/полнота), история в БД, интеграция в коллектор.
-- [x] **Stage 4** — AI Scoring: CLIP + LLM (заглушки и рemote), combined, сохранение в `ai_scores`.
-- [x] **Stage 4.1–4.3** — Remote AI Client (httpx) + Ubuntu AI Server (FastAPI: Ollama qwen3:8b + CLIP), E2E через прокладку, фикс CLIP-контракта (`files` / `clip_score`).
-- [x] **Stage 5** — AI Decision Engine: `models/decision.py`, DecisionService, `ai_decisions`, пороги/веса, решение только на клиенте.
-- [x] **Stage 6** — Human Review & Analytics: `human_decisions`, ReviewService, AnalyticsService (Agreement Rate), Telegram review UI, CSV-export.
-- [x] **Multi-account** — несколько Telegram-аккаунтов с общим pipeline и дедупликацией.
-- [x] **Preferences layer (SKIP/LIKE)** — `config/preferences.yaml`, `app/preferences.py`, интеграция в DecisionService.
-- [x] **Серверный LLM-промпт `llm-v3`** — `deploy/llm-v3_prompt.md` (извлечение признаков, а не судейство; DO NOT INVENT CRITERIA; отсутствие информации ≠ негатив), клиент помечает `prompt_version=llm-v3`.
-- [x] **Фичевый LLM-контракт + инвариант** — LLM извлекает только разрешённые признаки (H1–H8/P1–P4) с evidence; `score` детерминированный (0.1/0.6/0.9) на клиенте; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` в DecisionService и `_determine_recommendation`.
-- [x] **Захват кнопок (reply_markup)** — read-only разведка слоя действий: `raw_messages.reply_markup`, сериализация в коллекторе, вывод в консоль. Кнопка LIKE ставится по inline-кнопке на анкете (callback_data).
-- [x] **Захват исходящих (outgoing capture)** — read-only перехват действий пользователя: `events.NewMessage(outgoing=True)` в чате бота (1234060895). Исходящие эмодзи (лайки/дизлайки) сохраняются в `raw_messages` и помечаются `processed_at` (pipeline пропускается). ground truth для реверса механики LIKE.
-- [x] **Callback-query логирование** — read-only разведка inline-кнопок: `events.CallbackQuery()` логирует `callback_data`/собеседника в консоль (без действий и без записи в БД). Дополняет outgoing-capture, если лайк ставится кнопкой.
-- [x] **Stage 7 (SEMI_AUTO) — авто-действия** — `AutoActionEngine` (`collectors/auto_action.py`): на основе DecisionService на анкеты авто-аккаунта отправляются `❤️` (LIKE) / `👎` (DISLIKE), REVIEW→`👎` (двигаем ленту Leo, профиль остаётся в БД), None пропускается; rate-limit `interval_sec`; гейт по `project.mode` + `auto_actions.enabled`. Автозапуск потока не шлёт `✨🔍` (невалидна вне состояния Leo): при старте обрабатывается уже показанная активная анкета, а при исчерпании ленты автоматически нажимается кнопка «🚀 Смотреть анкеты» (`start_auto_stream` + live-хук в `UNKNOWN`). Фильтровые REJECT/REVIEW (не-PASS от FilterService) тоже получают `👎`, чтобы лента не замирала и при неподходящих карточках. Финальный реверс механики LIKE/👎 как plain-text reply-кнопок. Автоответ на капчи/проверки Leo: на `UNKNOWN`-сообщение, текст которого содержит маркер `CAPTCHA_MARKERS` и имеет `>= 2` reply-кнопок, авто-аккаунт нажимает последнюю кнопку (идемпотентно) — сбрасывает диалог и продолжает ленту, не трогая главное меню/Premium.
-- [x] **Stage 7.5 — контрольная панель** — `ControlBot` (`telegram/control_bot.py`): /status /mode on|off /stream /recent /help + inline-кнопки; runtime-переключение режима (`collector.set_mode`) с персистентностью в `config.yaml`; авторизация по `control.allowed_user_ids`.
-- [x] **Stage 8 — детерминированный скоринг (без LLM/CLIP)** — LLM/CLIP полностью исключены из scoring-пайплайна. Вместо внешнего шлюза — детерминированный движок правил: `services/profile_normalizer.py` (нормализация), `services/feature_extractor.py` (признаки H01–H10 / P01–P04 из `config/preferences.yaml`), `services/score_engine.py` (расчёт скора), `models/features.py` (модели). `DecisionService.evaluate()` вызывается для **всех** результатов фильтра (PASS/REJECT/REVIEW). Один и тот же текст → один и тот же результат; без сети/GPU/промптов; инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE` сохранён (missing/unknown → REVIEW, никогда DISLIKE); версия scoring `deterministic-v2`; `ImagesConfig.enabled` по умолчанию `false`. Legacy-модули (`llm_service`, `clip_service`, `ai_scoring_service`, `remote_*_client`) остаются пассивными. **H10 (подмена возраста):** если текст сам сообщает возраст, противоречащий карточке («алиночка, 18, СПб – мне 16,дв не даёт поставить этот возраст») — это **явный** сигнал (не отсутствие данных), поэтому детерминированно даёт DISLIKE по H10, а не REVIEW.
-- [x] **Stage 8 — Manual Review (ручные решения по REVIEW-анкетам)** — на AI-REVIEW бот не отправляет авто-`👎` (`AutoActionEngine.maybe_act` → `_notify_needs_action`: пересылка карточки владельцу + «Нужно твоё решение»), анкета остаётся активной. Владелец действует в Дайвинчике с того же аккаунта; исходящее действие перехватывается (`_handle_outgoing_message` → `_maybe_record_manual_review`) и через `ManualReviewRecorder` (`services/manual_review.py`, Telegram-free) привязывается к REVIEW-профилю и дописывается в `data/reviews/review_log.json`/`.md` (`❤️`→LIKE, `👎`→DISLIKE, иначе MESSAGE). Фильтровые не-PASS по-прежнему шлют `👎` (лента Leo не замирает).
-
-Проверено: **508 тестов проходят** (baseline в `tests/baseline/`).
-
-### В разработке / планируется
-
-| | Этап / фича | Идея |
-|---|---|---|
-| 🔜 | **Stage 9: Dialog Manager** | автоматические сообщения, генерация реплик, управление диалогами (требует переключения `Mode` в AUTO) |
-| 🔜 | **Stage 10: Production** | мониторинг, алертинг, адаптация под изменения API Дайвинчика |
-| 🔜 | **Docker-образ** | контейнеризация коллектора/клиента |
-| 🔜 | **Расширение правил скоринга** | больше признаков/паттернов, калибровка по Agreement Rate |
-
-### Категорически НЕ реализуется до Stage 8
-
-Любые **автоматические Telegram-действия за пределами Stage 7**: полный AUTO-режим со
-свайпом и переходом к следующей анкете без явного AI-решения, автоматические сообщения,
-Dialog/Message Generator. Stage 7 ограничен реакцией на конкретную анкету (❤️/👎) на
-сконфигурированном авто-аккаунте.
-
----
-
-## Приложение
-
-### Переменные окружения / пути данных
-
-| Путь | Что это | В git? |
-|---|---|---|
-| `config/config.yaml` | живой конфиг (api_id/hash, phone, proxy) | ❌ (gitignored) |
-| `config/preferences.yaml` | персональные правила SKIP/LIKE | ❌ (gitignored) |
-| `data/database.db` | основная SQLite-БД | ❌ |
-| `data/sessions/*.session` | Telegram-сессии | ❌ |
-| `data/logs/runtime.log, analytics.log` | логи | ❌ |
-| `data/exports/*.csv` | экспорт рецензий | ❌ |
-| `proxy/` | vendored xray-core + реальный VLESS | ❌ (не коммитить) |
 
 ### Ключевые константы
 
 - Дайвинчик (Leo) chat_id по умолчанию: **`1234060895`**
-- Пороги решений: LIKE `0.75`, REVIEW `0.50`
-- Scoring: детерминированный (`deterministic-v2`); правила в `config/preferences.yaml` (legacy-веса llm 0.7 / clip 0.3 не используются)
-- Версия баннера (`banner.py`): **`0.7`**
+- Пороги решения: LIKE **0.75**, REVIEW **0.50**
+- Версия скоринга: **`deterministic-v2`**
+- Версия баннера (`app/banner.py`): **0.7**
+- Авто-интервал: `interval_sec` (default **10 s**)
+
+---
+
+## 3. Compatibility / Deprecations
+
+### Удалено (упрощение кодовой базы)
+
+- **Весь LLM/CLIP-стек**: `services/llm_service.py`, `services/clip_service.py`, `services/ai_scoring_service.py`, `services/remote_llm_client.py`, `services/remote_clip_client.py`, `models/ai.py`, `collectors/media_analyzer.py`, `collectors/anti_block.py`, `tests/e2e_ai.py`, `tests/test_ai_scoring.py`. Ubuntu AI Server больше не используется. Документарные артефакты деплоя (`deploy/llm-v2_prompt.md`, `deploy/llm-v3_prompt.md`, `deploy/README.md`, `deploy/run.sh`, `deploy/dvai.service`) оставлены в репозитории как read-only справочный материал.
+- **Пустые плейсхолдер-пакеты**: `dialogs/`, `filters/`, `managers/`, `prompts/`, `utils/`.
+- **Тест-онли аналитика**: `get_score_distribution`, `get_ai_breakdown`, `get_filter_breakdown`, `get_scoring_version_breakdown` (AnalyticsService теперь `AnalyticsService(db)`).
+- **Мёртвый код**: `update_profile_status`, `get_profiles_last_filter`, `reasons_flat()`, `get_analytics_logger()`/`ANALYTICS_LOG`, `_has_action_buttons`, `_deny`, `_cmd_start`, `AutoActionEngine.start_stream`.
+- **Конфиг-ключи**: `ai.enabled`, `ai.backend`, `ai.remote.*`, `ai.scoring.*`, `ai.clip.*`, `ai.llm.*`, `ai.decision.weights`, `ai.decision.min_confidence`, `dvinchik.enabled`, `auto_actions.start_command`, `limits.*`, `ImagesConfig`.
+- **Модели/поля**: `MessageType.OTHER`, `MessageGroup`, `FeatureType.NEUTRAL`, `Feature.value`, `Feature.source`, `ExtractionResult.neutral_features`, `AIDecisionResult.hard_negatives/positive_factors/unknown`, `ScoringConfig`, `DecisionConfig.min_confidence`.
+
+### Устаревшие таблицы в существующих БД
+
+- `ai_scores` (CLIP/LLM-скоры): больше не создаётся; существующая таблица в старых БД не удаляется (идемпотентная схема), но не пишется скорингом.
+- `ai_decisions.scoring_version="v1"` в исторических записях старых БД — новые решения пишут `deterministic-v2`.
+
+### Известные ограничения / замечания
+
+- **Паттерн отрицания «не даю»** в `services/feature_extractor.py` (`_NEGATION_PREFIXES`, `не\s+ඞаю` — испорченный символ). На обнаружение жёсткого негатива H-признаков по фразам вида «не даю…» это не влияет (паттерн не матчится), поведение других признаков корректно. Зафиксировано в отчёте об упрощении; правила не менялись, чтобы не трогать бизнес-логику.
+- `requirements.txt` ещё содержит `httpx` — единственная оставшаяся зависимость от удалённого remote-стека; фактически не используется кодом (кандидат на удаление).
+- `proxy/` содержит vendored xray-core и реальный VLESS-конфиг — не коммитить изменения креденшиалов.
+- Полный AUTO / Dialog Manager не реализуются до явной команды (см. `Roadmap.md`).
 
 ### Лицензия
 
-Проект внутренний/личный. Прокси-настройки и API-ключи являются секретами и не
-коммитятся в репозиторий.
+Проект внутренний/личный. Прокси-настройки и API-ключи — секреты, в репозиторий не коммитятся.

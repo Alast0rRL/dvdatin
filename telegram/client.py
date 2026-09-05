@@ -8,7 +8,6 @@ from pathlib import Path
 from loguru import logger
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
-from telethon.sessions import StringSession
 
 from app.config import TelegramConfig
 

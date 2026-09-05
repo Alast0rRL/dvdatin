@@ -161,11 +161,6 @@ class ProfileService:
             f"Linked message {telegram_message_id} to profile {profile_id}"
         )
 
-    async def match_profile(self, profile_id: int) -> None:
-        """Переводит профиль в статус MATCHED."""
-        await self._db.update_profile_status(profile_id, ProfileStatus.MATCHED)
-        logger.info(f"Profile {profile_id} status -> MATCHED")
-
     @staticmethod
     def _row_to_profile(row: dict) -> Profile:
         """Преобразует dict из БД в Profile."""

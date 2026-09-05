@@ -135,7 +135,7 @@ async def main() -> None:
 
     # Human Review + Analytics (Stage 6)
     review_service = ReviewService(db, profile_service)
-    analytics_service = AnalyticsService(db, config)
+    analytics_service = AnalyticsService(db)
     review_bot = ReviewBot(
         clients[0], config,
         review_service=review_service,

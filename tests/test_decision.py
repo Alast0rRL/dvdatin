@@ -24,7 +24,6 @@ from services.profile_service import ProfileService
 def make_config(
     like_threshold: float = 0.75,
     review_threshold: float = 0.50,
-    min_confidence: float = 0.60,
     scoring_version: str = "deterministic-v2",
 ) -> AppConfig:
     return AppConfig(**{
@@ -35,11 +34,9 @@ def make_config(
         },
         "ai": {
             "enabled": True,
-            "scoring": {},
             "decision": {
                 "like_threshold": like_threshold,
                 "review_threshold": review_threshold,
-                "min_confidence": min_confidence,
                 "scoring_version": scoring_version,
             },
         },
@@ -124,7 +121,7 @@ def AIDecisionResult_factory(**kw):
     from models.decision import AIDecisionResult
     base = dict(
         profile_id=1, decision="LIKE", combined_score=0.8,
-        llm_score=None, clip_score=None, confidence=0.85,
+        confidence=0.85,
         reasons=["POSITIVE:games:игры"], evaluated_at="now",
         scoring_version="deterministic-v2",
     )
@@ -346,12 +343,3 @@ class TestDecisionDB:
         ))
         count = run(cursor.fetchone())[0]
         assert count == 0
-
-    def test_llm_score_and_clip_score_are_none(self, tmp_db: Database) -> None:
-        """В детерминированном scoring llm_score и clip_score всегда None."""
-        config = make_config()
-        decision = build_stack(tmp_db, config)
-        prof_id = run(insert_profile(tmp_db, 24))
-        result = run(decision.evaluate(prof_id))
-        assert result.llm_score is None
-        assert result.clip_score is None

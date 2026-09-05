@@ -73,13 +73,10 @@ async def add_ai_decision(
         profile_id=profile_id,
         decision=decision,
         combined_score=combined,
-        llm_score=combined,
-        clip_score=None,
         confidence=confidence,
         reasons="[]",
         scoring_version="v1",
         evaluated_at=ts or f"2026-01-01T00:00:0{profile_id}",
-        prompt_version="llm-v1",
     )
 
 
@@ -164,9 +161,9 @@ class TestSaveDecision:
     def test_is_reviewed(self, tmp_db: Database, review: ReviewService) -> None:
         pid = run(insert_profile(tmp_db, 7))
         aid = run(add_ai_decision(tmp_db, pid, "LIKE", 0.8))
-        assert not run(review.is_reviewed(pid, aid))
+        assert not run(tmp_db.is_human_reviewed(pid, aid))
         run(review.save_decision(pid, aid, HumanDecision.APPROVE))
-        assert run(review.is_reviewed(pid, aid))
+        assert run(tmp_db.is_human_reviewed(pid, aid))
 
     def test_privacy_no_pii_in_history(self, tmp_db: Database, review: ReviewService) -> None:
         pid = run(insert_profile(tmp_db, 8))
@@ -221,7 +218,7 @@ class TestReviewQueue:
         nxt = run(review.get_next())
         assert nxt is not None
         assert nxt.ai_decision_id == aid2
-        assert not run(review.is_reviewed(pid, aid2))
+        assert not run(tmp_db.is_human_reviewed(pid, aid2))
 
     def test_get_pending_lists_all(self, tmp_db: Database, review: ReviewService) -> None:
         for i in range(1, 4):

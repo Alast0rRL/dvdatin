@@ -16,7 +16,6 @@ class MessageType(StrEnum):
     MEDIA_ONLY = "MEDIA_ONLY"
     SERVICE = "SERVICE"
     MATCH = "MATCH"
-    OTHER = "OTHER"
 
 
 class FilterResult(StrEnum):
@@ -62,11 +61,3 @@ class ParsedMatch(BaseModel):
     name: str = ""
     telegram_username: str = ""
     telegram_url: str = ""
-
-
-class MessageGroup(BaseModel):
-    """Группа сообщений, относящихся к одной анкете."""
-
-    profile_message_id: int = 0
-    media_message_ids: list[int] = []
-    chat_id: int = 0

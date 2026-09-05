@@ -23,11 +23,10 @@ from loguru import logger
 
 from app.preferences import PreferencesEngine
 from models.decision import AIDecision, AIDecisionResult
-from models.features import ScoringResult, SCORING_VERSION
+from models.features import SCORING_VERSION
 from models.filter import FilterDecision
 from services.feature_extractor import FeatureExtractor
-from services.profile_normalizer import normalize_for_matching
-from services.score_engine import ScoreConfig, ScoreEngine
+from services.score_engine import ScoreEngine
 
 if TYPE_CHECKING:
     from app.config import AppConfig, DecisionConfig
@@ -139,16 +138,10 @@ class DecisionService:
             profile_id=profile.id,
             decision=decision,
             combined_score=combined,
-            llm_score=None,  # LLM removed
-            clip_score=None,  # CLIP removed from decision
             confidence=scoring.score,
             reasons=reasons,
-            hard_negatives=[h.model_dump() for h in scoring.hard_negatives],
-            positive_factors=[p.model_dump() for p in scoring.positive_factors],
-            unknown=[],
             evaluated_at=now,
             scoring_version=SCORING_VERSION,
-            prompt_version="deterministic-v2",
         )
 
         await self._save(result)
@@ -245,13 +238,10 @@ class DecisionService:
             profile_id=result.profile_id,
             decision=result.decision.value,
             combined_score=result.combined_score,
-            llm_score=result.llm_score,
-            clip_score=result.clip_score,
             confidence=result.confidence,
             reasons=result.reasons_json(),
             scoring_version=result.scoring_version,
             evaluated_at=result.evaluated_at,
-            prompt_version=result.prompt_version,
         )
         result.id = row_id
 
@@ -277,13 +267,10 @@ class DecisionService:
             profile_id=row["profile_id"],
             decision=AIDecision(row["decision"]),
             combined_score=row.get("combined_score", 0.0),
-            llm_score=row.get("llm_score"),
-            clip_score=row.get("clip_score"),
             confidence=row.get("confidence", 0.0),
             reasons=reasons,
             evaluated_at=row.get("evaluated_at", ""),
             scoring_version=row.get("scoring_version", "v1"),
-            prompt_version=row.get("prompt_version", "deterministic-v2"),
         )
 
     def _log(self, result: AIDecisionResult, profile: Profile) -> None:

@@ -12,16 +12,6 @@ class Dedup:
         self._max_size = max_size
         self._seen: set[int] = set()
 
-    def is_duplicate(self, message_id: int) -> bool:
-        """Проверяет, было ли сообщение уже обработано (check + mark)."""
-        if message_id in self._seen:
-            logger.debug(f"Дубликат: message_id={message_id}")
-            return True
-        self._seen.add(message_id)
-        if len(self._seen) > self._max_size:
-            self._evict()
-        return False
-
     def is_known(self, message_id: int) -> bool:
         """Только проверка БЕЗ добавления (dedup ДО save_raw_message).
 

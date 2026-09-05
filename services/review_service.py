@@ -25,7 +25,6 @@ from models.human_decision import (
 
 if TYPE_CHECKING:
     from database.database import Database
-    from models.decision import AIDecision
     from models.profile import Profile
     from services.profile_service import ProfileService
 
@@ -38,12 +37,9 @@ class ReviewItem:
     ai_decision_id: int
     ai_decision: str
     combined_score: float
-    llm_score: float | None
-    clip_score: float | None
     confidence: float
     reasons: list[str] = field(default_factory=list)
     scoring_version: str = "v1"
-    prompt_version: str = "llm-v1"
     filter_decision: str = ""
 
 
@@ -74,18 +70,6 @@ class ReviewService:
     async def get_pending_count(self) -> int:
         """Количество неразобранных AI-оценок."""
         return await self._db.get_pending_count()
-
-    async def get_profile_for_review(self, profile_id: int) -> ReviewItem | None:
-        """Возвращает элемент для рецензии по конкретному профилю.
-
-        Использует последнюю неразобранную AI-оценку профиля, если она есть.
-        """
-        row = await self._db.get_latest_ai_decision(profile_id)
-        if row is None:
-            return None
-        if await self._db.is_human_reviewed(profile_id, row["id"]):
-            return None
-        return await self._build_review_item(row)
 
     # ── Сохранение решения ───────────────────────────────────────────
 
@@ -148,14 +132,6 @@ class ReviewService:
         """Получает историю рецензий профиля (новейшие сверху)."""
         return await self._db.get_human_decision_history(profile_id)
 
-    async def is_reviewed(self, profile_id: int, ai_decision_id: int) -> bool:
-        """Проверяет, рассмотрена ли конкретная AI-оценка."""
-        return await self._db.is_human_reviewed(profile_id, ai_decision_id)
-
-    async def latest_for_profile(self, profile_id: int) -> dict | None:
-        """Последняя рецензия профиля."""
-        return await self._db.get_latest_human_decision(profile_id)
-
     async def resolve_ai_decision(self, ai_decision_id: int) -> int | None:
         """Возвращает profile_id для AI-решения или None, если его нет.
 
@@ -215,11 +191,8 @@ class ReviewService:
             ai_decision_id=row["id"],
             ai_decision=row.get("decision", ""),
             combined_score=row.get("combined_score", 0.0),
-            llm_score=row.get("llm_score"),
-            clip_score=row.get("clip_score"),
             confidence=row.get("confidence", 0.0),
             reasons=reasons,
             scoring_version=row.get("scoring_version", "v1"),
-            prompt_version=row.get("prompt_version", "llm-v1"),
             filter_decision=filter_dec,
         )

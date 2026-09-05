@@ -16,8 +16,6 @@ from collectors.dedup import Dedup
 from collectors.raw_queue import RawQueue
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from collectors.stats import CollectorStats
-from collectors.anti_block import RateLimiter
-from collectors.media_analyzer import MediaAnalyzer
 from app.config import AppConfig, TelegramConfig, FiltersConfig, DvinchikConfig
 from database.database import Database
 from services.profile_service import ProfileService
@@ -89,19 +87,20 @@ def make_event(
 # ==================== DEDUP ====================
 
 class TestDedup:
-    def test_first_time_not_duplicate(self) -> None:
+    def test_unknown_not_known(self) -> None:
         d = Dedup()
-        assert d.is_duplicate(1) is False
+        assert d.is_known(1) is False
 
-    def test_second_time_is_duplicate(self) -> None:
+    def test_mark_then_known(self) -> None:
         d = Dedup()
-        d.is_duplicate(1)
-        assert d.is_duplicate(1) is True
+        d.mark(1)
+        assert d.is_known(1) is True
 
     def test_different_ids(self) -> None:
         d = Dedup()
-        assert d.is_duplicate(1) is False
-        assert d.is_duplicate(2) is False
+        d.mark(1)
+        assert d.is_known(1) is True
+        assert d.is_known(2) is False
 
 
 # ==================== RAW QUEUE ====================
@@ -152,27 +151,6 @@ class TestCollectorStats:
     def test_uptime(self) -> None:
         s = CollectorStats()
         assert s.uptime >= 0
-
-
-# ==================== RATE LIMITER ====================
-
-class TestRateLimiter:
-    def test_can_act_initially(self) -> None:
-        rl = RateLimiter(max_per_day=5)
-        assert rl.can_act() is True
-
-    def test_remaining_today(self) -> None:
-        rl = RateLimiter(max_per_day=40)
-        assert rl.remaining_today == 40
-
-
-# ==================== MEDIA ANALYZER ====================
-
-class TestMediaAnalyzer:
-    def test_stub(self) -> None:
-        ma = MediaAnalyzer()
-        result = asyncio.get_event_loop().run_until_complete(ma.analyze(b"fake"))
-        assert result["analyzed"] is False
 
 
 # ==================== COLLECTOR INTEGRATION ====================
@@ -458,14 +436,16 @@ class TestIdempotency:
         key = (1234060895, 777)
 
         async def check() -> bool:
-            return d.is_duplicate(key)
+            seen = d.is_known(key)
+            d.mark(key)
+            return seen
 
         loop = asyncio.get_event_loop()
         results = loop.run_until_complete(
             asyncio.gather(*[check() for _ in range(50)])
         )
-        # is_duplicate синхронный и атомарный в asyncio — только один
-        # первый вызов возвращает False, остальные — True (нет гонки)
+        # is_known/mark синхронны и атомарны в asyncio (нет await между ними):
+        # первая проверка видит False до любого mark, остальные — True (нет гонки)
         assert results.count(False) == 1
         assert results.count(True) == 49
 
@@ -513,7 +493,7 @@ class TestRawWorker:
         event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=100)
         loop.run_until_complete(collector._handle_new_message(event))
         # Хендлер только ставит в очередь — сам pipeline НЕ выполняется
-        assert collector._dedup.is_duplicate((1234060895, 100)) is True
+        assert collector._dedup.is_known((1234060895, 100)) is True
         process.assert_not_called()
 
     def test_message_enqueued(self) -> None:
@@ -1952,8 +1932,6 @@ class TestCollectorAutoActions:
         return AIDecisionResult(
             decision=decision,
             combined_score=0.8,
-            llm_score=None,
-            clip_score=None,
             confidence=0.7,
             reasons=["test"],
             scoring_version="deterministic-v2",
@@ -2254,7 +2232,6 @@ class TestCollectorAutoActions:
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config()
-        config.auto_actions.start_command = "\U00002728\U0001F50D"  # ✨🔍
         collector = self._make_collector(
             config, self._make_decision(AIDecision.DISLIKE), auto_client, other_client
         )
@@ -2290,7 +2267,6 @@ class TestCollectorAutoActions:
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config()
-        config.auto_actions.start_command = "\U00002728\U0001F50D"  # ✨🔍
         collector = self._make_collector(
             config, self._make_decision(AIDecision.DISLIKE), auto_client, other_client
         )

@@ -234,8 +234,6 @@ class ReviewBot:
             lines += ["", "Description:", p.description[:200]]
         lines += ["", _SEP, "", "FILTER", "", item.filter_decision or "—", "",
                   _SEP, "", "AI SCORING", "",
-                  f"LLM:        {_fmt(item.llm_score)}",
-                  f"CLIP:       {_fmt(item.clip_score)}",
                   f"Combined:   {item.combined_score:.3f}",
                   f"Confidence: {item.confidence:.2f}", "",
                   _SEP, "", "AI DECISION:", "", item.ai_decision, ""]
@@ -244,8 +242,7 @@ class ReviewBot:
             for r in item.reasons:
                 lines.append(f"  + {r}")
         lines += ["", _SEP, "",
-                  f"Scoring: {item.scoring_version}",
-                  f"Prompt:  {item.prompt_version}", "",
+                  f"Scoring: {item.scoring_version}", "",
                   _SEP]
         return "\n".join(lines)
 
@@ -347,8 +344,6 @@ class ReviewBot:
             f"REVIEW:  {c.get('REVIEW',0)}",
             f"DISLIKE: {c.get('DISLIKE',0)}", "",
             "Average:", "",
-            f"  LLM score:    {_fmt(avg['llm_score'])}",
-            f"  CLIP score:   {_fmt(avg['clip_score'])}",
             f"  Combined:     {_fmt(avg['combined_score'])}",
             f"  Confidence:   {_fmt(avg['confidence'])}", "",
             f"AI decisions reviewed: {stats['reviewed']}",

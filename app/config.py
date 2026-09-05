@@ -124,22 +124,6 @@ class FiltersConfig(BaseModel):
         self.city_allowed = self.city.allowed
 
 
-class LimitsConfig(BaseModel):
-    """Лимиты действий."""
-
-    max_likes_per_day: int = 40
-    min_delay_minutes: int = 90
-    max_delay_minutes: int = 240
-
-    @field_validator("max_likes_per_day")
-    @classmethod
-    def likes_positive(cls, v: int) -> int:
-        if v < 0:
-            msg = "max_likes_per_day не может быть отрицательным"
-            raise ValueError(msg)
-        return v
-
-
 class AutoActionsConfig(BaseModel):
     """Настройки авто-действий (Stage 7, SEMI_AUTO).
 
@@ -154,9 +138,6 @@ class AutoActionsConfig(BaseModel):
     account_session: str = ""
     # Интервал между действиями в секундах (6/мин ≈ 10 сек).
     interval_sec: float = 10.0
-    # Команда запуска потока отключена по умолчанию: бот принимает её только
-    # в определённом состоянии, которое клиент достоверно не определяет.
-    start_command: str = ""
     # Chat ID для уведомлений (user_id владельца). Если >0 — уведомления идут
     # именно туда. Если 0 — авто-режим: уведомление шлётся на «другой» аккаунт
     # из списка (тот, что не является авто-аккаунтом), т.е. с Бармалея на
@@ -214,60 +195,6 @@ class ManualReviewConfig(BaseModel):
         return v
 
 
-class CLIPConfig(BaseModel):
-    """Настройки CLIP-анализа фото (оставлен для обратной совместимости)."""
-
-    enabled: bool = False
-    model: str = "clip-vit-base-patch32"
-
-
-class LLMConfig(BaseModel):
-    """Настройки LLM (УСТАРЕЛО — не используется в детерминированном scoring)."""
-
-    enabled: bool = False
-    provider: str = "openai"
-    model: str = "gpt-4o-mini"
-    api_key: str = ""
-    timeout: int = 30
-    max_retries: int = 2
-
-
-class RemoteAIConfig(BaseModel):
-    """Настройки удалённого AI-сервера (УСТАРЕЛО)."""
-
-    base_url: str = "http://localhost:8000"
-    timeout: int = 60
-    max_retries: int = 2
-    api_key: str = ""
-
-    def api_key_or_none(self) -> str | None:
-        """Возвращает API key или None, если он пуст."""
-        return self.api_key.strip() or None
-
-
-class DecisionWeightsConfig(BaseModel):
-    """Веса источников для объединённого скора (УСТАРЕЛО)."""
-
-    llm: float = 0.70
-    clip: float = 0.30
-
-    @field_validator("llm", "clip")
-    @classmethod
-    def weight_in_range(cls, v: float) -> float:
-        if not (0.0 <= v <= 1.0):
-            msg = "Вес должен быть от 0.0 до 1.0"
-            raise ValueError(msg)
-        return v
-
-    @model_validator(mode="after")
-    def weights_not_all_zero(self) -> DecisionWeightsConfig:
-        """Хотя бы один вес должен быть больше нуля."""
-        if self.llm == 0.0 and self.clip == 0.0:
-            msg = "Хотя бы один вес (llm/clip) должен быть больше нуля"
-            raise ValueError(msg)
-        return self
-
-
 class DecisionConfig(BaseModel):
     """Настройки Decision Engine.
 
@@ -278,11 +205,9 @@ class DecisionConfig(BaseModel):
 
     like_threshold: float = 0.75
     review_threshold: float = 0.50
-    min_confidence: float = 0.60
     scoring_version: str = "deterministic-v2"
-    weights: DecisionWeightsConfig = DecisionWeightsConfig()
 
-    @field_validator("like_threshold", "review_threshold", "min_confidence")
+    @field_validator("like_threshold", "review_threshold")
     @classmethod
     def threshold_in_range(cls, v: float) -> float:
         if not (0.0 <= v <= 1.0):
@@ -302,52 +227,10 @@ class DecisionConfig(BaseModel):
         return self
 
 
-class ImagesConfig(BaseModel):
-    """Настройки скачивания изображений (УСТАРЕЛО — CLIP отключён)."""
-
-    enabled: bool = False
-    max_images: int = 5
-    max_size_mb: int = 10
-    timeout: int = 30
-
-
-class ScoringConfig(BaseModel):
-    """Настройки детерминированного скоринга (Stage 8)."""
-
-    base_score: float = 0.5
-    positive_weight: float = 0.10
-    positive_cap: float = 0.35
-    negative_penalty: float = 0.50
-
-    @field_validator("base_score", "positive_weight", "positive_cap", "negative_penalty")
-    @classmethod
-    def weight_in_range(cls, v: float) -> float:
-        if not (0.0 <= v <= 1.0):
-            msg = "Значение должно быть от 0.0 до 1.0"
-            raise ValueError(msg)
-        return v
-
-
 class AIConfig(BaseModel):
-    """Настройки AI Scoring (детерминированный scoring, Stage 8)."""
+    """Настройки scoring-решения (детерминированный, Stage 8)."""
 
-    enabled: bool = False
-    backend: str = "local"
-    clip: CLIPConfig = CLIPConfig()
-    llm: LLMConfig = LLMConfig()
-    scoring: ScoringConfig = ScoringConfig()
     decision: DecisionConfig = DecisionConfig()
-    remote: RemoteAIConfig = RemoteAIConfig()
-    images: ImagesConfig = ImagesConfig()
-
-    @field_validator("backend")
-    @classmethod
-    def backend_valid(cls, v: str) -> str:
-        allowed = {"local", "remote"}
-        if v not in allowed:
-            msg = f"backend должен быть {allowed}, получено: {v}"
-            raise ValueError(msg)
-        return v
 
 
 class LoggingConfig(BaseModel):
@@ -365,7 +248,6 @@ class ProjectConfig(BaseModel):
 class DvinchikConfig(BaseModel):
     """Настройки определения Дайвинчика."""
 
-    enabled: bool = True
     chat_id: int = 1234060895
 
 
@@ -388,7 +270,6 @@ class AppConfig(BaseModel):
     sources: SourcesConfig = SourcesConfig()
     filters: FiltersConfig = FiltersConfig()
     ai: AIConfig = AIConfig()
-    limits: LimitsConfig = LimitsConfig()
     auto_actions: AutoActionsConfig = AutoActionsConfig()
     control: ControlConfig = ControlConfig()
     manual_review: ManualReviewConfig = ManualReviewConfig()
@@ -436,8 +317,6 @@ class AppConfig(BaseModel):
         Используется ControlBot для персистентного переключения режима,
         который переживает restart приложения.
         """
-        from core.types import Mode as _Mode
-
         if path.exists():
             with open(path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}

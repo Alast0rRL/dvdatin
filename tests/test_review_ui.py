@@ -51,14 +51,14 @@ def populate(db: Database, review: ReviewService):
     run(db.save_filter_result(pid, "PASS", "[]", 2, "now"))
     aid_reviewed = run(db.save_ai_decision(
         profile_id=pid, decision="REVIEW", combined_score=0.55,
-        llm_score=0.5, clip_score=None, confidence=0.5, reasons="[]",
-        scoring_version="v1", prompt_version="llm-v1",
+        confidence=0.5, reasons="[]",
+        scoring_version="v1",
         evaluated_at="2026-01-01T00:00:01"))
     run(db.save_human_decision(pid, aid_reviewed, "REJECT", "DISAGREEMENT", "now"))
     run(db.save_ai_decision(
         profile_id=pid, decision="LIKE", combined_score=0.78,
-        llm_score=0.7, clip_score=0.97, confidence=0.88, reasons="[]",
-        scoring_version="v1", prompt_version="llm-v1",
+        confidence=0.88, reasons="[]",
+        scoring_version="v1",
         evaluated_at="2026-01-01T00:00:02"))
     return pid
 
@@ -113,7 +113,7 @@ class TestReviewBot:
 
         client = MagicMock()
         config = make_config()
-        analytics = AnalyticsService(tmp_db, config)
+        analytics = AnalyticsService(tmp_db)
         bot = ReviewBot(client, config, review_service=review, analytics_service=analytics)
 
         event = MagicMock()
@@ -143,14 +143,14 @@ class TestReviewBot:
         review = ReviewService(tmp_db, ProfileService(tmp_db))
         pid = populate(tmp_db, review)
         cfg = make_config()
-        ga = AnalyticsService(tmp_db, cfg)
+        ga = AnalyticsService(tmp_db)
         bot = ReviewBot(MagicMock(), cfg, review_service=review, analytics_service=ga)
 
         item = run(review.get_next())
         assert item is not None
         assert item.ai_decision == "LIKE"  # REVIEW уже рассмотрен, остался LIKE
         t = bot._render_review(item)
-        assert "AI REVIEW" in t and "Anna, 19" in t and "0.780" in t and "llm-v1" in t
+        assert "AI REVIEW" in t and "Anna, 19" in t and "0.780" in t
 
         p = run(bot._render_profile(pid))
         assert "LATEST AI DECISION" in p and "HISTORY" in p and "REJECT" in p

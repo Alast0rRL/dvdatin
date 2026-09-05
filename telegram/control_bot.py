@@ -86,15 +86,7 @@ class ControlBot:
     def _is_authorized(self, sender_id: int | None) -> bool:
         return sender_id in self._allowed
 
-    def _deny(self, event: events.NewMessage.Event) -> None:
-        logger.warning(f"ControlBot: отказ команды от user_id={event.sender_id}")
-
     # ── Команды ──────────────────────────────────────────────────────
-
-    async def _cmd_start(self, event: events.NewMessage.Event) -> None:
-        if not self._is_authorized(event.sender_id):
-            return
-        await self._send_status(event)
 
     async def _cmd_status(self, event: events.NewMessage.Event) -> None:
         if not self._is_authorized(event.sender_id):

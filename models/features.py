@@ -1,5 +1,4 @@
 # Модели для детерминированного скоринга: признаки, результаты, решения.
-# Заменяет LLM-зависимые модели (LLMScore, HardNegative, PositiveFactor).
 # Telegram-free, deterministic, fully testable.
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ class FeatureType(StrEnum):
 
     HARD_NEGATIVE = "hard_negative"
     POSITIVE = "positive"
-    NEUTRAL = "neutral"
 
 
 class Feature(BaseModel):
@@ -25,17 +23,13 @@ class Feature(BaseModel):
         code: Уникальный код правила (H01, P01 и т.д.).
         type: Тип признака.
         name: Читаемое имя правила.
-        value: Значение (True — признак обнаружен).
         evidence: Точная цитата из анкеты (обязательно).
-        source: Источник (description, name, city и т.д.).
     """
 
     code: str
     type: FeatureType
     name: str
-    value: bool = True
     evidence: str = ""
-    source: str = "description"
 
     model_config = ConfigDict(use_enum_values=False)
 
@@ -76,19 +70,6 @@ class ScoringResult(BaseModel):
         for f in self.positive_factors:
             reasons.append({"code": f.code, "type": "positive", "name": f.name, "evidence": f.evidence})
         return json.dumps(reasons, ensure_ascii=False)
-
-    def reasons_flat(self) -> list[str]:
-        """Плоский список причин для совместимости со старым API."""
-        reasons = []
-        for f in self.hard_negatives:
-            ev = f"«{f.evidence}»" if f.evidence else ""
-            reasons.append(f"HARD_NEGATIVE:{f.name}:{ev}")
-        for f in self.positive_factors:
-            ev = f"«{f.evidence}»" if f.evidence else ""
-            reasons.append(f"POSITIVE:{f.name}:{ev}")
-        if not reasons:
-            reasons.append("NO_FEATURES_FOUND")
-        return reasons
 
 
 # Версия scoring-системы (сохраняется в БД).

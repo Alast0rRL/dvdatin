@@ -170,19 +170,6 @@ class AutoActionEngine:
         )
         return action
 
-    async def start_stream(self) -> bool:
-        """Отправляет явно настроенную команду открытия потока, если она есть."""
-        if not self.enabled:
-            return False
-        if not self._config.start_command:
-            logger.warning(
-                "AutoAction: автозапуск потока отключён — команда не задана"
-            )
-            return False
-        await self._send(self._config.start_command)
-        logger.info(f"AutoAction: запущен поток анкет ({self._config.start_command!r})")
-        return True
-
     async def send_text(self, text: str) -> bool:
         """Отправляет произвольный текст в чат (нажатие reply-кнопки Leo).
 
