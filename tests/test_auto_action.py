@@ -574,6 +574,7 @@ class TestForwardAllPhotos:
     def make_db(self, rows: list[dict]) -> AsyncMock:
         db = MagicMock()
         db.get_profile_messages = AsyncMock(return_value=rows)
+        db.has_auto_action = AsyncMock(return_value=False)
         return db
 
     def test_forwards_all_photos_for_like(self) -> None:
@@ -681,6 +682,7 @@ class TestForwardAllPhotos:
         client = make_client()
         db = MagicMock()
         db.get_profile_messages = AsyncMock(side_effect=RuntimeError("db"))
+        db.has_auto_action = AsyncMock(return_value=False)
         e = make_engine(
             client=client,
             config=make_auto_config(notify_chat_id=8525808108),
@@ -695,4 +697,98 @@ class TestForwardAllPhotos:
         assert result == "LIKE"
         client.forward_messages.assert_awaited_once_with(
             8525808108, 900, from_peer=1234060895
+        )
+
+
+class TestNoDuplicateNotify:
+    """Повторная карточка той же личности не дублирует уведомление владельцу.
+
+    Реакция (❤️/👎) шлётся Leo на КАЖДУЮ карточку (лента не замирает), но
+    пересылка владельцу выполняется только для ПЕРВОГО авто-действия профиля.
+    Иначе повтор одной анкеты заваливал владельца пересылками всей истории.
+    """
+
+    def test_dislike_repeat_skips_notify_but_sends_reaction(self) -> None:
+        """DISLIKE на повторной карточке → 👎 уходит, пересылка пропущена."""
+        client = make_client()
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=[{"telegram_message_id": 500}])
+        db.has_auto_action = AsyncMock(return_value=True)
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.DISLIKE, profile_id=7,
+                message_id=500, reasons=["HARD_NEGATIVE:smoking:курю"],
+            )
+        )
+        assert result == "DISLIKE"
+        # Реакция в Leo отправлена, пересылка владельцу — нет.
+        client.send_message.assert_awaited_once()
+        client.forward_messages.assert_not_awaited()
+
+    def test_review_repeat_skips_notify(self) -> None:
+        """REVIEW на повторной карточке → уведомление «нужное действие» не шлётся."""
+        client = make_client()
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=[{"telegram_message_id": 501}])
+        db.has_auto_action = AsyncMock(return_value=True)
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.REVIEW, profile_id=7,
+                message_id=501, reasons=["NO_FEATURES_FOUND"],
+            )
+        )
+        assert result == "REVIEW"
+        client.forward_messages.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+
+    def test_first_action_notifies(self) -> None:
+        """Первый контакт профиля → уведомление отправляется."""
+        client = make_client()
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=[{"telegram_message_id": 502}])
+        db.has_auto_action = AsyncMock(return_value=False)
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.DISLIKE, profile_id=7,
+                message_id=502, reasons=["ok"],
+            )
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 502, from_peer=1234060895
+        )
+
+    def test_db_error_falls_back_to_notify(self) -> None:
+        """Ошибка has_auto_action в БД → уведомление всё равно шлётся (fail-open)."""
+        client = make_client()
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=[{"telegram_message_id": 503}])
+        db.has_auto_action = AsyncMock(side_effect=RuntimeError("db"))
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=7,
+                message_id=503, reasons=["ok"],
+            )
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 503, from_peer=1234060895
         )

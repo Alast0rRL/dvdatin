@@ -137,6 +137,32 @@ class TestFeatureExtractor:
         result = self.extractor.extract(description="ищу друга")
         assert any(f.code == "H01" for f in result.hard_negatives)
 
+    def test_openness_phrases_not_h01(self) -> None:
+        """«Можно пообщаться/погулять» — НЕ «не ищет отношения» (ложный DISLIKE).
+
+        Хард-негатив H01 должен срабатывать только на однозначные
+        формулировки. «скучно, можно пообщаться или погулять 😳» — обычная
+        открытость в анкете знакомств, а не отказ от отношений.
+        """
+        result = self.extractor.extract(
+            description="скучно, можно пообщаться или погулять 😳 "
+                        "занимаюсь спортом, переодически работаю, учусь"
+        )
+        codes = [f.code for f in result.hard_negatives]
+        assert "H01" not in codes
+
+    def test_bare_poobshchatsya_not_h01(self) -> None:
+        """Голое «пообщаться» больше не считается хард-негативом."""
+        result = self.extractor.extract(description="Скучно, пообщаться бы(")
+        codes = [f.code for f in result.hard_negatives]
+        assert "H01" not in codes
+
+    def test_bare_obshchenie_not_h01(self) -> None:
+        """«ищу общение» без уточнения — недостаточно однозначно для H01."""
+        result = self.extractor.extract(description="ищу общение")
+        codes = [f.code for f in result.hard_negatives]
+        assert "H01" not in codes
+
     def test_has_boyfriend_h02(self) -> None:
         result = self.extractor.extract(description="у меня есть парень")
         assert any(f.code == "H02" for f in result.hard_negatives)

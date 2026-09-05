@@ -1,7 +1,7 @@
-# DvAI Test Baseline (FROZEN)
-# count=463
-# generated=2026-09-05 11:01:14
-# status=463 passed (post-simplification: dead code/AI-legacy removed)
+﻿# DvAI Test Baseline (FROZEN)
+# count=470
+# generated=2026-09-05 12:19:40
+# status=470 passed (post-simplification: dead code/AI-legacy removed)
 tests/test_ai.py::TestCollectorDecisionIntegration::test_pass_triggers_decision
 tests/test_ai.py::TestCollectorDecisionIntegration::test_reject_passes_filter_result_to_decision
 tests/test_ai.py::TestCollectorDecisionIntegration::test_review_passes_filter_result_to_decision
@@ -105,6 +105,10 @@ tests/test_auto_action.py::TestForwardAllPhotos::test_single_message_stays_singl
 tests/test_auto_action.py::TestForwardAllPhotos::test_no_db_falls_back_to_single_message
 tests/test_auto_action.py::TestForwardAllPhotos::test_fallback_message_included_when_missing_in_db
 tests/test_auto_action.py::TestForwardAllPhotos::test_db_error_does_not_break_forward
+tests/test_auto_action.py::TestNoDuplicateNotify::test_dislike_repeat_skips_notify_but_sends_reaction
+tests/test_auto_action.py::TestNoDuplicateNotify::test_review_repeat_skips_notify
+tests/test_auto_action.py::TestNoDuplicateNotify::test_first_action_notifies
+tests/test_auto_action.py::TestNoDuplicateNotify::test_db_error_falls_back_to_notify
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_successful_action_creates_one_log_and_updates_status
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_repeat_show_of_same_profile_gets_another_action
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_failed_telegram_action_has_no_log
@@ -250,6 +254,9 @@ tests/test_deterministic_scoring.py::TestProfileNormalizer::test_city_variants
 tests/test_deterministic_scoring.py::TestProfileNormalizer::test_unicode_emoji
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_not_relationships_h01
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_looking_for_friend_h01
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_openness_phrases_not_h01
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_bare_poobshchatsya_not_h01
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_bare_obshchenie_not_h01
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_has_boyfriend_h02
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_my_boyfriend_h02
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_smoking_h03

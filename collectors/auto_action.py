@@ -241,6 +241,14 @@ class AutoActionEngine:
         """
         if self._client is None or message_id is None:
             return
+        if await self._has_prior_action(profile_id):
+            # Реакция уже отправлена (лента движется), но владельца повторно
+            # не дёргаем — он уже получил уведомление по этой анкете.
+            logger.info(
+                "AutoAction: профиль уже обработан ранее, "
+                "повторное уведомление пропущено"
+            )
+            return
         target = await self._resolve_notify_target()
         if target is None:
             return
@@ -258,6 +266,22 @@ class AutoActionEngine:
         except Exception as e:
             logger.error(f"AutoAction: ошибка уведомления: {e}")
 
+    async def _has_prior_action(self, profile_id: int | None) -> bool:
+        """Есть ли уже зафиксированное авто-действие по профилю.
+
+        Повторная карточка той же личности (новый ``telegram_message_id``)
+        получает реакцию, чтобы лента Leo не замирала, но уведомление
+        владельцу не дублируется — иначе повтор одной анкеты заваливал бы его
+        пересылками («несколько анкет разом» из истории повторов).
+        """
+        if profile_id is None or self._db is None:
+            return False
+        try:
+            return await self._db.has_auto_action(profile_id)
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось проверить авто-действия профиля: {e}")
+            return False
+
     async def _notify_needs_action(
         self,
         profile_id: int | None = None,
@@ -273,6 +297,14 @@ class AutoActionEngine:
         — главное, что владельцу нужно действие.
         """
         if self._client is None or message_id is None:
+            return
+        if await self._has_prior_action(profile_id):
+            # Повторное появление REVIEW-анкеты уже не требует нового действия
+            # владельца: уведомление по ней уже было отправлено ранее.
+            logger.info(
+                "AutoAction: REVIEW-профиль уже обработан ранее, "
+                "повторное уведомление пропущено"
+            )
             return
         target = await self._resolve_notify_target()
         if target is None:
