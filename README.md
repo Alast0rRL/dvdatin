@@ -176,7 +176,7 @@ python -m pytest tests/ -v     # 463 теста
 
 ### Удалено (упрощение кодовой базы)
 
-- **Весь LLM/CLIP-стек**: `services/llm_service.py`, `services/clip_service.py`, `services/ai_scoring_service.py`, `services/remote_llm_client.py`, `services/remote_clip_client.py`, `models/ai.py`, `collectors/media_analyzer.py`, `collectors/anti_block.py`, `tests/e2e_ai.py`, `tests/test_ai_scoring.py`. Ubuntu AI Server больше не используется. Документарные артефакты деплоя (`deploy/llm-v2_prompt.md`, `deploy/llm-v3_prompt.md`, `deploy/README.md`, `deploy/run.sh`, `deploy/dvai.service`) оставлены в репозитории как read-only справочный материал.
+- **Весь LLM/CLIP-стек**: `services/llm_service.py`, `services/clip_service.py`, `services/ai_scoring_service.py`, `services/remote_llm_client.py`, `services/remote_clip_client.py`, `models/ai.py`, `collectors/media_analyzer.py`, `collectors/anti_block.py`, `tests/e2e_ai.py`, `tests/test_ai_scoring.py`. Ubuntu AI Server больше не используется. Актуальный runbook — `deploy/DEPLOY.md` (сервер `144.31.118.3:2200`, ssh-ключ `homekey`). `deploy/README.md` и `deploy/dvai.service` — справочные артефакты старой инфраструктуры.
 - **Пустые плейсхолдер-пакеты**: `dialogs/`, `filters/`, `managers/`, `prompts/`, `utils/`.
 - **Тест-онли аналитика**: `get_score_distribution`, `get_ai_breakdown`, `get_filter_breakdown`, `get_scoring_version_breakdown` (AnalyticsService теперь `AnalyticsService(db)`).
 - **Мёртвый код**: `update_profile_status`, `get_profiles_last_filter`, `reasons_flat()`, `get_analytics_logger()`/`ANALYTICS_LOG`, `_has_action_buttons`, `_deny`, `_cmd_start`, `AutoActionEngine.start_stream`.

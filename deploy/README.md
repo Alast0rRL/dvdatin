@@ -1,5 +1,8 @@
 # DvAI — Deploy Runbook (Ubuntu)
 
+> ⚠️ **LEGACY** — описание старой инфраструктуры (Remote AI: Ollama + CLIP).
+> LLM/CLIP-стек удалён (Stage 8). Актуальный runbook: [`deploy/DEPLOY.md`](DEPLOY.md).
+
 Готово к деплою в OBSERVE-режиме: Telegram collector → SQLite → RawQueue →
 Worker → Remote AI (Ollama + CLIP через прокладку). Никаких自动ических
 Telegram-действий (OBSERVE/REVIEW гарантирован архитектурно).
