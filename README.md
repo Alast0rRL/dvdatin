@@ -1,7 +1,7 @@
 # DvAI — Система автоматизации знакомств в Telegram
 
 > **D**ayvinchik **AI** — коллектор + детерминированный скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» (Telegram).
-> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO)** — детерминированный скоринг; на анкеты с авто-аккаунта отправляются `❤️`/`👎`, на AI-REVIEW бот ждёт ручного решения владельца. Полный AUTO не реализован.
+> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO)** — детерминированный скоринг; на анкеты с авто-аккаунта отправляются `❤️`/`👎` (и цепочка «Берем)» для информативных), на AI-REVIEW бот ждёт ручного решения владельца. Полный AUTO не реализован.
 
 ---
 
@@ -11,10 +11,10 @@
 - **Классификация и парсинг анкет** (`dvinchik_parser.py`): PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN; выделение имени/возраста/города/описания; нормализация городов (`city_normalizer.py`); дедупликация по fingerprint (in-memory + `UNIQUE` в БД).
 - **Multi-account**: несколько Telegram-аккаунтов в `telegram.accounts`, общий pipeline, одно сообщение обрабатывается один раз.
 - **Фильтрация** (`services/filter_engine.py`, `services/filter_service.py`): возраст/город/полнота данных → PASS / REJECT / REVIEW; правила из `config.yaml` (`filters:`), история в `filter_results`.
-- **Детерминированный скоринг (Stage 8)**: `Profile.text` → `profile_normalizer` → `feature_extractor` (правила H01–H09 / P01–P04; персональная калибровка в `config/preferences.yaml`) → `score_engine` → `decision_service` → **LIKE / REVIEW / DISLIKE**. Без LLM/CLIP/сети: один и тот же текст всегда даёт один и тот же результат. `DecisionService.evaluate()` считается для **всех** результатов фильтра. Хард-негатив H01 («Не ищет отношения») срабатывает только на однозначные формулировки («ищу друга», «не ищу отношения», «просто ищу общение») — «можно пообщаться/погулять» это обычная открытость, а не отказ от отношений.
+- **Детерминированный скоринг (Stage 8)**: `Profile.text` → `profile_normalizer` → `feature_extractor` (правила H01–H09 / P01–P04; персональная калибровка в `config/preferences.yaml`) → `score_engine` → `decision_service` → **LIKE / REVIEW / DISLIKE**. Без LLM/CLIP/сети: один и тот же текст всегда даёт один и тот же результат. `DecisionService.evaluate()` считается для **всех** результатов фильтра. Хард-негатив H01 («Не ищет отношения») срабатывает только на однозначные формулировки («ищу друга», «не ищу отношения», «просто ищу общение») — «можно пообщаться/погулять» это обычная открытость, а не отказ от отношений. Решение на основе **информативности** (`informative + clean → LIKE`): достаточно значимых слов (≥10) ИЛИ найден позитивный признак; черновые/короткие, но чистые анкеты → REVIEW. `like_threshold`/`review_threshold` остались в конфиге, но для решения инертны.
 - **Слой предпочтений (SKIP/LIKE)** (`app/preferences.py`): персональные правила в `config/preferences.yaml` (gitignored). SKIP → жёсткий DISLIKE; LIKE-фактор поднимает DISLIKE → REVIEW (анкета не теряется). Инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`: missing/unknown информация → REVIEW, никогда DISLIKE.
 - **Human Review (Stage 6)**: очередь профилей с AI-решением, ручная оценка APPROVE / REJECT / SKIP, метрика **AI/Human Agreement Rate** = AGREEMENT/(AGREEMENT+DISAGREEMENT) (SKIP исключён; `null` при нулевом знаменателе). Telegram-UI (`telegram/review_bot.py`): `/review`, `/profile`, `/stats`, `/ai_stats`, `/disagreements`. CSV-экспорт: `python main.py --export-review`.
-- **Авто-действия (Stage 7, SEMI_AUTO)** (`collectors/auto_action.py`): `❤️`/`👎` на авто-аккаунте по решениям LIKE/DISLIKE; rate-limit `interval_sec`; идемпотентность **по карточке** (`telegram_message_id`); фильтровые не-PASS тоже получают `👎` (лента Leo не замирает); автопродолжение ленты кнопкой «🚀 Смотреть анкеты»; обход капч/проверок Leo (нажимается последняя reply-кнопка, только на явные маркеры капчи). **Уведомления владельцу не дублируются**: реакция шлётся на каждую карточку, но пересылка владельцу — только для первого авто-действия профиля (`db.has_auto_action(profile_id)`), иначе повтор анкеты заваливал бы его историей. Гейт: режим `project.mode ∈ {SEMI_AUTO, AUTO}` + `auto_actions.enabled` + найден клиент по `account_session`. OBSERVE → действий нет.
+- **Авто-действия (Stage 7, SEMI_AUTO)** (`collectors/auto_action.py`): Decision != Action (§30): `DecisionService` возвращает только LIKE/REVIEW/DISLIKE, а что слать в Telegram решает `ActionPolicyResolver` (`models/action.py`). LIKE → `❤️` (LIKE_ONLY) или цепочку «Берем)» ❤️→💌→«Берем)» (LIKE_AND_MESSAGE, только для информативных анкет); DISLIKE → `👎`; rate-limit `interval_sec`; идемпотентность **по карточке + виду действия** (`chat_id`+`telegram_message_id`+`action` — LIKE и MESSAGE независимы); фильтровые не-PASS тоже получают `👎` (лента Leo не замирает); автопродолжение ленты кнопкой «🚀 Смотреть анкеты»; обход капч/проверок Leo (нажимается последняя reply-кнопка, только на явные маркеры капчи). **Уведомления владельцу не дублируются**: реакция шлётся на каждую карточку, но пересылка владельцу — только для первого авто-действия профиля (`db.has_auto_action(profile_id)`), иначе повтор анкеты заваливал бы его историей. Гейт: режим `project.mode ∈ {SEMI_AUTO, AUTO}` + `auto_actions.enabled` + найден клиент по `account_session`. OBSERVE → действий нет.
 - **Manual Review (Stage 8)** (`services/manual_review.py`): когда скоринг выдаёт REVIEW, бот **не действует сам** — пересылает карточку владельцу и ждёт его ручного решения. Исходящее `❤️`/`👎` владельца перехватывается и записывается в файл `data/reviews/review_log.json`/`.md` (только для активных REVIEW-анкет).
 - **Control Panel (Stage 7.5)** (`telegram/control_bot.py`): `/status /mode on|off /stream /recent /help` (+ inline-кнопки) только от `control.allowed_user_ids`; режим меняется на лету и персистится в `config.yaml`.
 - **SAFE по умолчанию**: режимы `project.mode` (OBSERVE / SEMI_AUTO / AUTO). `OBSERVE` только наблюдает и рекомендует; авто-действия включаются только явно.
@@ -32,9 +32,11 @@ Telegram (RAW)
    → PROFILE → upsert_profile (fingerprint-дедуп)
    → FilterService.evaluate(profile) → PASS / REJECT / REVIEW
    → DecisionService.evaluate(profile, filter_result)   # ДЛЯ ВСЕХ результатов
-        профиль → профиль                 normalizer → feature_extractor
+        профиль → profile_normalizer → feature_extractor
         (H01–H09/P01–P04 из preferences.yaml) → score_engine → решение
-   → AutoActionEngine.maybe_act(decision) # только SEMI_AUTO/AUTO (❤️/👎/REVIEW-уведомление)
+        (informative+clean → LIKE; короткая чистая → REVIEW; хард-негатив → DISLIKE)
+   → ActionPolicyResolver(decision, informative) → LIKE_ONLY / LIKE_AND_MESSAGE / DISLIKE_ONLY
+   → AutoActionEngine.maybe_act(policy)  # только SEMI_AUTO/AUTO (❤️/👎/«Берем)»/REVIEW-уведомление)
    → ReviewBot                            # человеческая рецензия (APPROVE/REJECT/SKIP)
 ```
 
@@ -56,7 +58,7 @@ dvdatin/
 ├── main.py                      # Точка входа: конфиг, сборка стека, цикл, --export-review
 ├── run.bat                      # Запуск на Windows (chcp 65001, UTF-8)
 ├── requirements.txt / requirements-dev.txt
-├── AGENTS.md / Roadmap.md / README.md / DvAI_SIMPLIFICATION_REPORT.md
+├── AGENTS.md / Roadmap.md / README.md
 ├── config/
 │   ├── config.example.yaml      # Шаблон (коммитится)
 │   ├── config.yaml              # Живой конфиг (gitignored, секреты)
@@ -87,7 +89,7 @@ dvdatin/
 | `chat_context` | Контекст «последняя анкета чата» |
 | `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
 | `ai_decisions` | Решения DecisionService (LIKE/REVIEW/DISLIKE; `scoring_version=deterministic-v2`) |
-| `auto_actions_log` | Отправленные `❤️`/`👎` (per-card, `telegram_message_id`) |
+| `auto_actions_log` | Отправленные действия per-card + kind (`chat_id`+`telegram_message_id`+`action`): LIKE/DISLIKE/MESSAGE |
 | `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
 
 ### Конфиг (config.yaml)
@@ -125,6 +127,11 @@ auto_actions:
   account_session: "dvai_2"   # сессия авто-аккаунта
   interval_sec: 10.0          # rate-limit между действиями
   notify_chat_id: 0           # уведомления владельцу (0 = выкл)
+  like:
+    enabled: true             # ❤️ (LIKE_ONLY)
+  like_message:
+    enabled: false            # ❤️ + «Берем)» (LIKE_AND_MESSAGE)
+    text: "Берем)"
 
 control:
   enabled: false

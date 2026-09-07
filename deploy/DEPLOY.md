@@ -1,4 +1,4 @@
-# DvAI — Быстрый деплой на сервер (Ubuntu, 144.31.139.206)
+# DvAI — Быстрый деплой на сервер (Ubuntu, 144.31.118.3)
 
 > Шпаргалка «для себя в будущем»: как обновить код и перезапустить прод.
 > Все сервисы и настройки уже развёрнуты — деплой сводится к `git pull` + `systemctl restart`.
@@ -6,14 +6,21 @@
 ## 1. Доступ по SSH
 
 ```bash
-ssh root@144.31.139.206 -p 2222 -i ~/.ssh/id_ed25519
+ssh root@144.31.118.3 -p 2200 -i ~/.ssh/homekey
 ```
 
-- Хост: `144.31.139.206`, порт **2222** (проверено, root + ключ `id_ed25519`).
+- Хост: `144.31.118.3`, порт **2200** (проверено: SSH отвечает, требует publickey),
+  пользователь **root**, ключ **`homekey`** (файл `~/.ssh/homekey`).
+  > ⚠️ Приватный ключ `homekey` на Windows-машине РАЗРАБОТКИ пока отсутствует —
+  > в `~/.ssh` только `id_ed25519`, `id_user`, `mari_server` (все отклонены
+  > сервером: `Permission denied (publickey)`). Для деплоя положить файл
+  > `C:\Users\Hunter\.ssh\homekey` (и опц. `homekey.pub`), после чего
+  > `ssh root@144.31.118.3 -p 2200 -i ~/.ssh/homekey` работает.
 - Проект: `/opt/dvai`, владелец `dvai`, репозиторий подключён к `origin/main`
   (GitHub: `https://github.com/Alast0rRL/dvdatin.git`).
-- В `~/.ssh/config` на Windows уже есть алиасы на этот хост: `server_tunel`
-  (порт 23) и `Senko`. Рабочий прямой вход — `root@144.31.139.206 -p 2222`.
+- В `~/.ssh/config` на Windows алиасы (старый хост `server_tunel`/`Senko` на
+  `144.31.139.206`) НЕ переведены на новый хост — рабочий прямой вход
+  `root@144.31.118.3 -p 2200 -i ~/.ssh/homekey`.
 
 ## 2. Структура на сервере
 
@@ -52,7 +59,7 @@ git commit -m "..."
 git push origin main
 
 # 2) На сервере (root):
-ssh root@144.31.139.206 -p 2222
+ssh root@144.31.118.3 -p 2200 -i ~/.ssh/homekey
 
 cd /opt/dvai
 git pull origin main

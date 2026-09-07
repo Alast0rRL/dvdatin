@@ -10,9 +10,12 @@ import pytest
 from collectors.auto_action import (
     AutoActionEngine,
     DISLIKE_TEXT,
+    LIKE_ACK_MARKERS,
     LIKE_TEXT,
+    MESSAGE_BUTTON_TEXT,
+    MESSAGE_PROMPT_MARKERS,
 )
-from app.config import AutoActionsConfig
+from app.config import AutoActionsConfig, LikeActionConfig, LikeMessageConfig
 from core.types import Mode
 from models.decision import AIDecision
 
@@ -23,7 +26,24 @@ def make_auto_config(**overrides) -> AutoActionsConfig:
         "account_session": "dvai_2",
         "interval_sec": 0.0,  # тесты: без реальной задержки
     }
+    # Flat-переопределения вида like_enabled / like_message_enabled / like_message_text
+    # раскладываем во вложенные like / like_message (Decision != Action, §30).
+    like = {**
+        {"enabled": True},
+    }
+    like_msg = {**
+        {"enabled": False, "text": "Берем)"},
+    }
+    for k in list(overrides):
+        if k == "like_enabled":
+            like["enabled"] = overrides.pop(k)
+        elif k == "like_message_enabled":
+            like_msg["enabled"] = overrides.pop(k)
+        elif k == "like_message_text":
+            like_msg["text"] = overrides.pop(k)
     defaults.update(overrides)
+    defaults["like"] = LikeActionConfig(**like)
+    defaults["like_message"] = LikeMessageConfig(**like_msg)
     return AutoActionsConfig(**defaults)
 
 
@@ -792,3 +812,155 @@ class TestNoDuplicateNotify:
         client.forward_messages.assert_awaited_once_with(
             8525808108, 503, from_peer=1234060895
         )
+
+
+class TestLikeAndMessageChain:
+    """Цепочка «Берем)» (LIKE_AND_MESSAGE, §30): ❤️ → 💌 → «Берем)».
+
+    Только для информативных анкет; требует и ``like.enabled``, и
+    ``like_message.enabled``; сообщение записывается как отдельное действие
+    MESSAGE (независимая идемпотентность).
+    """
+
+    def _engine_with_msg(self, client=None, db=None, **cfg):
+        return make_engine(
+            client=client if client is not None else make_client(),
+            config=make_auto_config(
+                like_message_enabled=True,
+                like_message_text="Берем)",
+                **cfg,
+            ),
+            db=db,
+        )
+
+    def test_informative_like_starts_chain_sends_heart(self) -> None:
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        assert result == "LIKE"
+        # Отправлен только ❤️ (шаг 1), сообщение ждёт ответов Leo.
+        args, _ = client.send_message.call_args
+        assert args[1] == LIKE_TEXT
+        assert len(e._pending_chains) == 1
+        chain = e._pending_chains[100]
+        assert chain["profile_id"] == 5
+
+    def test_like_ack_presses_message_button(self) -> None:
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        client.send_message.reset_mock()
+        loop.run_until_complete(
+            e.step_pending("Лайк отправлен, ждем ответа.", 1234060895)
+        )
+        args, _ = client.send_message.call_args
+        assert args[1] == MESSAGE_BUTTON_TEXT
+        assert e._pending_chains[100]["stage"] == "AWAIT_PROMPT"
+
+    def test_prompt_sends_text_and_records_message(self) -> None:
+        client = make_client()
+        db = MagicMock()
+        db.record_auto_action = AsyncMock()
+        e = self._engine_with_msg(client=client, db=db)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        loop.run_until_complete(e.step_pending("Лайк отправлен.", 1234060895))
+        client.send_message.reset_mock()
+        loop.run_until_complete(
+            e.step_pending("Отправь текст, видео или голосовое(до 15сек).", 1234060895)
+        )
+        args, _ = client.send_message.call_args
+        assert args[1] == "Берем)"
+        db.record_auto_action.assert_awaited_once_with(5, "MESSAGE", "LIKE", 1234060895, 100)
+        # Цепочка завершена (удалена из pending).
+        assert e._pending_chains == {}
+
+    def test_full_chain_end_to_end(self) -> None:
+        client = make_client()
+        db = MagicMock()
+        db.record_auto_action = AsyncMock()
+        e = self._engine_with_msg(client=client, db=db)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        sent: list[str] = []
+        client.send_message.side_effect = lambda c, t: sent.append(t)
+        loop.run_until_complete(e.step_pending("Лайк отправлен, ждем ответа.", 1234060895))
+        loop.run_until_complete(e.step_pending("Отправь текст, видео или голосовое.", 1234060895))
+        assert sent == [MESSAGE_BUTTON_TEXT, "Берем)"]
+        assert e._pending_chains == {}
+
+    def test_unrelated_text_does_not_advance(self) -> None:
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        client.send_message.reset_mock()
+        loop.run_until_complete(e.step_pending("Совсем другой текст", 1234060895))
+        client.send_message.assert_not_called()
+        assert e._pending_chains[100]["stage"] == "AWAIT_LIKE_ACK"
+
+    def test_message_wrong_chat_does_not_advance(self) -> None:
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        client.send_message.reset_mock()
+        loop.run_until_complete(e.step_pending("Лайк отправлен.", 999999))
+        client.send_message.assert_not_called()
+
+    def test_like_message_disabled_sends_only_like(self) -> None:
+        """like_message выключен → только ❤️, цепочка не создаётся."""
+        client = make_client()
+        e = make_engine(
+            client=client,
+            config=make_auto_config(like_message_enabled=False),
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        assert result == "LIKE"
+        args, _ = client.send_message.call_args
+        assert args[1] == LIKE_TEXT
+        assert e._pending_chains == {}
+
+    def test_non_informative_like_is_like_only(self) -> None:
+        """Даже с включённым like_message: неинформативная анкета → только ❤️."""
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=False)
+        )
+        assert result == "LIKE"
+        args, _ = client.send_message.call_args
+        assert args[1] == LIKE_TEXT
+        assert e._pending_chains == {}
+
+    def test_message_db_error_does_not_break(self) -> None:
+        """Ошибка записи MESSAGE в БД → текст уже отправлен, действие не падает."""
+        client = make_client()
+        db = MagicMock()
+        db.record_auto_action = AsyncMock(side_effect=RuntimeError("db"))
+        e = self._engine_with_msg(client=client, db=db)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        loop.run_until_complete(e.step_pending("Лайк отправлен.", 1234060895))
+        loop.run_until_complete(
+            e.step_pending("Отправь текст.", 1234060895)
+        )
+        # «Берем)» всё равно ушло, цепочка завершена.
+        assert e._pending_chains == {}

@@ -213,15 +213,15 @@ class TestDecisionHardFilters:
 
 class TestDecisionSignals:
     def test_positive_feature_only_review(self, tmp_db: Database) -> None:
-        """Одиночный положительный признак (score < like_threshold) → REVIEW."""
+        """Одиночный положительный признак → информативная и чистая → LIKE."""
         config = make_config()
         decision = build_stack(tmp_db, config)
         prof_id = run(insert_profile(
             tmp_db, 7, description="Люблю аниме и мангу"
         ))
         result = run(decision.evaluate(prof_id))
-        # один признак → score = 0.5 + 0.1 = 0.6 < 0.75 → REVIEW
-        assert result.decision == AIDecision.REVIEW
+        # один известный признак (P02) → информативная и чистая → LIKE
+        assert result.decision == AIDecision.LIKE
         assert result.combined_score > 0
 
     def test_multiple_positive_features(self, tmp_db: Database) -> None:
@@ -282,15 +282,15 @@ class TestDecisionConfig:
         assert result.decision == AIDecision.LIKE
 
     def test_high_like_threshold_needs_more_features(self, tmp_db: Database) -> None:
-        """Высокий like_threshold → один признак может не дотянуть до LIKE."""
+        """Решение LIKE не зависит от like_threshold: информативная и чистая → LIKE."""
         config = make_config(like_threshold=0.99)
         decision = build_stack(tmp_db, config)
         prof_id = run(insert_profile(
             tmp_db, 13, description="Люблю аниме"
         ))
         result = run(decision.evaluate(prof_id))
-        # Один признак → score ≈ 0.6, что < 0.99 → REVIEW
-        assert result.decision == AIDecision.REVIEW
+        # Один известный признак → информативная и чистая → LIKE
+        assert result.decision == AIDecision.LIKE
 
 
 # ── DATABASE / versions ──────────────────────────────────────────────

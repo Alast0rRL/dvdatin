@@ -7,4 +7,3 @@ rich>=13.7.0
 loguru>=0.7.2
 pysocks>=1.7.1
 python-socks>=3.0.0
-httpx>=0.27.0

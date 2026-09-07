@@ -389,13 +389,14 @@ class TestScoreEngine:
         assert result.score > 0.6
 
     def test_positive_cap(self) -> None:
-        """Бонус за positive factors ограничен positive_cap."""
+        """Бонус за positive factors ограничен positive_cap (+ бонус информативности)."""
         features = [
             Feature(code=f"P0{i}", type=FeatureType.POSITIVE, name=f"factor{i}")
             for i in range(10)
         ]
         result = self.engine.compute(profile_id=1, hard_negatives=[], positive_factors=features)
-        assert result.score <= 0.5 + 0.35  # base + cap
+        # base + informative_bonus + positive_cap
+        assert result.score <= 0.5 + 0.10 + 0.35
 
     def test_hard_negative_low_score(self) -> None:
         """Есть hard negative → score минимальный."""
@@ -604,7 +605,7 @@ class TestDecisionServiceWithPositive:
         )
 
     def test_spbpu_review(self) -> None:
-        """«учусь в СПбПУ» → score=0.6, REVIEW (ниже порога 0.75)."""
+        """«учусь в СПбПУ» → есть известный признак (P01) → информативная и чистая → LIKE."""
         profile = make_profile(description="учусь в СПбПУ")
         self.filter_service.evaluate = AsyncMock(
             return_value=make_filter_result("PASS")
@@ -613,11 +614,11 @@ class TestDecisionServiceWithPositive:
         result = asyncio.get_event_loop().run_until_complete(
             svc.evaluate_profile(profile, filter_result=make_filter_result("PASS"))
         )
-        assert result.decision == AIDecision.REVIEW
+        assert result.decision == AIDecision.LIKE
         assert result.combined_score > 0.5
 
     def test_spbpu_plus_anime_review(self) -> None:
-        """СПбПУ + аниме → score=0.7, REVIEW (всё ещё ниже 0.75)."""
+        """СПбПУ + аниме → информативная и чистая → LIKE."""
         profile = make_profile(description="учусь в СПбПУ, люблю аниме")
         self.filter_service.evaluate = AsyncMock(
             return_value=make_filter_result("PASS")
@@ -626,8 +627,7 @@ class TestDecisionServiceWithPositive:
         result = asyncio.get_event_loop().run_until_complete(
             svc.evaluate_profile(profile, filter_result=make_filter_result("PASS"))
         )
-        # 0.5 + 0.1 + 0.1 = 0.7 < 0.75 → REVIEW
-        assert result.decision == AIDecision.REVIEW
+        assert result.decision == AIDecision.LIKE
 
     def test_many_positives_like(self) -> None:
         """Много positive factors → score >= 0.75 → LIKE."""
@@ -743,7 +743,7 @@ class TestUserPreferences:
         assert result.decision == AIDecision.DISLIKE
 
     def test_user_like_increases_score(self) -> None:
-        """User LIKE правило → score увеличивается."""
+        """User LIKE правило → score увеличивается (P01 → информативная → LIKE)."""
         svc = self._make_service_with_prefs(
             like_rules=[("СПбПУ", ["спбпу"])],
         )
@@ -754,8 +754,9 @@ class TestUserPreferences:
         result = asyncio.get_event_loop().run_until_complete(
             svc.evaluate_profile(profile, filter_result=make_filter_result("PASS"))
         )
-        # User LIKE adds reason but doesn't automatically trigger LIKE decision
-        assert result.decision == AIDecision.REVIEW
+        # P01 (СПбПУ) — известный признак → информативная и чистая → LIKE
+        assert result.decision == AIDecision.LIKE
+        assert any("USER_LIKE" in r for r in result.reasons)
 
 
 # ══════════════════════════════════════════════════════════════════

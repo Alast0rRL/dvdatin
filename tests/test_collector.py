@@ -1863,7 +1863,10 @@ class TestCollectorAutoActions:
     Не используем реальный worker — вызываем _process_message напрямую.
     """
 
-    def _make_config(self, mode: str = "SEMI_AUTO", enabled: bool = True) -> AppConfig:
+    def _make_config(
+        self, mode: str = "SEMI_AUTO", enabled: bool = True,
+        like_message_enabled: bool = False,
+    ) -> AppConfig:
         cfg = make_config()
         # Два аккаунта: acc1 (индекс 0), acc2/авто (индекс 1).
         data = cfg.model_dump()
@@ -1878,6 +1881,8 @@ class TestCollectorAutoActions:
             "enabled": enabled,
             "account_session": "dvai_2",
             "interval_sec": 0.0,
+            "like": {"enabled": True},
+            "like_message": {"enabled": like_message_enabled, "text": "Берем)"},
         }
         return AppConfig(**data)
 
@@ -1925,7 +1930,7 @@ class TestCollectorAutoActions:
         ev.message.client = auto_client
         return ev
 
-    def _make_decision(self, decision: object) -> object:
+    def _make_decision(self, decision: object, informative: bool = False) -> object:
         """Реальный AIDecisionResult, который умеет рендерить вывод консоли."""
         from models.decision import AIDecisionResult
 
@@ -1935,6 +1940,7 @@ class TestCollectorAutoActions:
             confidence=0.7,
             reasons=["test"],
             scoring_version="deterministic-v2",
+            informative=informative,
         )
 
     def test_like_decision_sends_heart_on_auto_account(self) -> None:
@@ -1966,6 +1972,72 @@ class TestCollectorAutoActions:
         collector._db.record_auto_action.assert_awaited_once_with(
             1, "LIKE", "LIKE", 1234060895, 900
         )
+
+    def test_informative_like_starts_message_chain_on_auto_account(self) -> None:
+        """LIKE + informative + like_message → цепочка «Берем)» стартует.
+
+        Коллектор передаёт informative из решения в maybe_act; движок шлёт ❤️,
+        записывает LIKE и заводит pending-цепочку (сообщение ждёт ответов Leo).
+        """
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config(like_message_enabled=True)
+
+        decision = self._make_decision(AIDecision.LIKE, informative=True)
+        collector = self._make_collector(config, decision, auto_client, other_client)
+
+        task = RawTask(
+            chat_id=1234060895, message_id=910, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=11,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        # Отправлен только ❤️ (шаг 1), сообщение «Берем)» ещё НЕ отправлено.
+        args, _ = auto_client.send_message.call_args_list[0]
+        assert args[1] == "\u2764\ufe0f"
+        collector._db.record_auto_action.assert_awaited_once_with(
+            1, "LIKE", "LIKE", 1234060895, 910
+        )
+        # Память "Берем)" зафиксирована, но акк не звал Leo → pending ждёт.
+        engine = collector.auto_engine()
+        assert engine is not None
+        assert 910 in engine._pending_chains
+        assert engine._pending_chains[910]["stage"] == "AWAIT_LIKE_ACK"
+
+    def test_non_informative_like_no_message_chain(self) -> None:
+        """LIKE, но неинформативная анкета → только ❤️, цепочки нет."""
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config(like_message_enabled=True)
+
+        decision = self._make_decision(AIDecision.LIKE, informative=False)
+        collector = self._make_collector(config, decision, auto_client, other_client)
+
+        task = RawTask(
+            chat_id=1234060895, message_id=911, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=12,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        args, _ = auto_client.send_message.call_args_list[0]
+        assert args[1] == "\u2764\ufe0f"
+        engine = collector.auto_engine()
+        assert engine is not None
+        assert engine._pending_chains == {}
     def test_logged_profile_is_not_sent_twice(self) -> None:
         from models.decision import AIDecision
 

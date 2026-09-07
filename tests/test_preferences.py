@@ -115,6 +115,7 @@ class TestDecisionHardRules:
         decision, _, reasons = svc._decide(
             filter_decision=FilterDecision.PASS,
             score=0.8,
+            informative=True,
             skip_labels=["не ищет отношений"],
             like_labels=["аниме"],
             hard_negatives=[],
@@ -126,7 +127,7 @@ class TestDecisionHardRules:
     def test_skip_smoking_hard(self) -> None:
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
-            FilterDecision.PASS, 0.8, ["не ищет отношений"], [], [], [],
+            FilterDecision.PASS, 0.8, True, ["не ищет отношений"], [], [], [],
         )
         assert decision == AIDecision.DISLIKE
 
@@ -134,7 +135,7 @@ class TestDecisionHardRules:
         # LIKE-factor при низких скорах → REVIEW, а не DISLIKE.
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
-            FilterDecision.PASS, 0.4, [], ["игры"], [], [],
+            FilterDecision.PASS, 0.4, False, [], ["игры"], [], [],
         )
         assert decision == AIDecision.REVIEW
         assert any("USER_LIKE" in r for r in reasons)
@@ -142,7 +143,7 @@ class TestDecisionHardRules:
     def test_like_factor_does_not_override_filter_reject(self) -> None:
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
-            FilterDecision.REJECT, 0.8, [], ["игры"], [], [],
+            FilterDecision.REJECT, 0.8, True, [], ["игры"], [], [],
         )
         assert decision == AIDecision.DISLIKE
 
@@ -151,7 +152,7 @@ class TestDecisionHardRules:
         # и без подтверждённого негатива низкий скор → REVIEW, не DISLIKE.
         svc = make_service()
         decision, _, _ = svc._decide(
-            FilterDecision.PASS, 0.4, [], [], [], [],
+            FilterDecision.PASS, 0.4, False, [], [], [], [],
         )
         assert decision == AIDecision.REVIEW
 
@@ -196,7 +197,7 @@ class TestDecisionIntegration:
         self, tmp_path: Path,
     ) -> None:
         # Реальный кейс: «играю во многие игры» при слабых скорах →
-        # уходит в REVIEW (human), а не в DISLIKE.
+        # информативная и чистая → LIKE (не теряется в DISLIKE).
         db = Database(path=tmp_path / "t.db")
         loop = asyncio.get_event_loop()
         loop.run_until_complete(db.connect())
@@ -205,7 +206,7 @@ class TestDecisionIntegration:
             svc = self.make_stack(db, PreferencesEngine(make_prefs()))
             res = loop.run_until_complete(svc.evaluate(pid))
             assert res is not None
-            assert res.decision == AIDecision.REVIEW
+            assert res.decision == AIDecision.LIKE
             assert any("USER_LIKE" in r for r in res.reasons)
         finally:
             loop.run_until_complete(db.close())

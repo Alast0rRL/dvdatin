@@ -68,11 +68,22 @@ ai:
 # interval_sec — интервал между действиями (6/мин ≈ 10 сек).
 # notify_chat_id — chat_id (user_id) для уведомлений: пересылка карточки анкеты
 #   с объяснением причины лайка/дизлайка. 0 — уведомления выключены.
+# like / like_message — ОТДЕЛЬНЫЕ настройки (принцип Decision != Action):
+#   like.enabled — слать ❤️ (LIKE_ONLY);
+#   like_message.enabled + text — слать ❤️ И потом "Берем)" (LIKE_AND_MESSAGE,
+#   только для информативных чистых анкет; требует и like.enabled=true).
 auto_actions:
   enabled: false
   account_session: "dvai_2"
   interval_sec: 10.0
   notify_chat_id: 0
+
+  like:
+    enabled: true
+
+  like_message:
+    enabled: false
+    text: "Берем)"
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.

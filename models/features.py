@@ -52,6 +52,13 @@ class ScoringResult(BaseModel):
     hard_negatives: list[Feature] = []
     positive_factors: list[Feature] = []
     status: ScoringStatus = ScoringStatus.INSUFFICIENT_DATA
+    #: Информативность анкеты (детерминированная эвристика: значимые слова
+    #: и/или найденные признаки). Это оценка ОБЪЁМА ПОЛЕЗНОЙ информации,
+    #: а не оценки личности. Используется DecisionService: "информативная и
+    #: чистая анкета → LIKE".
+    informative: bool = False
+    #: Кол-во значимых слов в описании (для диагностики/логирования).
+    meaningful_words: int = 0
     scoring_version: str = "deterministic-v2"
 
     @field_validator("score")

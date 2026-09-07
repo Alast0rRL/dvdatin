@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS auto_actions_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_aal_sent_at ON auto_actions_log(sent_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_aal_telegram
+    ON auto_actions_log(chat_id, telegram_message_id, action)
+    WHERE telegram_message_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS human_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,12 +249,17 @@ class Database:
                 await self._connection.commit()
             except Exception as e:
                 logger.warning(f"index aal_sent_at: {e}")
-        # Idempotency по конкретной карточке: одна реакция на telegram_message_id.
-        # Partial index (WHERE IS NOT NULL) не трогает старые записи (NULL).
+        # Idempotency по конкретной карточке И виду действия (LIKE/DISLIKE/MESSAGE):
+        # ❤️ и "Берем)" — НЕЗАВИСИМЫЕ действия (Decision != Action, §30): на одну
+        # карточку может быть и LIKE, и MESSAGE, но каждый вид — не более одного
+        # раза. Partial index (WHERE IS NOT NULL) не трогает старые записи (NULL).
         try:
             await self._connection.execute(
+                "DROP INDEX IF EXISTS idx_aal_telegram"
+            )
+            await self._connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_aal_telegram "
-                "ON auto_actions_log(chat_id, telegram_message_id) "
+                "ON auto_actions_log(chat_id, telegram_message_id, action) "
                 "WHERE telegram_message_id IS NOT NULL"
             )
             await self._connection.execute(
@@ -581,17 +589,21 @@ class Database:
 
     async def has_auto_action_for_message(
         self, chat_id: int, telegram_message_id: int,
+        action: str = "LIKE",
     ) -> bool:
-        """Идемпотентность по конкретной карточке (telegram_message_id).
+        """Идемпотентность по конкретной карточке (telegram_message_id) и виду
+        действия (LIKE / DISLIKE / MESSAGE).
 
-        Каждая показанная анкета получает реакцию ровно один раз. Повторная
-        карточка той же личности (новый telegram_message_id) считается новой —
-        реакция отправляется снова.
+        Каждый вид действия (Decision != Action, §30): LIKE (❤️), DISLIKE (👎)
+        и MESSAGE («Берем)») независимы — на одну карточку может быть и LIKE,
+        и MESSAGE, но каждый вид — не более одного раза. Повторная карточка
+        той же личности (новый telegram_message_id) считается новой — реакция
+        отправляется снова.
         """
         cursor = await self._connection.execute(
             "SELECT 1 FROM auto_actions_log "
-            "WHERE chat_id = ? AND telegram_message_id = ?",
-            (chat_id, telegram_message_id),
+            "WHERE chat_id = ? AND telegram_message_id = ? AND action = ?",
+            (chat_id, telegram_message_id, action),
         )
         return await cursor.fetchone() is not None
 
@@ -603,9 +615,18 @@ class Database:
         chat_id: int,
         telegram_message_id: int | None = None,
     ) -> None:
-        """Атомарно фиксирует успешное действие и итоговый статус анкеты."""
+        """Атомарно фиксирует успешное действие и итоговый статус анкеты.
+
+        ``action`` — вид действия: LIKE / DISLIKE / MESSAGE (decision != action,
+        §30). Статус анкеты (LIKED / DISLIKED) обновляется только для LIKE и
+        DISLIKE; MESSAGE (сообщение «Берем)») статус НЕ меняет.
+        """
         sent_at = datetime.now(timezone.utc).isoformat()
-        status = "LIKED" if action == "LIKE" else "DISLIKED"
+        status: str | None = None
+        if action == "LIKE":
+            status = "LIKED"
+        elif action == "DISLIKE":
+            status = "DISLIKED"
         try:
             await self._connection.execute(
                 """INSERT INTO auto_actions_log
@@ -613,10 +634,11 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?)""",
                 (profile_id, action, decision, chat_id, sent_at, telegram_message_id),
             )
-            await self._connection.execute(
-                "UPDATE profiles SET status = ? WHERE id = ?",
-                (status, profile_id),
-            )
+            if status is not None:
+                await self._connection.execute(
+                    "UPDATE profiles SET status = ? WHERE id = ?",
+                    (status, profile_id),
+                )
             await self._connection.commit()
         except Exception:
             await self._connection.rollback()

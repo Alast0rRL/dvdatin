@@ -25,8 +25,9 @@ class TestAutoActionAudit:
                 profile = await ProfileService(db).create_profile(self._profile())
                 await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895, 100)
                 assert await db.has_auto_action(profile.id) is True
-                assert await db.has_auto_action_for_message(1234060895, 100) is True
-                assert await db.has_auto_action_for_message(1234060895, 200) is False
+                assert await db.has_auto_action_for_message(1234060895, 100, "DISLIKE") is True
+                assert await db.has_auto_action_for_message(1234060895, 100, "LIKE") is False
+                assert await db.has_auto_action_for_message(1234060895, 200, "DISLIKE") is False
                 row = await db.get_profile_by_id(profile.id)
                 assert row["status"] == "DISLIKED"
                 cursor = await db._connection.execute(
@@ -47,11 +48,41 @@ class TestAutoActionAudit:
                 profile = await ProfileService(db).create_profile(self._profile())
                 # Первая карточка 100.
                 await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895, 100)
-                assert await db.has_auto_action_for_message(1234060895, 100) is True
+                assert await db.has_auto_action_for_message(1234060895, 100, "DISLIKE") is True
                 # Повторная карточка 200 той же личности — НЕ считается обработанной.
-                assert await db.has_auto_action_for_message(1234060895, 200) is False
+                assert await db.has_auto_action_for_message(1234060895, 200, "DISLIKE") is False
                 await db.record_auto_action(profile.id, "DISLIKE", "DISLIKE", 1234060895, 200)
-                assert await db.has_auto_action_for_message(1234060895, 200) is True
+                assert await db.has_auto_action_for_message(1234060895, 200, "DISLIKE") is True
+                cursor = await db._connection.execute(
+                    "SELECT COUNT(*) FROM auto_actions_log WHERE profile_id = ?", (profile.id,)
+                )
+                assert (await cursor.fetchone())[0] == 2
+            finally:
+                await db.close()
+        asyncio.get_event_loop().run_until_complete(run())
+
+    def test_like_and_message_are_independent_actions(self, tmp_path) -> None:
+        """LIKE и MESSAGE — независимые действия на одной карточке (§30).
+
+        ❤️ уже отправлен (LIKE записан), сообщение «Берем)» отправить можно —
+        запись MESSAGE добавляется отдельно, статус анкеты остаётся LIKED
+        (MESSAGE статус НЕ меняет).
+        """
+        async def run() -> None:
+            db = Database(tmp_path / "indep.db")
+            await db.connect()
+            try:
+                profile = await ProfileService(db).create_profile(self._profile())
+                await db.record_auto_action(profile.id, "LIKE", "LIKE", 1234060895, 100)
+                assert await db.has_auto_action_for_message(1234060895, 100, "LIKE") is True
+                assert await db.has_auto_action_for_message(1234060895, 100, "MESSAGE") is False
+                row = await db.get_profile_by_id(profile.id)
+                assert row["status"] == "LIKED"
+                # Сообщение на той же карточке — отдельное действие.
+                await db.record_auto_action(profile.id, "MESSAGE", "LIKE", 1234060895, 100)
+                assert await db.has_auto_action_for_message(1234060895, 100, "MESSAGE") is True
+                row = await db.get_profile_by_id(profile.id)
+                assert row["status"] == "LIKED"
                 cursor = await db._connection.execute(
                     "SELECT COUNT(*) FROM auto_actions_log WHERE profile_id = ?", (profile.id,)
                 )

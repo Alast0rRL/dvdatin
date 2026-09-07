@@ -124,6 +124,29 @@ class FiltersConfig(BaseModel):
         self.city_allowed = self.city.allowed
 
 
+class LikeActionConfig(BaseModel):
+    """Настройка отдельного действия «LIKE» (отправка ❤️).
+
+    Отдельная от ``like_message``: LIKE (только ❤️) и LIKE+сообщение
+    («Берем)») — независимо включаемые возможности (принцип «Decision !=
+    Action» и «LIKE != LIKE_AND_MESSAGE»).
+    """
+
+    enabled: bool = True
+
+
+class LikeMessageConfig(BaseModel):
+    """Настройка отдельного действия «LIKE + initial message» (❤️ + «Берем)»).
+
+    Отдельная от ``like``: отправка сообщения после успешного ❤️ — своя
+    возможность. Отправляется только если включена и ``like``, и ``like_message``.
+    """
+
+    enabled: bool = False
+    #: Текст начального сообщения после лайка.
+    text: str = "Берем)"
+
+
 class AutoActionsConfig(BaseModel):
     """Настройки авто-действий (Stage 7, SEMI_AUTO).
 
@@ -143,6 +166,10 @@ class AutoActionsConfig(BaseModel):
     # из списка (тот, что не является авто-аккаунтом), т.е. с Бармалея на
     # Меланхолика и обратно. Пересылается карточка анкеты + причина.
     notify_chat_id: int = 0
+    #: Отдельная настройка «LIKE» (❤️).
+    like: LikeActionConfig = LikeActionConfig()
+    #: Отдельная настройка «LIKE + сообщение» (❤️ + «Берем)»).
+    like_message: LikeMessageConfig = LikeMessageConfig()
 
     @field_validator("interval_sec")
     @classmethod

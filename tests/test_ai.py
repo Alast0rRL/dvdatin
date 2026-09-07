@@ -317,6 +317,7 @@ class TestNoUnknownToDislikeInvariant:
         from models.filter import FilterDecision
         decision, _, reasons = svc._decide(
             filter_decision=FilterDecision.PASS, score=0.0,
+            informative=False,
             skip_labels=[], like_labels=[],
         )
         assert decision.value == "REVIEW"
@@ -327,6 +328,7 @@ class TestNoUnknownToDislikeInvariant:
         from models.filter import FilterDecision
         decision, _, _ = svc._decide(
             filter_decision=FilterDecision.PASS, score=0.0,
+            informative=False,
             skip_labels=[], like_labels=[], hard_negatives=[],
         )
         assert decision.value == "REVIEW"
@@ -336,6 +338,7 @@ class TestNoUnknownToDislikeInvariant:
         from models.filter import FilterDecision
         decision, _, _ = svc._decide(
             filter_decision=FilterDecision.PASS, score=1.0,
+            informative=True,
             skip_labels=[], like_labels=[],
             positive_factors=[make_feature("P01", "spbpu", positive=True)],
         )
@@ -346,6 +349,7 @@ class TestNoUnknownToDislikeInvariant:
         from models.filter import FilterDecision
         decision, _, reasons = svc._decide(
             filter_decision=FilterDecision.PASS, score=0.0,
+            informative=True,
             skip_labels=[], like_labels=[],
             hard_negatives=[make_feature("H01", "not_relationships")],
         )
@@ -357,6 +361,7 @@ class TestNoUnknownToDislikeInvariant:
         from models.filter import FilterDecision
         decision, _, reasons = svc._decide(
             filter_decision=FilterDecision.PASS, score=0.5,
+            informative=False,
             skip_labels=[], like_labels=[], hard_negatives=[],
             positive_factors=[],
         )

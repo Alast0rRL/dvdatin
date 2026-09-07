@@ -43,6 +43,11 @@ class AIDecisionResult(BaseModel):
     reasons: list[str] = []
     evaluated_at: str = ""
     scoring_version: str = "v1"
+    # Информативность анкеты (детерминированная): достаточно значимых слов
+    # ИЛИ найден положительный признак. Используется слоем действий (ActionPolicy)
+    # для выбора LIKE_ONLY vs LIKE_AND_MESSAGE (Decision != Action, §30).
+    informative: bool = False
+    meaningful_words: int = 0
 
     model_config = ConfigDict(use_enum_values=False)
 

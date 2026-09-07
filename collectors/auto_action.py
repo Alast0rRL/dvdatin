@@ -16,7 +16,9 @@ from rich.panel import Panel
 from rich.table import Table
 
 from core.types import Mode
+from models.action import ActionPolicy
 from models.decision import AIDecision
+from services.action_policy import ActionPolicyResolver
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -29,6 +31,17 @@ console = Console(force_terminal=True)
 # Текст команд Дайвинчика (реверс механики):
 LIKE_TEXT: str = "\u2764\ufe0f"      # ❤️ — лайк
 DISLIKE_TEXT: str = "\U0001F44E"     # 👎 — дизлайк
+# Кнопка «отправить сообщение» у карточки Дайвинчика (reply-кнопка 💌).
+MESSAGE_BUTTON_TEXT: str = "\U0001F48C"
+# Маркеры ответов Leo для цепочки «Берем)» (LIKE_AND_MESSAGE, §30):
+LIKE_ACK_MARKERS: tuple[str, ...] = ("Лайк отправлен", "ждем ответа")
+MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
+    "Отправь текст", "отправь текст", "отправьте текст",
+)
+
+# Стадии цепочки LIKE_AND_MESSAGE.
+_STAGE_AWAIT_LIKE_ACK = "AWAIT_LIKE_ACK"
+_STAGE_AWAIT_PROMPT = "AWAIT_PROMPT"
 
 
 class AutoActionError(Exception):
@@ -76,6 +89,13 @@ class AutoActionEngine:
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
+        # Decision != Action (§30): резолвер сопоставляет Decision (LIKE/REVIEW/
+        # DISLIKE) с ActionPolicy (LIKE_ONLY / LIKE_AND_MESSAGE / DISLIKE_ONLY /
+        # NO_ACTION), затем применяет конфиг-гейты (like / like_message отдельно).
+        self._resolver = ActionPolicyResolver()
+        # Незавершённые цепочки LIKE_AND_MESSAGE: карточка → {stage, profile_id,
+        # chat_id, decision}. Прогрессирует из step_pending() по ответам Leo.
+        self._pending_chains: dict[int, dict] = {}
 
     @property
     def mode(self) -> Mode:
@@ -115,6 +135,7 @@ class AutoActionEngine:
         message_id: int | None = None,
         reasons: list[str] | None = None,
         card_text: str | None = None,
+        informative: bool = False,
     ) -> str:
         """Выполняет действие по решению (LIKE/DISLIKE), если он enabled.
 
@@ -126,6 +147,10 @@ class AutoActionEngine:
         реально присутствует в показанной карточке (иначе это вводит в
         заблуждение — причину мог найти прошлый повторный показ с описанием,
         а сейчас карточка усечённая).
+
+        ``informative`` — информативность анкеты (из детерминированного
+        DecisionService). Нужна для выбора LIKE_ONLY vs LIKE_AND_MESSAGE
+        (Decision != Action, §30).
 
         Идемпотентность по ``telegram_message_id`` обеспечивается на уровне
         collector'а (``has_auto_action_for_message`` в БД), а не движка.
@@ -152,23 +177,125 @@ class AutoActionEngine:
             )
             return "REVIEW"
 
-        text = LIKE_TEXT if decision == AIDecision.LIKE else DISLIKE_TEXT
-        action = decision.value
-        notify_action = action
-
-        async with self._lock:
-            await self._rate_limit_locked()
-            await self._send(text)
-        logger.info(f"AutoAction: отправил {text!r} ({action}) на chat={self._chat_id}")
-        self._print_action(action, text)
-        await self._notify(
-            notify_action,
-            profile_id=profile_id,
-            message_id=message_id,
-            reasons=reasons,
-            card_text=card_text,
+        # Decision != Action (§30): решаем, какое Telegram-действие выполнить.
+        policy = self._resolver.resolve(decision, informative=bool(informative))
+        policy = self._resolver.resolve_config(
+            policy,
+            like_enabled=self._config.like.enabled,
+            like_message_enabled=self._config.like_message.enabled,
         )
-        return action
+
+        notify_action = "LIKE" if decision == AIDecision.LIKE else "DISLIKE"
+
+        if policy == ActionPolicy.DISLIKE_ONLY:
+            await self._send_locked(DISLIKE_TEXT)
+            logger.info(
+                f"AutoAction: отправил {DISLIKE_TEXT!r} (DISLIKE) на chat={self._chat_id}"
+            )
+            self._print_action("DISLIKE", DISLIKE_TEXT)
+            await self._notify(
+                "DISLIKE",
+                profile_id=profile_id,
+                message_id=message_id,
+                reasons=reasons,
+                card_text=card_text,
+            )
+            return "DISLIKE"
+
+        if policy == ActionPolicy.LIKE_ONLY:
+            await self._send_locked(LIKE_TEXT)
+            logger.info(
+                f"AutoAction: отправил {LIKE_TEXT!r} (LIKE) на chat={self._chat_id}"
+            )
+            self._print_action("LIKE", LIKE_TEXT)
+            await self._notify(
+                "LIKE",
+                profile_id=profile_id,
+                message_id=message_id,
+                reasons=reasons,
+                card_text=card_text,
+            )
+            return "LIKE"
+
+        if policy == ActionPolicy.LIKE_AND_MESSAGE:
+            # Шаг 1/2 цепочки «Берем)»: ❤️. Сообщение отправляется позже,
+            # по ответам Leo (step_pending). Если карточка не привязана к
+            # message_id — цепочку завести нельзя, отправляем только LIKE.
+            await self._send_locked(LIKE_TEXT)
+            logger.info(
+                f"AutoAction: отправил {LIKE_TEXT!r} (LIKE, пункт 1 «Берем)») "
+                f"на chat={self._chat_id}"
+            )
+            self._print_action("LIKE", LIKE_TEXT)
+            await self._notify(
+                "LIKE",
+                profile_id=profile_id,
+                message_id=message_id,
+                reasons=reasons,
+                card_text=card_text,
+            )
+            if message_id is not None:
+                self._pending_chains[message_id] = {
+                    "profile_id": profile_id,
+                    "chat_id": self._chat_id,
+                    "decision": decision.value,
+                    "stage": _STAGE_AWAIT_LIKE_ACK,
+                }
+            return "LIKE"
+
+        # NO_ACTION (напр. OBSERVE/выключенные like) — ничего не шлём.
+        return "GATE"
+
+    async def step_pending(self, text: str, chat_id: int) -> None:
+        """Продвигает незавершённые цепочки «Берем)» по ответам Leo (§30).
+
+        Вызывается коллектором на входящих сообщениях чата Дайвинчика
+        (НЕ PROFILE). Цепочка LIKE_AND_MESSAGE:
+          ❤️ → (Leo: «Лайк отправлен, ждем ответа.») → 💌 →
+          (Leo: «Отправь текст, видео или голосовое…») → «Берем)».
+        Идемпотентность: каждый шаг выполняется ровно один раз, потому что
+        стадия переводится вперёд сразу после отправки.
+        """
+        if not self.enabled:
+            return
+        if not self._pending_chains:
+            return
+        for card_id, chain in list(self._pending_chains.items()):
+            if chain.get("chat_id") != chat_id:
+                continue
+            stage = chain.get("stage")
+            if stage == _STAGE_AWAIT_LIKE_ACK and any(
+                m in (text or "") for m in LIKE_ACK_MARKERS
+            ):
+                # Leo подтвердил лайк → жмём кнопку отправки сообщения (💌).
+                await self._send_locked(MESSAGE_BUTTON_TEXT)
+                logger.info(
+                    f"AutoAction: «Берем)» шаг 2/3 — нажата {MESSAGE_BUTTON_TEXT!r} "
+                    f"(chat={chat_id}, карточка={card_id})"
+                )
+                chain["stage"] = _STAGE_AWAIT_PROMPT
+            elif stage == _STAGE_AWAIT_PROMPT and any(
+                m in (text or "") for m in MESSAGE_PROMPT_MARKERS
+            ):
+                # Leo открыл композер → отправляем текст «Берем)» и завершаем.
+                msg_text = self._config.like_message.text
+                await self._send_locked(msg_text)
+                logger.info(
+                    f"AutoAction: «Берем)» шаг 3/3 — отправлено {msg_text!r} "
+                    f"(chat={chat_id}, карточка={card_id})"
+                )
+                if self._db is not None and chain.get("profile_id") is not None:
+                    try:
+                        await self._db.record_auto_action(
+                            chain["profile_id"],
+                            "MESSAGE",
+                            chain.get("decision") or "LIKE",
+                            chat_id,
+                            card_id,
+                        )
+                    except Exception as e:
+                        logger.error(f"AutoAction: сообщение отправлено, но не записано: {e}")
+                self._pending_chains.pop(card_id, None)
 
     async def send_text(self, text: str) -> bool:
         """Отправляет произвольный текст в чат (нажатие reply-кнопки Leo).
@@ -194,6 +321,12 @@ class AutoActionEngine:
         except Exception as e:
             logger.error(f"AutoAction: ошибка отправки {text!r}: {e}")
             raise AutoActionError(str(e)) from e
+
+    async def _send_locked(self, text: str) -> None:
+        """Отправляет текст под блокировкой движка с применением rate-limit."""
+        async with self._lock:
+            await self._rate_limit_locked()
+            await self._send(text)
 
     async def _rate_limit_locked(self) -> None:
         """Применяет rate-limit при уже взятой блокировке движка."""

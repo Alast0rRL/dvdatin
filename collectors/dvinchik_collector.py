@@ -923,6 +923,22 @@ class DvinchikCollector:
                 buttons=task.reply_markup_json,
             )
 
+            # Stage 8 (§30): продвижение цепочки «Берем)» (LIKE_AND_MESSAGE)
+            # по ответам Leo. Только для входящих НЕ-профильных сообщений чата
+            # Дайвинчика на авто-аккаунте. step_pending сам проверяет, есть ли
+            # активная цепочка, и шлёт 💌/«Берем)» по маркерам ответов Leo.
+            if (
+                msg_type != MessageType.PROFILE
+                and self._auto_engine.enabled
+                and chat_id == self._dvinchik_chat_id
+                and msg is not None
+                and getattr(msg, "client", None) is self._auto_engine.client
+            ):
+                try:
+                    await self._auto_engine.step_pending(text, chat_id)
+                except Exception as e:
+                    logger.error(f"AutoAction: ошибка продвижения «Берем)»: {e}")
+
             if msg_type == MessageType.PROFILE:
                 parsed = self._parser.parse_profile(
                     text,
@@ -989,6 +1005,7 @@ class DvinchikCollector:
                                                         message_id=task.message_id,
                                                         reasons=decision.reasons,
                                                         card_text=text,
+                                                        informative=decision.informative,
                                                     )
                                                     if action in ("LIKE", "DISLIKE"):
                                                         try:

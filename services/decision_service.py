@@ -115,17 +115,19 @@ class DecisionService:
             description=profile.description or "",
         )
 
-        # 3. Score Engine (детерминированно)
+        # 3. Score Engine (детерминированно): score + информативность.
         scoring = self._score_engine.compute(
             profile_id=profile.id,
             hard_negatives=extraction.hard_negatives,
             positive_factors=extraction.positive_factors,
+            description=profile.description or "",
         )
 
         # 4. Decision Logic
         decision, combined, reasons = self._decide(
             filter_decision=filter_decision,
             score=scoring.score,
+            informative=scoring.informative,
             skip_labels=skip_labels,
             like_labels=like_labels,
             hard_negatives=scoring.hard_negatives,
@@ -142,6 +144,8 @@ class DecisionService:
             reasons=reasons,
             evaluated_at=now,
             scoring_version=SCORING_VERSION,
+            informative=scoring.informative,
+            meaningful_words=scoring.meaningful_words,
         )
 
         await self._save(result)
@@ -154,23 +158,24 @@ class DecisionService:
         self,
         filter_decision: FilterDecision | None,
         score: float,
+        informative: bool,
         skip_labels: list[str],
         like_labels: list[str],
         hard_negatives: list | None = None,
         positive_factors: list | None = None,
     ) -> tuple[AIDecision, float, list[str]]:
-        """Вычисляет решение по правилам.
+        """Вычисляет решение по правилам (бизнес-политика §13).
 
         Приоритет:
         1. HARD USER SKIP (из preferences.yaml) → DISLIKE.
         2. HARD NEGATIVE (извлечён из текста) → DISLIKE.
         3. HARD FILTER REJECT (age/city) → DISLIKE.
         4. FILTER REVIEW → REVIEW.
-        5. LIKE conditions (positive factors + score) → LIKE.
-        6. Всё остальное → REVIEW (НИКОГДА не DISLIKE без hard-negative).
+        5. PASS: информативная И чистая анкета → LIKE.
+        6. Всё остальное (короткая/неинформативная, но чистая) → REVIEW.
 
-        Returns:
-            (decision, score, reasons)
+        КЛЮЧЕВОЙ ИНВАРИАНТ: без hard-negative/скипа/reject НИКОГДА не DISLIKE.
+        Информативность — только объём информации, а не оценка личности.
         """
         hard_negatives = list(hard_negatives or [])
         positive_factors = list(positive_factors or [])
@@ -185,7 +190,7 @@ class DecisionService:
                 reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
             return AIDecision.DISLIKE, score, reasons
 
-        # 2. HARD NEGATIVE (from FeatureExtractor)
+        # 2. HARD NEGATIVE (from FeatureExtractor) — побеждает информативность
         if hard_negatives:
             hn = hard_negatives[0]
             reasons.append(f"HARD_NEGATIVE:{hn.name}:{hn.evidence}")
@@ -211,22 +216,19 @@ class DecisionService:
                 reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
             return AIDecision.REVIEW, score, reasons
 
-        # 5. PASS (или нет данных фильтра)
-        # LIKE по положительным factors + score
-        if positive_factors:
-            reasons.extend([f"POSITIVE:{pf.name}:{pf.evidence}" for pf in positive_factors])
-            if like_labels:
-                reasons.append(f"USER_LIKE:{like_labels[0]}")
-
-            # LIKE: есть positive factors И score >= like_threshold
-            if score >= self._decision_cfg.like_threshold:
-                return AIDecision.LIKE, score, reasons
-            # REVIEW: есть positive factors, но score ниже порога
-            return AIDecision.REVIEW, score, reasons
-
-        # 6. Нет ни positive, ни negative → REVIEW (НИКОГДА не DISLIKE)
+        # 5. PASS: информативная И чистая анкета → LIKE
+        # (достаточно значимых слов ИЛИ известных признаков, и нет
+        # ни одного противопоказания — проверено шагами 2-4).
+        for pf in positive_factors:
+            reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
         if like_labels:
             reasons.append(f"USER_LIKE:{like_labels[0]}")
+        if informative:
+            reasons.append("INFORMATIVE_CLEAN")
+            return AIDecision.LIKE, score, reasons
+
+        # 6. Короткая/неинформативная, но чистая анкета → REVIEW
+        # (НИКОГДА не DISLIKE без hard-negative).
         reasons.append("NO_FEATURES_FOUND")
         return AIDecision.REVIEW, score, reasons
 
