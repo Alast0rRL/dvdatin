@@ -278,6 +278,7 @@ class DvinchikCollector:
         if not self._auto_engine.enabled:
             return False
         try:
+            await self._auto_engine.ensure_peer()
             if await self._process_active_profile_if_any():
                 return True
             if await self._press_view_button_if_needed():

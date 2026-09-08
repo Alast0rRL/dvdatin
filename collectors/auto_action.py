@@ -96,6 +96,9 @@ class AutoActionEngine:
         # Незавершённые цепочки LIKE_AND_MESSAGE: карточка → {stage, profile_id,
         # chat_id, decision}. Прогрессирует из step_pending() по ответам Leo.
         self._pending_chains: dict[int, dict] = {}
+        # Кэш сущности ЛЕО-чата (PeerUser) на авто-клиенте: каждый аккаунт
+        # имеет свой access_hash, без кэша Telethon не находит entity.
+        self._peer: object | None = None
 
     @property
     def mode(self) -> Mode:
@@ -297,6 +300,34 @@ class AutoActionEngine:
                         logger.error(f"AutoAction: сообщение отправлено, но не записано: {e}")
                 self._pending_chains.pop(card_id, None)
 
+    async def ensure_peer(self) -> bool:
+        """Резолвит сущность ЛЕО-чата в сессии авто-клиента.
+
+        Чат Дайвинчика — PeerUser (личный чат с Leo), и у каждого аккаунта свой
+        access_hash. Без кэша сущности Telethon не находит entity
+        («Could not find the input entity...»). Итерация по диалогам кэширует её;
+        если чата в диалогах нет — действия невозможны, сообщаем явно.
+        """
+        if self._peer is not None:
+            return True
+        if self._client is None:
+            return False
+        try:
+            async for dialog in self._client.iter_dialogs():
+                if dialog.id == self._chat_id:
+                    self._peer = dialog.entity
+                    logger.info(
+                        f"AutoAction: чат {dialog.id} найден в диалогах авто-аккаунта"
+                    )
+                    return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка резолва чата {self._chat_id}: {e}")
+        logger.warning(
+            f"AutoAction: чат {self._chat_id} НЕ найден в диалогах авто-аккаунта "
+            f"— открой Дайвинчика (Leo) с этого аккаунта"
+        )
+        return False
+
     async def send_text(self, text: str) -> bool:
         """Отправляет произвольный текст в чат (нажатие reply-кнопки Leo).
 
@@ -317,7 +348,8 @@ class AutoActionEngine:
             logger.warning(msg)
             raise AutoActionError(msg)
         try:
-            await self._client.send_message(self._chat_id, text)
+            await self.ensure_peer()
+            await self._client.send_message(self._peer or self._chat_id, text)
         except Exception as e:
             logger.error(f"AutoAction: ошибка отправки {text!r}: {e}")
             raise AutoActionError(str(e)) from e
