@@ -1898,6 +1898,29 @@ class TestOutgoingManualCapture:
         )
         collector._db.record_sent_message.assert_not_called()
 
+    def test_numbered_menu_buttons_not_captured(self) -> None:
+        """Нумерованные кнопки меню Leo («1 🚀», «1 👍», «Главное меню»)
+        не считаются ручным сообщением при лайке."""
+        collector = self._collector()
+        for i, text in enumerate(("1 🚀", "1 👍", "Главное меню"), start=610):
+            event = make_event(text=text, msg_id=i)
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_outgoing_message(event)
+            )
+        collector._db.record_sent_message.assert_not_called()
+
+    def test_cyrillic_text_with_number_not_excluded(self) -> None:
+        """Настоящий текст с цифрой («2 часа назад») НЕ отсекается."""
+        collector = self._collector()
+        event = make_event(text="2 часа назад, познакомились?", msg_id=620)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_awaited_once()
+        args, kwargs = collector._db.record_sent_message.call_args
+        assert args[0] == "2 часа назад, познакомились?"
+        assert kwargs.get("action") == "MESSAGE"
+
 
 # ==================== CALLBACK QUERY (inline-кнопки/разведка LIKE) ====================
 

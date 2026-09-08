@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -82,6 +83,40 @@ MANUAL_MESSAGE_EXCLUDE: frozenset[str] = frozenset(
         "Показать девушку",
     }
 )
+
+#: Stage 8.5: фрагменты навигационных кнопок Leo. Точного совпадения не
+#: хватает: кнопки главного меню приходят с номерами («1 🚀»,
+#: «1 👍», «Главное меню»). Ловим по подстроке + шаблону «номер+не-лента».
+MANUAL_MESSAGE_EXCLUDE_FRAGMENTS: tuple[str, ...] = (
+    "смотреть анкеты",
+    "главное меню",
+    "возможно позже",
+    "продолжить",
+    "вернуться назад",
+    "активировать premium",
+    "показать девушку",
+)
+
+#: Кнопка меню с префиксом-номером: «1 🚀», «2 👍» и т.п.
+#: (после цифры — НЕ буква и НЕ пробел; «2 часа назад…» не отсекается).
+MANUAL_MESSAGE_NUMBERED_RE: re.Pattern[str] = re.compile(r"^\s*\d+\s*[^\wа-яё\s-]", re.IGNORECASE)
+
+
+def is_manual_message_excluded(text: str) -> bool:
+    """Кнопка/навигация Leo (не ручное сообщение при лайке).
+
+    Точное совпадение не срабатывает на нумерованные кнопки меню
+    («1 🚀», «Главное меню», «1 👍») — используем подстроки и шаблон
+    «цифра + не-буква» (Анкета с цифры не начинается).
+    """
+    if text in MANUAL_MESSAGE_EXCLUDE:
+        return True
+    low = text.lower()
+    if any(f in low for f in MANUAL_MESSAGE_EXCLUDE_FRAGMENTS):
+        return True
+    if MANUAL_MESSAGE_NUMBERED_RE.match(text):
+        return True
+    return False
 
 #: На любые "проверки"/капчи Leo (сделка, подписка, подтверждение и т.п.)
 #: авто-аккаунт всегда нажимает ПОСЛЕДНЮЮ reply-кнопку — это сбрасывает
@@ -907,7 +942,7 @@ class DvinchikCollector:
         elif t == "👎":
             action = "DISLIKE"
         else:
-            if len(t) < 2 or t in MANUAL_MESSAGE_EXCLUDE:
+            if len(t) < 2 or is_manual_message_excluded(t):
                 return
             action = "MESSAGE"
         profile_id: int | None = None
