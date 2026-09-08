@@ -163,7 +163,9 @@ CREATE INDEX IF NOT EXISTS idx_sent_messages_sent_at ON sent_messages(sent_at);
 -- like_outcomes (Stage 8.5.1): результат на КАЖДЫЙ лайк (авто/ручной) —
 -- содержание сообщения при лайке (message_text, '' если без текста) и
 -- responded (0/1) — лайкнула девушка в ответ или нет (ставится взаимным
--- лайком через match_responses). Бэкфилл старых лайков в _ensure_like_outcomes.
+-- лайком через match_responses). rejected=1 — Leo отклонил лайк (дневной
+-- лимит, «Слишком много ❤️ за сегодня») — такие из аналитики исключаются.
+-- Бэкфилл старых лайков в _ensure_like_outcomes.
 CREATE TABLE IF NOT EXISTS like_outcomes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     profile_id INTEGER,
@@ -174,11 +176,15 @@ CREATE TABLE IF NOT EXISTS like_outcomes (
     liked_at TEXT NOT NULL,
     responded INTEGER NOT NULL DEFAULT 0,
     responded_at TEXT,
+    rejected INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_like_outcomes_profile_id ON like_outcomes(profile_id);
 CREATE INDEX IF NOT EXISTS idx_like_outcomes_responded ON like_outcomes(responded);
+-- idx_like_outcomes_rejected создаётся в _ensure_like_outcomes ПОСЛЕ миграции
+-- колонки rejected (в top-SCHEMA его нет — на старых базах без колонки он бы
+-- падал при executescript ещё до ALTER).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_like_outcomes_unique
     ON like_outcomes(source, chat_id, like_tm_id);
 
@@ -450,9 +456,20 @@ class Database:
                 liked_at TEXT NOT NULL,
                 responded INTEGER NOT NULL DEFAULT 0,
                 responded_at TEXT,
+                rejected INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL
             )"""
         )
+        # Миграция: колонка rejected (лимит Leo) для старых баз — ДО индексов,
+        # чтобы idx_like_outcomes_rejected не падал «no such column» на старых
+        # таблицах. CREATE TABLE IF NOT EXISTS не трогает существующую таблицу.
+        cols = await self._connection.execute("PRAGMA table_info(like_outcomes)")
+        names = {row[1] for row in await cols.fetchall()}
+        if "rejected" not in names:
+            await self._connection.execute(
+                "ALTER TABLE like_outcomes "
+                "ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0"
+            )
         await self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_like_outcomes_profile_id "
             "ON like_outcomes(profile_id)"
@@ -460,6 +477,10 @@ class Database:
         await self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_like_outcomes_responded "
             "ON like_outcomes(responded)"
+        )
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_like_outcomes_rejected "
+            "ON like_outcomes(rejected)"
         )
         await self._connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_like_outcomes_unique "
@@ -1032,10 +1053,12 @@ class Database:
             )
             if profile_id is not None:
                 # результат каждого лайка этой девушки: «лайкнула в ответ».
+                # Отклонённые Leo лайки (rejected=1, дневной лимит) не флипаем —
+                # они не дошли и «ответить» на них нельзя.
                 await self._connection.execute(
                     """UPDATE like_outcomes
                     SET responded = 1, responded_at = ?
-                    WHERE profile_id = ? AND responded = 0""",
+                    WHERE profile_id = ? AND responded = 0 AND rejected = 0""",
                     (responded_at, profile_id),
                 )
             await self._connection.commit()
@@ -1099,6 +1122,39 @@ class Database:
             await self._connection.rollback()
             logger.warning(f"record_sent_message: {e}")
 
+    async def mark_like_rejected(self, chat_id: int, window_sec: int = 120) -> None:
+        """Помечает сбойный лайк как rejected (Leo отклонил из-за лимита).
+
+        Leo отвечает на отклонённый ❤️ сообщением «Слишком много ❤️ за сегодня» —
+        такой лайк не дошёл и не должен считаться в аналитике. Помечаем rejected=1
+        у самого свежего неотклонённого лайка этого чата в пределах окна
+        ``window_sec`` (по default 120 c — Leo отвечает сразу). Работает для
+        обоих источников (авто/ручные), т.к. лайк уже записан в like_outcomes.
+        Повторные отказы подряд помечают предыдущие лайки по очереди.
+        """
+        cutoff = (
+            datetime.now(timezone.utc).timestamp() - int(window_sec)
+        )
+        cutoff_iso = datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat()
+        try:
+            cursor = await self._connection.execute(
+                """SELECT id FROM like_outcomes
+                WHERE chat_id = ? AND rejected = 0 AND liked_at >= ?
+                ORDER BY liked_at DESC, id DESC LIMIT 1""",
+                (chat_id, cutoff_iso),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return
+            await self._connection.execute(
+                "UPDATE like_outcomes SET rejected = 1 WHERE id = ?",
+                (row[0],),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"mark_like_rejected: {e}")
+
     async def get_message_response_stats(self) -> list[dict]:
         """Конверсия по текстам сообщений при лайке.
 
@@ -1148,11 +1204,13 @@ class Database:
                       COUNT(o.id) AS likes,
                       SUM(o.responded) AS responded,
                       (SELECT sub.message_text FROM like_outcomes sub
-                       WHERE sub.profile_id = p.id AND sub.message_text != ''
+                       WHERE sub.profile_id = p.id AND sub.rejected = 0
+                         AND sub.message_text != ''
                        ORDER BY sub.liked_at DESC, sub.id DESC LIMIT 1
                       ) AS last_text
             FROM like_outcomes o
             JOIN profiles p ON p.id = o.profile_id
+            WHERE o.rejected = 0
             GROUP BY p.id
             ORDER BY likes DESC, responded DESC
             LIMIT ?""",

@@ -36,13 +36,20 @@ tests/test_analytics.py::TestHistoryExport::test_export_csv
 tests/test_analytics.py::TestHistoryExport::test_export_empty_raises
 tests/test_analytics.py::TestHistoryExport::test_profile_history
 tests/test_analytics.py::TestLikeMessageAnalytics::test_fresh_db_has_analytics_tables
+tests/test_analytics.py::TestLikeMessageAnalytics::test_fresh_db_has_rejected_column
+tests/test_analytics.py::TestLikeMessageAnalytics::test_legacy_db_gets_rejected_column_via_migration
 tests/test_analytics.py::TestLikeMessageAnalytics::test_like_outcome_gets_message_text_and_result
 tests/test_analytics.py::TestLikeMessageAnalytics::test_like_outcome_idempotent_per_card
 tests/test_analytics.py::TestLikeMessageAnalytics::test_manual_like_counts_in_top_and_response
+tests/test_analytics.py::TestLikeMessageAnalytics::test_mark_like_rejected_consumes_in_sequence
+tests/test_analytics.py::TestLikeMessageAnalytics::test_mark_like_rejected_marks_latest_only
+tests/test_analytics.py::TestLikeMessageAnalytics::test_mark_like_rejected_without_likes_ok
+tests/test_analytics.py::TestLikeMessageAnalytics::test_match_response_does_not_flip_rejected
 tests/test_analytics.py::TestLikeMessageAnalytics::test_message_response_stats_auto_and_manual
 tests/test_analytics.py::TestLikeMessageAnalytics::test_record_match_dedupe_by_card
 tests/test_analytics.py::TestLikeMessageAnalytics::test_record_match_links_by_name_case_insensitive
 tests/test_analytics.py::TestLikeMessageAnalytics::test_record_match_unknown_name_no_profile
+tests/test_analytics.py::TestLikeMessageAnalytics::test_top_excludes_rejected_likes
 tests/test_analytics.py::TestLikeMessageAnalytics::test_top_liked_profiles
 tests/test_analytics.py::TestLikeMessageAnalyticsService::test_service_rate
 tests/test_audit.py::TestAudit10BackwardCompat::test_raw_messages_preserved
@@ -457,6 +464,21 @@ tests/test_parser.py::TestClassify::test_profiles[\u0441\u0430\u0448\u043a, 19, 
 tests/test_parser.py::TestClassify::test_profiles[wimx, 18, \u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestClassify::test_service
 tests/test_parser.py::TestClassify::test_unknown
+tests/test_parser.py::TestLikeRejection::test_empty
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u0410\u043a\u0442\u0438\u0432\u0438\u0440\u0443\u0439 Premium, \u0447\u0442\u043e\u0431\u044b \u043f\u043e\u043b\u0443\u0447\u0430\u0442\u044c \u0431\u043e\u043b\u044c\u0448\u0435 \u0430\u043d\u043a\u0435\u0442]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u0413\u043b\u0430\u0432\u043d\u043e\u0435 \u043c\u0435\u043d\u044e]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u041b\u0430\u0439\u043a \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d, \u0436\u0434\u0435\u043c \u043e\u0442\u0432\u0435\u0442\u0430.]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u041e\u0447\u0435\u043d\u044c \u043c\u043d\u043e\u0433\u043e \u0445\u043e\u0431\u0431\u0438, \u0437\u0430\u043a\u043e\u043d\u0447\u0438\u043b\u0430 \u0443\u0447\u0451\u0431\u0443 \u0441\u0435\u0439\u0447\u0430\u0441 \u0440\u0430\u0431\u043e\u0442\u0430\u044e]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u041f\u0440\u0438\u0448\u043b\u0438 \u0441\u0432\u043e\u0435 \u0440\u0430\u0441\u043f\u043e\u043b\u043e\u0436\u0435\u043d\u0438\u0435, \u0447\u0442\u043e\u0431\u044b \u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u042f \u0441\u043b\u0438\u0448\u043a\u043e\u043c \u043e\u0431\u0449\u0438\u0442\u0435\u043b\u044c\u043d\u0430, \u043d\u043e \u0441 \u043d\u0435\u0437\u043d\u0430\u043a\u043e\u043c\u0446\u0430\u043c\u0438 \u043d\u0435\u043c\u043d\u043e\u0433\u043e \u0441\u0442\u0435\u0441\u043d\u044f\u044e\u0441\u044c]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\u043a\u0440\u0438\u0441\u0442\u0438\u043d\u043a\u0430, 19, \u0445\u0430\u043d\u0442\u044b-\u043c\u0430\u043d\u0441\u0438\u0439\u0441\u043a]
+tests/test_parser.py::TestLikeRejection::test_not_rejection[\xab\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0441\u043c\u043e\u0442\u0440\u0435\u0442\u044c \u0430\u043d\u043a\u0435\u0442\u044b\xbb]
+tests/test_parser.py::TestLikeRejection::test_real_leo_message
+tests/test_parser.py::TestLikeRejection::test_variants[\u0414\u043d\u0435\u0432\u043d\u043e\u0439 \u043b\u0438\u043c\u0438\u0442 \u043b\u0430\u0439\u043a\u043e\u0432 \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043d.]
+tests/test_parser.py::TestLikeRejection::test_variants[\u041b\u0430\u0439\u043a\u0438 \u0437\u0430\u043a\u043e\u043d\u0447\u0438\u043b\u0438\u0441\u044c \u043d\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f. \u0417\u0430\u0439\u0434\u0438 \u043f\u043e\u0437\u0436\u0435!]
+tests/test_parser.py::TestLikeRejection::test_variants[\u0421\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \U0001f48c \u0441\u0435\u0433\u043e\u0434\u043d\u044f!]
+tests/test_parser.py::TestLikeRejection::test_variants[\u0421\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \u043b\u0430\u0439\u043a\u043e\u0432 \u0437\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439 \u043f\u043e\u0437\u0436\u0435!]
+tests/test_parser.py::TestLikeRejection::test_variants[\u0421\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0439 \u0437\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f. \u0412\u0435\u0440\u043d\u0438\u0441\u044c \u0437\u0430\u0432\u0442\u0440\u0430!]
 tests/test_parser.py::TestMediaDetection::test_detect_media_type_no_media_attr
 tests/test_parser.py::TestMediaDetection::test_detect_media_type_none
 tests/test_parser.py::TestMediaDetection::test_detect_media_type_photo

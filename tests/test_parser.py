@@ -170,6 +170,44 @@ class TestServiceMessages:
         assert parser.classify(text) == MessageType.SERVICE
 
 
+class TestLikeRejection:
+    """Stage 8.5.1: отказ Leo в лайке из-за дневного лимита."""
+
+    def test_real_leo_message(self, parser: DvinchikParser) -> None:
+        # Реальный текст из raw_messages (msg 696780).
+        text = "Слишком много ❤️ за сегодня.\n\nПерейди на Premium и получи больше ❤️!"
+        assert parser.is_like_rejection(text)
+
+    @pytest.mark.parametrize("text", [
+        "Слишком много лайков за сегодня. Попробуй позже!",
+        "Слишком много сообщений за сегодня. Вернись завтра!",
+        "Лайки закончились на сегодня. Зайди позже!",
+        "Дневной лимит лайков исчерпан.",
+        "Слишком много 💌 сегодня!",
+    ])
+    def test_variants(self, parser: DvinchikParser, text: str) -> None:
+        assert parser.is_like_rejection(text)
+
+    @pytest.mark.parametrize("text", [
+        "кристинка, 19, ханты-мансийск",
+        "Я слишком общительна, но с незнакомцами немного стесняюсь",
+        "Очень много хобби, закончила учёбу сейчас работаю",
+        "Лайк отправлен, ждем ответа.",
+        "Пришли свое расположение, чтобы продолжить",
+        "«Продолжить смотреть анкеты»",
+        "Активируй Premium, чтобы получать больше анкет",
+        "Главное меню",
+    ])
+    def test_not_rejection(self, parser: DvinchikParser, text: str) -> None:
+        # Анкеты/аккеты обычных сервисных сообщений не должны
+        # трактоваться как отказ по лимиту.
+        assert not parser.is_like_rejection(text)
+
+    def test_empty(self, parser: DvinchikParser) -> None:
+        assert not parser.is_like_rejection("")
+        assert not parser.is_like_rejection(None)
+
+
 # ==================== CITY NORMALIZATION ====================
 
 class TestCityNormalization:

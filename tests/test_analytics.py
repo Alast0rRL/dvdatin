@@ -476,6 +476,111 @@ class TestLikeMessageAnalytics:
         ))
         assert run(cursor.fetchone())[0] == 1
 
+    # ── Stage 8.5.1: Leo отклонил лайк (лимит) ────────────────────────
+
+    def test_fresh_db_has_rejected_column(self, tmp_db) -> None:
+        """Свежая БД: like_outcomes содержит колонку rejected (default 0)."""
+        db = tmp_db
+        cols = run(db._connection.execute("PRAGMA table_info(like_outcomes)"))
+        names = {row[1] for row in run(cols.fetchall())}
+        assert "rejected" in names
+
+    def test_legacy_db_gets_rejected_column_via_migration(
+        self, tmp_path: Path,
+    ) -> None:
+        """Старая БД без rejected пополняется колонкой при connect (ALTER)."""
+        import sqlite3
+
+        path = tmp_path / "legacy.db"
+        con = sqlite3.connect(path)
+        con.execute(
+            """CREATE TABLE like_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'auto',
+                message_text TEXT NOT NULL DEFAULT '',
+                chat_id INTEGER NOT NULL,
+                like_tm_id INTEGER NOT NULL,
+                liked_at TEXT NOT NULL,
+                responded INTEGER NOT NULL DEFAULT 0,
+                responded_at TEXT
+            )"""
+        )
+        con.commit()
+        con.close()
+
+        from database.database import Database
+
+        db = Database(path=path)
+        run(db.connect())
+        cols = run(db._connection.execute("PRAGMA table_info(like_outcomes)"))
+        names = {row[1] for row in run(cols.fetchall())}
+        assert "rejected" in names
+        run(db.close())
+
+    def test_mark_like_rejected_marks_latest_only(self, tmp_db) -> None:
+        """Отказ помечает самый свежий неотклонённый лайк чата."""
+        db = tmp_db
+        pid = run(self._liked_profile(db, "Аня"))
+        run(db.record_auto_action(pid, "LIKE", "LIKE", 1234060895, 90021))
+        run(db.mark_like_rejected(1234060895))
+        cursor = run(db._connection.execute(
+            "SELECT like_tm_id, rejected FROM like_outcomes "
+            "WHERE profile_id = ? ORDER BY id", (pid,),
+        ))
+        rows = run(cursor.fetchall())
+        assert rows[-1] == (90021, 1)
+        assert all(r[1] == 0 for r in rows[:-1])
+
+    def test_mark_like_rejected_consumes_in_sequence(self, tmp_db) -> None:
+        """Два отказа подряд помечают два последних лайка по очереди."""
+        db = tmp_db
+        pid = run(self._liked_profile(db, "Аня"))
+        run(db.record_auto_action(pid, "LIKE", "LIKE", 1234060895, 90031))
+        run(db.mark_like_rejected(1234060895))
+        run(db.mark_like_rejected(1234060895))
+        cursor = run(db._connection.execute(
+            "SELECT COUNT(*) FROM like_outcomes "
+            "WHERE profile_id = ? AND rejected = 1", (pid,),
+        ))
+        assert run(cursor.fetchone())[0] == 2
+
+    def test_mark_like_rejected_without_likes_ok(self, tmp_db) -> None:
+        """Нет лайков → отказам нечего помечать (не падает)."""
+        db = tmp_db
+        run(db.mark_like_rejected(1234060895))
+        cursor = run(db._connection.execute("SELECT COUNT(*) FROM like_outcomes"))
+        assert run(cursor.fetchone())[0] == 0
+
+    def test_top_excludes_rejected_likes(self, tmp_db) -> None:
+        """Отклонённые лайки не считаются в топе."""
+        db = tmp_db
+        pid_a = run(self._liked_profile(db, "Аня"))
+        pid_b = run(self._liked_profile(db, "Лена"))
+        run(db.record_auto_action(pid_b, "LIKE", "LIKE", 1234060895, 90100))
+        # оба лайка Лены отклонены Leo (два отказа подряд)
+        run(db.mark_like_rejected(1234060895))
+        run(db.mark_like_rejected(1234060895))
+        rows = run(db.get_top_liked_profiles(limit=5))
+        by_name = {r["name"]: r for r in rows}
+        assert "Лена" not in by_name
+        assert by_name["Аня"]["likes"] == 1
+        assert by_name["Аня"]["responded"] == 0
+
+    def test_match_response_does_not_flip_rejected(self, tmp_db) -> None:
+        """Отклонённый лайк не «отвечает»: флип responded их не трогает."""
+        db = tmp_db
+        pid = run(self._liked_profile(db, "Аня"))
+        run(db.mark_like_rejected(1234060895))
+        run(db.record_match_response("Аня", 1234060895, 9500))
+        cursor = run(db._connection.execute(
+            "SELECT responded, rejected FROM like_outcomes "
+            "WHERE profile_id = ?", (pid,),
+        ))
+        responded, rejected = run(cursor.fetchone())
+        assert responded == 0
+        assert rejected == 1
+
 
 class TestLikeMessageAnalyticsService:
     """AnalyticsService-обёртка: rate конверсии текста."""

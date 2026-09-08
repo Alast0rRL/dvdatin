@@ -1076,6 +1076,26 @@ class DvinchikCollector:
         try:
             has_media = media_type != ""
             msg_type = self._parser.classify(text, has_media=has_media)
+
+            # Stage 8.5.1: Leo отклонил лайк из-за дневного лимита
+            # («Слишком много ❤️ за сегодня. Перейди на Premium…»). Такой лайк
+            # не дошёл — помечаем последний лайк чата rejected, чтобы он не
+            # портил конверсию (вечный responded=0). Само сообщение трактуем
+            # как SERVICE, чтобы не давать ложный «Unknown message format».
+            if (
+                msg_type not in (MessageType.PROFILE, MessageType.MEDIA_ONLY)
+                and chat_id == self._dvinchik_chat_id
+            ):
+                try:
+                    if self._parser.is_like_rejection(text):
+                        await self._db.mark_like_rejected(chat_id)
+                        msg_type = MessageType.SERVICE
+                        logger.info(
+                            f"Leo: лайк отклонён (лимит). message_id={task.message_id}"
+                        )
+                except Exception as e:
+                    logger.warning(f"like_rejection hook error: {e}")
+
             logger.info(f"Message classified: type={msg_type.value}")
 
             self._print_message(
