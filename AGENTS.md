@@ -105,8 +105,8 @@ Currently at **Stage 8 (deterministic scoring)** on top of **Stage 7 (SEMI_AUTO)
 ## Control Panel (Stage 7.5)
 
 - Live in `telegram/control_bot.py`: `ControlBot(client, config, collector, db)`.
-- Commands `/status /mode on|off /stream /recent /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (default `[8525808108]`).
-- Работает на `telegram.accounts[0]`; `config.control.enabled` гейтит регистрацию в `main.py`.
+- Commands `/status /mode on|off /stream /recent /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (оба аккаунта-оператора: Бармалей `8525808108` + melancholic `1753676469`).
+- Регистрируется на ВСЕХ `telegram.accounts` (в `main.py` — цикл по `clients`); `config.control.enabled` гейтит регистрацию. Ответ шлётся с того же аккаунта, что получил команду (`event.client`).
 - Runtime-переключение: `collector.set_mode(Mode)` → обновляет `AutoActionEngine.mode` на лету (гатег `enabled` пересчитывается) + `AppConfig.persist_mode()` записывает `project.mode` в `config.yaml` (переживает restart). `AutoActionEngine.mode` — сеттер.
 - `collector.auto_engine()` — доступ к движку для панели; `collector.mode` — текущий режим.
 

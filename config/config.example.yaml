@@ -87,11 +87,13 @@ auto_actions:
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.
-# Работает на telegram.accounts[0]; режим меняется на лету и сохраняется в config.yaml.
+# Слушает ВСЕ аккаунты из telegram.accounts; команды принимаются от перечисленных
+# user_id (оба аккаунта-оператора), ответ шлётся с того же аккаунта, что получил.
 control:
   enabled: false
   allowed_user_ids:
-    - 8525808108     # ваш собственный account-id (оператор)
+    - 8525808108     # user_id аккаунта Бармалей (accounts[1], авто-аккаунт)
+    - 1753676469     # user_id аккаунта melancholic (accounts[0])
 
 # Stage 8: ручное ревью REVIEW-анкет.
 # Когда scoring выдаёт REVIEW (бот «не справляется»), бот НЕ действует сам:

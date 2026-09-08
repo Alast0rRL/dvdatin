@@ -168,14 +168,17 @@ async def main() -> None:
     collector.register()
 
     # Stage 7.5: ControlBot — панель управления режимом (вкл/выкл авто).
+    # Слушает ВСЕ аккаунты из telegram.accounts: команды принимаются от
+    # control.allowed_user_ids, ответ шлётся с того же аккаунта, что получил.
     if config.control.enabled:
-        control_bot = ControlBot(
-            clients[0], config,
-            collector=collector,
-            db=db,
-        )
-        control_bot.register()
-        logger.info("ControlBot: панель управления активна")
+        for client in clients:
+            control_bot = ControlBot(
+                client, config,
+                collector=collector,
+                db=db,
+            )
+            control_bot.register()
+        logger.info("ControlBot: панель управления активна (слушает все аккаунты)")
 
     # Pipeline: parse → filter → deterministic scoring
     worker = DvinchikRawWorker(process=collector._process_message)
