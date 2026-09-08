@@ -2441,6 +2441,50 @@ class TestCollectorAutoActions:
             1234060895, last_button
         )
 
+    def test_start_stream_geo_captcha_presses_plain_button(self) -> None:
+        """Гео-капча Leo («Пришли расположение…») — нажимаем ОБЫЧНУЮ кнопку,
+        а не специальную с запросом геолокации (её текстом не нажать)."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        plain_button = "Продолжить смотреть анкеты"
+        geo_text = "\U0001F4CD Отправить мои координаты"  # 📍
+
+        # Спец-кнопка: класс KeyboardButtonRequestGeoLocation (тип из Telethon).
+        geo_cls = type("KeyboardButtonRequestGeoLocation", (), {})
+        geo_btn = geo_cls()
+        geo_btn.text = geo_text
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: гео-капча (plain + geo-спец кнопки) → старый 👎.
+            plain_btn_row = MagicMock()
+            plain_btn = MagicMock()
+            plain_btn.text = plain_button
+            plain_btn_row.buttons = [plain_btn]
+            geo_btn_row = MagicMock()
+            geo_btn_row.buttons = [geo_btn]
+            rm = MagicMock()
+            rm.rows = [plain_btn_row, geo_btn_row]
+            m = self._iter_msg(
+                auto_client, 714, "Пришли свое расположение и увидишь анкеты рядом с тобой"
+            )
+            m.reply_markup = rm
+            yield m
+            yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(
+            1234060895, plain_button
+        )
+
     def test_start_stream_no_captcha_press_when_already_sent(self) -> None:
         """Последняя кнопка капчи уже нажата (после неё исходящий текст) — повторно нет."""
         auto_client = AsyncMock()

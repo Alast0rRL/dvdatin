@@ -67,7 +67,9 @@ CAPTCHA_MIN_BUTTONS: int = 2
 
 #: Маркеры текста, по которым сообщение считается капчей/сделкой/проверкой
 #: (а не меню/Premium-промо). Любой из них (без учёта регистра) включает
-#: авто-ответ последней кнопкой.
+#: авто-ответ кнопкой. «расположени/геолокаци/координат» ловят гео-капчу
+#: Leo («Пришли свое расположение…»), где обычной кнопкой отказываются от
+#: передачи координат и продолжают ленту.
 CAPTCHA_MARKERS: tuple[str, ...] = (
     "сделк",
     "подписываешься",
@@ -78,6 +80,9 @@ CAPTCHA_MARKERS: tuple[str, ...] = (
     "проверк",
     "ты подписываешься",
     "@leoday",
+    "расположени",
+    "геолокаци",
+    "координат",
 )
 
 
@@ -414,11 +419,15 @@ class DvinchikCollector:
             return False
 
     async def _press_captcha_button(self) -> bool:
-        """Нажимает ПОСЛЕДНЮЮ кнопку на проверке/капче Leo (сбрасывает диалог).
+        """Нажимает ответную кнопку на проверке/капче Leo (сбрасывает диалог).
 
-        Leo присылает сделки/подписки/подтверждения с reply-кнопками
-        («Готово»/«Возможно позже» и т.п.). Чтобы не зависала лента, авто-аккаунт
-        нажимает ПОСЛЕДНЮЮ кнопку — сбрасывает диалог и продолжает ленту.
+        Leo присылает сделки/подписки/подтверждения/гео-проверки с reply-кнопками
+        («Готово»/«Возможно позже», «Продолжить смотреть анкеты» и т.п.). Чтобы
+        не зависала лента, авто-аккаунт нажимает ПОСЛЕДНЮЮ ОБЫЧНУЮ кнопку —
+        сбрасывает диалог и продолжает ленту. Специальные кнопки (запрос
+        геолокации/телефона и т.п.) текстом не нажимаются — нужен реальный
+        reply-маркап/локация, поэтому их пропускаем и берём обычную (в гео-капче
+        это «Продолжить смотреть анкеты» = отказ от координат).
         Реагируем ТОЛЬКО на явные капчи/сделки: текст сообщения должен содержать
         один из CAPTCHA_MARKERS, а reply-кнопок должно быть >= CAPTCHA_MIN_BUTTONS.
         Иначе легко зациклиться, нажимая кнопки в главном меню/Premium-промо Leo.
@@ -435,10 +444,14 @@ class DvinchikCollector:
                 if not any(m in text for m in CAPTCHA_MARKERS):
                     continue
                 texts = self._extract_button_texts(msg)
-                if len(texts) >= CAPTCHA_MIN_BUTTONS:
-                    card_msg = msg
-                    button_text = texts[-1]  # правая/последняя кнопка
-                    break
+                if len(texts) < CAPTCHA_MIN_BUTTONS:
+                    continue
+                plain = self._extract_plain_button_texts(msg)
+                if not plain:
+                    continue
+                card_msg = msg
+                button_text = plain[-1]  # последняя ОБЫЧНАЯ кнопка
+                break
 
             if card_msg is None or not button_text:
                 return False
@@ -472,7 +485,11 @@ class DvinchikCollector:
             return False
 
     def _extract_button_texts(self, msg: object) -> list[str]:
-        """Извлекает тексты reply-кнопок сообщения (пусто, если их нет)."""
+        """Извлекает тексты reply-кнопок сообщения (пусто, если их нет).
+
+        Возвращает ВСЕ кнопки (включая специальные запросы геолокации/телефона) —
+        используются только для подсчёта количества кнопок капчи.
+        """
         rm = getattr(msg, "reply_markup", None)
         rows = getattr(rm, "rows", None)
         if not rows:
@@ -482,6 +499,37 @@ class DvinchikCollector:
             for b in getattr(row, "buttons", []):
                 t = getattr(b, "text", "")
                 if t:
+                    out.append(t)
+        return out
+
+    def _extract_plain_button_texts(self, msg: object) -> list[str]:
+        """Как _extract_button_texts, но только ОБЫЧНЫЕ KeyboardButton.
+
+        Специальные кнопки (запрос геолокации/телефона и т.п.) нельзя «нажать»
+        простой отправкой их текста — Leo ответит «Нет такого варианта ответа».
+        Для нажатия выбираем только plain-кнопки (все, кроме special-исключений;
+        класс обычной кнопки = KeyboardButton).
+        """
+        special: tuple[str, ...] = (
+            "KeyboardButtonRequestGeoLocation",
+            "KeyboardButtonRequestPhone",
+            "KeyboardButtonRequestPeer",
+            "KeyboardButtonUrl",
+            "KeyboardButtonCallback",
+            "KeyboardButtonInline",
+            "KeyboardButtonSwitchInline",
+            "KeyboardButtonGame",
+            "KeyboardButtonPay",
+        )
+        rm = getattr(msg, "reply_markup", None)
+        rows = getattr(rm, "rows", None)
+        if not rows:
+            return []
+        out: list[str] = []
+        for row in rows:
+            for b in getattr(row, "buttons", []):
+                t = getattr(b, "text", "")
+                if t and type(b).__name__ not in special:
                     out.append(t)
         return out
 
