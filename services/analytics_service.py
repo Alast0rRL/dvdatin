@@ -126,6 +126,36 @@ class AnalyticsService:
         """Количество неразобранных AI-оценок."""
         return await self._db.get_pending_count()
 
+    # ── Статистика лайков (Stage 8.5) ────────────────────────────────
+
+    async def get_message_response_stats(self) -> list[dict]:
+        """Конверсия текстов сообщений при лайке в ответ девушки.
+
+        Каждый элемент: message_text, sent (уникальных профилей, которым
+        отправлялся такой текст), responded (сколько из них ответили
+        взаимным лайком), rate (доля ответивших или None при sent=0).
+        Rate = responded / sent (менее строго, чем distinct-привязка,
+        но наглядно для сравнения текстов A/B).
+        """
+        rows = await self._db.get_message_response_stats()
+        out: list[dict] = []
+        for r in rows:
+            responded = r["responded"] or 0
+            sent = r["sent"] or 0
+            out.append(
+                {
+                    "message_text": r["message_text"],
+                    "sent": sent,
+                    "responded": responded,
+                    "rate": (responded / sent) if sent else None,
+                }
+            )
+        return out
+
+    async def get_top_liked_profiles(self, limit: int = 10) -> list[dict]:
+        """Топ профилей по количеству лайков + ответили ли они."""
+        return await self._db.get_top_liked_profiles(limit=limit)
+
 def _avg(values: list[float]) -> float | None:
     """Среднее арифметическое или None для пустого списка."""
     if not values:

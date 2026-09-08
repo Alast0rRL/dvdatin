@@ -1,7 +1,7 @@
 # DvAI — Система автоматизации знакомств в Telegram
 
 > **D**ayvinchik **AI** — коллектор + детерминированный скоринг + Human Review + авто-действия для сервиса знакомств «Дайвинчик» (Telegram).
-> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO)** — детерминированный скоринг; на анкеты с авто-аккаунта отправляются `❤️`/`👎` (и цепочка «Берем)» для информативных), на AI-REVIEW бот ждёт ручного решения владельца. Полный AUTO не реализован.
+> Текущий этап: **v0.7 / Stage 8 (SEMI_AUTO) + Stage 8.5** — детерминированный скоринг + аналитика лайков; на анкеты с авто-аккаунта отправляются `❤️`/`👎` (и цепочка «Берем)» для информативных), на AI-REVIEW бот ждёт ручного решения владельца. Полный AUTO не реализован.
 
 ---
 
@@ -16,7 +16,8 @@
 - **Human Review (Stage 6)**: очередь профилей с AI-решением, ручная оценка APPROVE / REJECT / SKIP, метрика **AI/Human Agreement Rate** = AGREEMENT/(AGREEMENT+DISAGREEMENT) (SKIP исключён; `null` при нулевом знаменателе). Telegram-UI (`telegram/review_bot.py`): `/review`, `/profile`, `/stats`, `/ai_stats`, `/disagreements`. CSV-экспорт: `python main.py --export-review`.
 - **Авто-действия (Stage 7, SEMI_AUTO)** (`collectors/auto_action.py`): Decision != Action (§30): `DecisionService` возвращает только LIKE/REVIEW/DISLIKE, а что слать в Telegram решает `ActionPolicyResolver` (`models/action.py`). LIKE → `❤️` (LIKE_ONLY) или цепочку «Берем)» ❤️→💌→«Берем)» (LIKE_AND_MESSAGE, только для информативных анкет); DISLIKE → `👎`; rate-limit `interval_sec`; идемпотентность **по карточке + виду действия** (`chat_id`+`telegram_message_id`+`action` — LIKE и MESSAGE независимы); фильтровые не-PASS тоже получают `👎` (лента Leo не замирает); автопродолжение ленты кнопкой «🚀 Смотреть анкеты»; обход капч/проверок Leo (нажимается последняя reply-кнопка, включая гео-капчи «Пришли расположение…» через обычную кнопку «Продолжить смотреть анкеты»; только на явные маркеры капчи). **Уведомления владельцу не дублируются**: реакция шлётся на каждую карточку, но пересылка владельцу — только для первого авто-действия профиля (`db.has_auto_action(profile_id)`), иначе повтор анкеты заваливал бы его историей. Гейт: режим `project.mode ∈ {SEMI_AUTO, AUTO}` + `auto_actions.enabled` + найден клиент по `account_session`. OBSERVE → действий нет.
 - **Manual Review (Stage 8)** (`services/manual_review.py`): когда скоринг выдаёт REVIEW, бот **не действует сам** — пересылает карточку владельцу и ждёт его ручного решения. Исходящее `❤️`/`👎` владельца перехватывается и записывается в файл `data/reviews/review_log.json`/`.md` (только для активных REVIEW-анкет).
-- **Control Panel (Stage 7.5)** (`telegram/control_bot.py`): `/status /mode on|off /stream /recent /help` (+ inline-кнопки) только от `control.allowed_user_ids`; слушает **все** `telegram.accounts`; режим меняется на лету и персистится в `config.yaml`.
+- **Control Panel (Stage 7.5)** (`telegram/control_bot.py`): `/status /mode on|off /stream /recent /msgs /top /help` (+ inline-кнопки) только от `control.allowed_user_ids`; слушает **все** `telegram.accounts`; режим меняется на лету и персистится в `config.yaml`.
+- **Аналитика лайков (Stage 8.5)**: собирается «что я написал при лайке и ответила ли девушка». Авто-текст «Берем)» — в `auto_actions_log.message_text`, ручные тексты владельца — в `sent_messages` (`_handle_outgoing_message`, минус кнопки/реакции с авто-аккаунта); сигнал ответа — MATCH «Начинай общаться 👉 Имя» → `match_responses` (привязка к профилю по имени, `UNIQUE(chat_id, tm_id)`). Отчёты: `/msgs` — конверсия текстов (`sent`/`responded`/`rate`), `/top` — топ девушек по лайкам.
 - **SAFE по умолчанию**: режимы `project.mode` (OBSERVE / SEMI_AUTO / AUTO). `OBSERVE` только наблюдает и рекомендует; авто-действия включаются только явно.
 
 ---
@@ -89,7 +90,9 @@ dvdatin/
 | `chat_context` | Контекст «последняя анкета чата» |
 | `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
 | `ai_decisions` | Решения DecisionService (LIKE/REVIEW/DISLIKE; `scoring_version=deterministic-v2`) |
-| `auto_actions_log` | Отправленные действия per-card + kind (`chat_id`+`telegram_message_id`+`action`): LIKE/DISLIKE/MESSAGE |
+| `auto_actions_log` | Отправленные действия per-card + kind (`chat_id`+`telegram_message_id`+`action`): LIKE/DISLIKE/MESSAGE; `message_text` — текст сообщения при лайке («Берем)») |
+| `match_responses` | Взаимные лайки (Stage 8.5): девушка ответила — привязка к `profile_id` по имени; `UNIQUE(chat_id, telegram_message_id)` |
+| `sent_messages` | Ручные исходящие тексты владельца (Stage 8.5, `source='manual'`) |
 | `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
 
 ### Конфиг (config.yaml)

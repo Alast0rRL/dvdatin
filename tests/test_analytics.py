@@ -282,3 +282,135 @@ class TestHistoryExport:
         # количество и уникальность
         assert len(CSV_FIELDS) == 9
         assert len(set(CSV_FIELDS)) == 9
+
+
+# ── Stage 8.5: аналитика лайков (сообщения + ответы) ─────────────────
+
+class TestLikeMessageAnalytics:
+    """Конверсия текстов сообщений при лайке в ответ девушки."""
+
+    async def _liked_profile(self, db: Database, name: str) -> int:
+        pid = await db.insert_profile(
+            name=name, age=19, raw_city="Москва", normalized_city="Москва",
+            description="Описание", fingerprint=f"fp_{name}",
+            source_chat_id=1234060895, source_message_id=hash(name) % 100000,
+            first_seen_at="now", last_seen_at="now", status="NEW",
+        )
+        await db.record_auto_action(
+            pid, "LIKE", "LIKE", 1234060895, tm := hash(name) % 100000 + 1,
+            message_text="",
+        )
+        return pid
+
+    def test_record_match_links_by_name_case_insensitive(self, tmp_db) -> None:
+        """Взаимный лайк привязывается к профилю по имени (кириллица, регистр)."""
+        db = tmp_db
+        pid = run(self._liked_profile(db, "Кариша"))
+        run(db.record_match_response("кариша", 1234060895, 5000))
+        cursor = run(db._connection.execute(
+            "SELECT profile_id FROM match_responses WHERE telegram_message_id = 5000"
+        ))
+        row = run(cursor.fetchone())
+        assert row[0] == pid
+
+    def test_record_match_unknown_name_no_profile(self, tmp_db) -> None:
+        """Неизвестное имя → profile_id NULL (не падает)."""
+        db = tmp_db
+        run(db.record_match_response("Незнакомка", 1234060895, 7000))
+        cursor = run(db._connection.execute(
+            "SELECT profile_id FROM match_responses WHERE telegram_message_id = 7000"
+        ))
+        row = run(cursor.fetchone())
+        assert row[0] is None
+
+    def test_record_match_dedupe_by_card(self, tmp_db) -> None:
+        """Дубль одной карточки (chat_id+tm_id) не записывается дважды."""
+        db = tmp_db
+        run(db.record_match_response("Катя", 1234060895, 8000))
+        run(db.record_match_response("Катя", 1234060895, 8000))
+        cursor = run(db._connection.execute(
+            "SELECT COUNT(*) FROM match_responses WHERE telegram_message_id = 8000"
+        ))
+        assert run(cursor.fetchone())[0] == 1
+
+    def test_message_response_stats_auto_and_manual(self, tmp_db) -> None:
+        """«Берём)» (авто, MESSAGE) и ручные тексты в одной конверсии."""
+        db = tmp_db
+        pid1 = run(self._liked_profile(db, "Аня"))
+        pid2 = run(self._liked_profile(db, "Лена"))
+        # авто-сообщение «Берём)» для двух профилей; Аня ответила.
+        run(db.record_auto_action(
+            pid1, "MESSAGE", "LIKE", 1234060895, 10001, message_text="Берём)",
+        ))
+        run(db.record_auto_action(
+            pid2, "MESSAGE", "LIKE", 1234060895, 10002, message_text="Берём)",
+        ))
+        run(db.record_match_response("Аня", 1234060895, 9000))
+        # ручное «Беру)» Лене — она ещё не ответила.
+        run(db.record_sent_message("Беру)", 1234060895, 20001, profile_id=pid2))
+
+        rows = run(db.get_message_response_stats())
+        by_text = {r["message_text"]: r for r in rows}
+        assert by_text["Берём)"]["sent"] == 2
+        assert by_text["Берём)"]["responded"] == 1
+        # ручной текст тоже попадает в выдачу
+        assert by_text["Беру)"]["sent"] == 1
+        assert by_text["Беру)"]["responded"] == 0
+
+    def test_top_liked_profiles(self, tmp_db) -> None:
+        """Топ по количеству лайков + ответ."""
+        db = tmp_db
+        pid_a = run(self._liked_profile(db, "Аня"))
+        run(db.record_auto_action(
+            pid_a, "LIKE", "LIKE", 1234060895, 90011,
+        ))
+        pid_b = run(self._liked_profile(db, "Лена"))
+        run(db.record_match_response("Лена", 1234060895, 9100))
+        rows = run(db.get_top_liked_profiles(limit=5))
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["Аня"]["likes"] == 2
+        assert by_name["Аня"]["responded"] == 0
+        assert by_name["Лена"]["likes"] == 1
+        assert by_name["Лена"]["responded"] == 1
+
+    def test_fresh_db_has_analytics_tables(self, tmp_db) -> None:
+        """Свежая БД сразу содержит match_responses/sent_messages + message_text."""
+        db = tmp_db
+        cols = run(db._connection.execute("PRAGMA table_info(auto_actions_log)"))
+        assert "message_text" in {row[1] for row in run(cols.fetchall())}
+        for table in ("match_responses", "sent_messages"):
+            cursor = run(db._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ))
+            assert run(cursor.fetchone()) is not None
+
+
+class TestLikeMessageAnalyticsService:
+    """AnalyticsService-обёртка: rate конверсии текста."""
+
+    def test_service_rate(self, tmp_db) -> None:
+        from services.analytics_service import AnalyticsService
+        db = tmp_db
+        pid = run(db.insert_profile(
+            name="Аня", age=19, raw_city="Москва", normalized_city="Москва",
+            description="Описание", fingerprint="fp_s", source_chat_id=1234060895,
+            source_message_id=777, first_seen_at="now", last_seen_at="now",
+            status="NEW",
+        ))
+        run(db.record_auto_action(
+            pid, "LIKE", "LIKE", 1234060895, 4001,
+            message_text="",
+        ))
+        run(db.record_auto_action(
+            pid, "MESSAGE", "LIKE", 1234060895, 4002,
+            message_text="Берём)",
+        ))
+        run(db.record_match_response("Аня", 1234060895, 4100))
+        ga = AnalyticsService(db)
+        rows = run(ga.get_message_response_stats())
+        by_text = {r["message_text"]: r for r in rows}
+        assert by_text["Берём)"]["sent"] == 1
+        assert by_text["Берём)"]["rate"] == 1.0
+        # текст без отправленных сообщений не даёт rate
+        assert len(rows) == 1  # запись LIKE без текста не попадает в выдачу

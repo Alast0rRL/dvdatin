@@ -57,6 +57,32 @@ _MEDIA_TYPE_MAP: dict[type, str] = {
 #: Парсим по частичному вхождению, т.к. эмодзи могут различаться.
 VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 
+#: Stage 8.5: тексты, которые НЕ считаются ручным «сообщением при лайке»
+#: (кнопки Leo/эмодзи-реакции/навигация). Они не попадают в sent_messages,
+#: чтобы навигация и реакции не засоряли аналитику текстов.
+MANUAL_MESSAGE_EXCLUDE: frozenset[str] = frozenset(
+    {
+        "❤️",
+        "👎",
+        "💤",
+        "💌",
+        "💌 📹 🎤",
+        "🌸",
+        "🚀 Смотреть анкеты",
+        "Смотреть анкеты",
+        "Возможно позже",
+        "Продолжить смотреть анкеты",
+        "Продолжить",
+        "Начать",
+        "← Назад",
+        "Вернуться назад",
+        "👌 Готово",
+        "Готово",
+        "Активировать Premium",
+        "Показать девушку",
+    }
+)
+
 #: На любые "проверки"/капчи Leo (сделка, подписка, подтверждение и т.п.)
 #: авто-аккаунт всегда нажимает ПОСЛЕДНЮЮ reply-кнопку — это сбрасывает
 #: диалог и продолжает ленту (в конкретном случае «Возможно позже»).
@@ -849,6 +875,48 @@ class DvinchikCollector:
         self._print_outgoing_message(chat_id, msg.id, text, msg_date)
 
         await self._maybe_record_manual_review(chat_id, msg.id, text)
+        await self._maybe_record_sent_message(chat_id, text, msg)
+
+    async def _maybe_record_sent_message(
+        self, chat_id: int, text: str, msg: object,
+    ) -> None:
+        """Stage 8.5: фиксирует РУЧНОЕ сообщение владельца при лайке.
+
+        Авто-сообщения «Берем)» не попадают сюда: отправки с авто-аккаунта
+        уже отслеживаются в auto_actions_log(message_text). Здесь — только
+        тексты, напечатанные владельцем (клиент НЕ авто-аккаунт) и не похожие
+        на кнопки/реакции (MANUAL_MESSAGE_EXCLUDE). Профиль для привязки
+        ответа берём из «текущей» анкеты чата (chat_context / pending).
+        Ошибки БД не ломают перехват исходящих (RAW уже сохранён).
+        """
+        t = (text or "").strip()
+        if not t:
+            return
+        if len(t) < 2:
+            return
+        if t in MANUAL_MESSAGE_EXCLUDE:
+            return
+        if (
+            self._auto_engine.client is not None
+            and getattr(msg, "client", None) is self._auto_engine.client
+        ):
+            return
+        profile_id: int | None = None
+        try:
+            context = await self._db.get_chat_profile_context(chat_id)
+            if context is None:
+                context = self._pending_profiles.get(chat_id)
+            if context is not None:
+                profile_id = await self._db.resolve_profile_by_message(context)
+        except Exception as e:
+            logger.warning(f"sent_message: не смогли привязать профиль: {e}")
+        try:
+            await self._db.record_sent_message(
+                t, chat_id, getattr(msg, "id", 0), source="manual",
+                profile_id=profile_id,
+            )
+        except Exception as e:
+            logger.warning(f"record_sent_message error: {e}")
 
     async def _maybe_record_manual_review(
         self, chat_id: int, outgoing_tm_id: int, text: str,
@@ -1135,6 +1203,18 @@ class DvinchikCollector:
                 match = self._parser.parse_match(text)
                 if match:
                     self._print_match(match)
+                    # Stage 8.5: взаимный лайк = «девушка ответила».
+                    # Привязка к профилю по имени; дубликаты на карточку
+                    # отбрасываются (INSERT OR IGNORE по chat_id+tm_id).
+                    try:
+                        await self._db.record_match_response(
+                            match.name,
+                            chat_id,
+                            task.message_id,
+                            telegram_username=match.telegram_username or "",
+                        )
+                    except Exception as e:
+                        logger.error(f"record_match_response error: {e}")
                 if self._stats:
                     self._stats.record_match()
 

@@ -295,6 +295,7 @@ class AutoActionEngine:
                             chain.get("decision") or "LIKE",
                             chat_id,
                             card_id,
+                            message_text=msg_text,
                         )
                     except Exception as e:
                         logger.error(f"AutoAction: сообщение отправлено, но не записано: {e}")

@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (493 total, no linter/formatter configured)
+# Run all tests (508 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -57,7 +57,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_ai (10), test_collector (96), test_parser (47), test_decision (23), test_audit (27), test_filter (26), test_human_review (23), test_analytics (16), test_profile (18), test_preferences (12), test_review_ui (5), test_auto_action (54), test_auto_action_audit (4), test_control_bot (12), test_deterministic_scoring (84), test_manual_review (13) → 470 total. Plus Decision != Action: test_action_policy (~14), chain-тесты в test_auto_action + коллектор + MESSAGE-rec → **493 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_ai (10), test_collector (101), test_parser (47), test_decision (23), test_audit (27), test_filter (26), test_human_review (23), test_analytics (23), test_profile (18), test_preferences (12), test_review_ui (5), test_auto_action (54), test_auto_action_audit (4), test_control_bot (14), test_deterministic_scoring (84), test_manual_review (13) → **508 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -78,7 +78,7 @@ filters:
 
 ## Project Stage
 
-Currently at **Stage 8 (deterministic scoring)** on top of **Stage 7 (SEMI_AUTO)**. See `Roadmap.md` for roadmap. DecisionService computes LIKE/REVIEW/DISLIKE via a deterministic rule engine (`profile_normalizer` → `feature_extractor` H01–H09/P01–P04 → `score_engine`), rules from `config/preferences.yaml`; never LLM/CLIP. **Decision != Action (§30)**: `DecisionService` возвращает только LIKE/REVIEW/DISLIKE и НЕ знает о Telegram; что именно слать в чат (❤️ / 👎 / +«Берем)») решает слой действий (`models/action.py` `ActionPolicy` + `services/action_policy.py` `ActionPolicyResolver`). LIKE для **информативной** чистой анкеты → `LIKE_AND_MESSAGE` (❤️ + «Берем)»), для короткой → `LIKE_ONLY` (только ❤️). В SEMI_AUTO коллектор шлёт авто-действия через `AutoActionEngine` на авто-аккаунте: LIKE→`❤️` и, если нужно, цепочку «Берем)»; DISLIKE→`👎`; **AI REVIEW→ не действует сам** (уведомляет владельца — см. Manual Review), rate-limited (default 10s). `config.project.mode` гейтит авто-действия (OBSERVE → no actions). Active stream: `collector.start_auto_stream()` processes the already-displayed active profile or presses «Смотреть анкеты». ReviewBot still saves human decisions (APPROVE/REJECT/SKIP). Do not implement full AUTO / dialog manager until explicitly instructed.
+Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)** on top of **Stage 7 (SEMI_AUTO)**. See `Roadmap.md` for roadmap. DecisionService computes LIKE/REVIEW/DISLIKE via a deterministic rule engine (`profile_normalizer` → `feature_extractor` H01–H09/P01–P04 → `score_engine`), rules from `config/preferences.yaml`; never LLM/CLIP. **Decision != Action (§30)**: `DecisionService` возвращает только LIKE/REVIEW/DISLIKE и НЕ знает о Telegram; что именно слать в чат (❤️ / 👎 / +«Берем)») решает слой действий (`models/action.py` `ActionPolicy` + `services/action_policy.py` `ActionPolicyResolver`). LIKE для **информативной** чистой анкеты → `LIKE_AND_MESSAGE` (❤️ + «Берем)»), для короткой → `LIKE_ONLY` (только ❤️). В SEMI_AUTO коллектор шлёт авто-действия через `AutoActionEngine` на авто-аккаунте: LIKE→`❤️` и, если нужно, цепочку «Берем)»; DISLIKE→`👎`; **AI REVIEW→ не действует сам** (уведомляет владельца — см. Manual Review), rate-limited (default 10s). `config.project.mode` гейтит авто-действия (OBSERVE → no actions). Active stream: `collector.start_auto_stream()` processes the already-displayed active profile or presses «Смотреть анкеты». ReviewBot still saves human decisions (APPROVE/REJECT/SKIP). Do not implement full AUTO / dialog manager until explicitly instructed.
 
 ## Auto-Actions (Stage 7)
 
@@ -103,10 +103,20 @@ Currently at **Stage 8 (deterministic scoring)** on top of **Stage 7 (SEMI_AUTO)
 - Только активная REVIEW-анкета: бот и сам шлёт `❤️`/`👎` (LIKE/DISLIKE), но recorder записывает лишь когда последнее AI-решение профиля == REVIEW → ложных записей нет.
 - Проводка: `main.py` создаёт `ManualReviewRecorder` (гейт `config.manual_review.enabled`) и передаёт в `DvinchikCollector(..., manual_review=...)`. Конфиг — `manual_review: enabled / file / format (json|md)` в `config.yaml`/`config.example.yaml`. Ошибки файла/БД не ломают перехват исходящих (RAW уже сохранён).
 
+## Like Analytics (Stage 8.5)
+
+- **Цель**: статистика «что написал при лайке и ответила ли девушка» — какие тексты сообщений работают лучше (конверсия в ответ) и каких девушек чаще лайкают.
+- **Два источника сообщений при лайке**:
+  1. Авто-«Берем)» (цепочка LIKE_AND_MESSAGE) — текст пишется в `auto_actions_log.message_text` при `action='MESSAGE'` (из `like_message.text`; `record_auto_action(..., message_text=...)`). Колонка добавлена миграцией `_ensure_auto_actions_message_text`.
+  2. Ручные тексты владельца — в `_handle_outgoing_message` → `_maybe_record_sent_message` → таблица `sent_messages` (`source='manual'`). НЕ записываются: исходящие с авто-аккаунта (`msg.client is auto_engine.client` — уже в авто-журнале), кнопки/реакции из `MANUAL_MESSAGE_EXCLUDE`, тексты < 2 символов. Профиль привязывается по «текущей» анкете чата (`get_chat_profile_context`/`_pending_profiles` → `Database.resolve_profile_by_message`).
+- **Сигнал ответа** — взаимный лайк: MATCH-сообщение «Начинай общаться 👉 [Имя]» → `Database.record_match_response(name, chat_id, tm_id, telegram_username=...)`. Привязка к профилю по имени (`_resolve_profile_by_name`): регистронезависимо по-настоящему (Python `lower`), приоритет — профили со свежими записями `auto_actions_log`. Дубликаты на карточку отсекаются UNIQUE-индексом `(chat_id, telegram_message_id)` (INSERT OR IGNORE).
+- **Отчёты** (Telegram-free, `AnalyticsService` + `Database`): `get_message_response_stats()` — по каждому тексту `sent` (уникальных профилей) / `responded` / `rate`; `get_top_liked_profiles(limit)` — топ по лайкам + ответили ли. Команды ControlBot `/msgs` и `/top` (+ inline-кнопки «💬 Сообщения»/«💖 Топ лайков»).
+- **Правила**: аналитика read-only и не влияет на действия (LIKE/MESSAGE всё равно шлются); ошибки БД в записи ответов/исходящих не ломают pipeline (RAW уже сохранён).
+
 ## Control Panel (Stage 7.5)
 
 - Live in `telegram/control_bot.py`: `ControlBot(client, config, collector, db)`.
-- Commands `/status /mode on|off /stream /recent /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (оба аккаунта-оператора: Бармалей `8525808108` + melancholic `1753676469`).
+- Commands `/status /mode on|off /stream /recent /msgs /top /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (оба аккаунта-оператора: Бармалей `8525808108` + melancholic `1753676469`).
 - Регистрируется на ВСЕХ `telegram.accounts` (в `main.py` — цикл по `clients`); `config.control.enabled` гейтит регистрацию. Ответ шлётся с того же аккаунта, что получил команду (`event.client`).
 - Runtime-переключение: `collector.set_mode(Mode)` → обновляет `AutoActionEngine.mode` на лету (гатег `enabled` пересчитывается) + `AppConfig.persist_mode()` записывает `project.mode` в `config.yaml` (переживает restart). `AutoActionEngine.mode` — сеттер.
 - `collector.auto_engine()` — доступ к движку для панели; `collector.mode` — текущий режим.

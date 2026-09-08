@@ -878,7 +878,9 @@ class TestLikeAndMessageChain:
         )
         args, _ = client.send_message.call_args
         assert args[1] == "Берем)"
-        db.record_auto_action.assert_awaited_once_with(5, "MESSAGE", "LIKE", 1234060895, 100)
+        db.record_auto_action.assert_awaited_once_with(
+            5, "MESSAGE", "LIKE", 1234060895, 100, message_text="Берем)"
+        )
         # Цепочка завершена (удалена из pending).
         assert e._pending_chains == {}
 

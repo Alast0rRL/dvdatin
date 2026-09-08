@@ -177,3 +177,32 @@ class TestControlBotRouter:
         asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
         ev.client.send_message.assert_not_awaited()
         ev.respond.assert_not_awaited()
+
+    def test_router_msgs(self) -> None:
+        bot, client, collector = make_bot()
+        bot._db.get_message_response_stats = AsyncMock(
+            return_value=[{
+                "message_text": "Берём)",
+                "sent": 5,
+                "responded": 2,
+            }]
+        )
+        ev = _event(sender_id=8525808108, text="/msgs")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        assert (
+            "Берём)" in ev.respond.call_args.args[0]
+            and "2" in ev.respond.call_args.args[0]
+        )
+
+    def test_router_top(self) -> None:
+        bot, client, collector = make_bot()
+        bot._db.get_top_liked_profiles = AsyncMock(
+            return_value=[{
+                "id": 3, "name": "Кариша", "age": 19,
+                "city": "Москва", "likes": 4, "responded": 1,
+            }]
+        )
+        ev = _event(sender_id=8525808108, text="/top")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        out = ev.respond.call_args.args[0]
+        assert "Кариша" in out and "4" in out

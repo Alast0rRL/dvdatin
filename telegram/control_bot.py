@@ -80,6 +80,10 @@ class ControlBot:
             await self._cmd_stream(event)
         elif cmd == "/recent":
             await self._cmd_recent(event)
+        elif cmd == "/msgs":
+            await self._cmd_msgs(event)
+        elif cmd == "/top":
+            await self._cmd_top(event)
         elif cmd == "/help":
             await self._cmd_help(event)
 
@@ -183,6 +187,26 @@ class ControlBot:
             logger.error(f"ControlBot error (/recent): {e}")
             await event.respond("Ошибка загрузки последних решений.")
 
+    async def _cmd_msgs(self, event: events.NewMessage.Event) -> None:
+        if not self._is_authorized(event.sender_id):
+            return
+        try:
+            text = await self._render_message_stats()
+            await event.respond(text)
+        except Exception as e:
+            logger.error(f"ControlBot error (/msgs): {e}")
+            await event.respond("Ошибка загрузки статистики сообщений.")
+
+    async def _cmd_top(self, event: events.NewMessage.Event) -> None:
+        if not self._is_authorized(event.sender_id):
+            return
+        try:
+            text = await self._render_top_liked()
+            await event.respond(text)
+        except Exception as e:
+            logger.error(f"ControlBot error (/top): {e}")
+            await event.respond("Ошибка загрузки топа лайков.")
+
     # ── Callback (inline кнопки) ─────────────────────────────────────
 
     async def _on_callback(self, event: events.CallbackQuery.Event) -> None:
@@ -224,6 +248,12 @@ class ControlBot:
             elif action == "recent":
                 text = await self._render_recent()
                 await event.edit(text)
+            elif action == "msgs":
+                text = await self._render_message_stats()
+                await event.edit(text)
+            elif action == "top":
+                text = await self._render_top_liked()
+                await event.edit(text)
         except Exception as e:
             logger.error(f"ControlBot callback error: {e}")
             try:
@@ -239,7 +269,9 @@ class ControlBot:
              Button.inline("⭕ OFF (OBSERVE)", data=b"control:off")],
             [Button.inline("📊 Статус", data=b"control:status"),
              Button.inline("▶ Поток", data=b"control:stream")],
-            [Button.inline("🕘 Последние решения", data=b"control:recent")],
+            [Button.inline("🕘 Последние решения", data=b"control:recent"),
+             Button.inline("💬 Сообщения", data=b"control:msgs")],
+            [Button.inline("💖 Топ лайков", data=b"control:top")],
         ]
 
     def _render_help(self) -> str:
@@ -252,6 +284,8 @@ class ControlBot:
             "/mode on|off — SEMI_AUTO / OBSERVE\n"
             "/stream — запустить поток анкет сейчас\n"
             "/recent — последние 5 решений AI\n"
+            "/msgs — что писали при лайке и ответили ли (конверсия)\n"
+            "/top — топ девушек по лайкам\n"
             "/help — эта справка\n\n"
             "Ниже кнопки быстрого управления."
         )
@@ -292,6 +326,39 @@ class ControlBot:
                 f"#{row.get('profile_id','')} → {row.get('decision','')} "
                 f"(score {row.get('combined_score', 0):.2f}) "
                 f"@ {row.get('evaluated_at','')[:19]}"
+            )
+        lines.append("")
+        lines.append(_SEP)
+        return "\n".join(lines)
+
+    async def _render_message_stats(self) -> str:
+        rows = await self._db.get_message_response_stats()
+        lines = [_SEP, "💬 СООБЩЕНИЯ ПРИ ЛАЙКЕ", _SEP, ""]
+        if not rows:
+            lines.append("Сообщений с лайками пока нет.")
+        for r in rows:
+            sent = r["sent"]
+            responded = r["responded"]
+            rate = (responded / sent) if sent else 0.0
+            lines.append(f"«{r['message_text']}»")
+            lines.append(
+                f"   отправлено: {sent}, ответили: {responded} ({rate:.0%})"
+            )
+        lines.append("")
+        lines.append(_SEP)
+        return "\n".join(lines)
+
+    async def _render_top_liked(self) -> str:
+        rows = await self._db.get_top_liked_profiles(limit=10)
+        lines = [_SEP, "💖 ТОП ЛАЙКОВ", _SEP, ""]
+        if not rows:
+            lines.append("Лайков пока нет.")
+        for i, r in enumerate(rows, start=1):
+            city = r.get("city") or "—"
+            responded = " ✅ ответила" if r.get("responded") else ""
+            lines.append(
+                f"{i}. {r.get('name')} ({r.get('age')}/{city}) "
+                f"— ❤️{r.get('likes')}{responded}"
             )
         lines.append("")
         lines.append(_SEP)

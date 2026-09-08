@@ -1,7 +1,18 @@
 ﻿# DvAI Test Baseline (FROZEN)
-# count=470
-# generated=2026-09-05 12:19:40
-# status=470 passed (post-simplification: dead code/AI-legacy removed)
+# count=508
+# generated=2026-09-09
+# status=508 passed
+tests/test_action_policy.py::TestActionPolicyResolve::test_none_decision_no_action
+tests/test_action_policy.py::TestActionPolicyResolve::test_disable_no_action_any_informative
+tests/test_action_policy.py::TestActionPolicyResolve::test_review_no_action
+tests/test_action_policy.py::TestActionPolicyResolve::test_like_informative_goes_to_message
+tests/test_action_policy.py::TestActionPolicyResolve::test_like_not_informative_like_only
+tests/test_action_policy.py::TestActionPolicyConfig::test_disable_only_ignores_like_gate
+tests/test_action_policy.py::TestActionPolicyConfig::test_like_only_requires_like_enabled
+tests/test_action_policy.py::TestActionPolicyConfig::test_like_and_message_full_chain
+tests/test_action_policy.py::TestActionPolicyConfig::test_like_and_message_degrades_to_like_only_without_msg
+tests/test_action_policy.py::TestActionPolicyConfig::test_like_and_message_no_action_if_like_off
+tests/test_action_policy.py::TestActionPolicyConfig::test_no_action_stays_no_action
 tests/test_ai.py::TestCollectorDecisionIntegration::test_pass_triggers_decision
 tests/test_ai.py::TestCollectorDecisionIntegration::test_reject_passes_filter_result_to_decision
 tests/test_ai.py::TestCollectorDecisionIntegration::test_review_passes_filter_result_to_decision
@@ -28,6 +39,13 @@ tests/test_analytics.py::TestHistoryExport::test_profile_history
 tests/test_analytics.py::TestHistoryExport::test_export_csv
 tests/test_analytics.py::TestHistoryExport::test_export_empty_raises
 tests/test_analytics.py::TestHistoryExport::test_csv_fields_contract_count_and_order
+tests/test_analytics.py::TestLikeMessageAnalytics::test_record_match_links_by_name_case_insensitive
+tests/test_analytics.py::TestLikeMessageAnalytics::test_record_match_unknown_name_no_profile
+tests/test_analytics.py::TestLikeMessageAnalytics::test_record_match_dedupe_by_card
+tests/test_analytics.py::TestLikeMessageAnalytics::test_message_response_stats_auto_and_manual
+tests/test_analytics.py::TestLikeMessageAnalytics::test_top_liked_profiles
+tests/test_analytics.py::TestLikeMessageAnalytics::test_fresh_db_has_analytics_tables
+tests/test_analytics.py::TestLikeMessageAnalyticsService::test_service_rate
 tests/test_audit.py::TestAudit1MultipleMessages::test_three_messages_one_profile
 tests/test_audit.py::TestAudit1MultipleMessages::test_message_count_reflects
 tests/test_audit.py::TestAudit2UniqueConstraint::test_different_messages_same_profile
@@ -109,8 +127,18 @@ tests/test_auto_action.py::TestNoDuplicateNotify::test_dislike_repeat_skips_noti
 tests/test_auto_action.py::TestNoDuplicateNotify::test_review_repeat_skips_notify
 tests/test_auto_action.py::TestNoDuplicateNotify::test_first_action_notifies
 tests/test_auto_action.py::TestNoDuplicateNotify::test_db_error_falls_back_to_notify
+tests/test_auto_action.py::TestLikeAndMessageChain::test_informative_like_starts_chain_sends_heart
+tests/test_auto_action.py::TestLikeAndMessageChain::test_like_ack_presses_message_button
+tests/test_auto_action.py::TestLikeAndMessageChain::test_prompt_sends_text_and_records_message
+tests/test_auto_action.py::TestLikeAndMessageChain::test_full_chain_end_to_end
+tests/test_auto_action.py::TestLikeAndMessageChain::test_unrelated_text_does_not_advance
+tests/test_auto_action.py::TestLikeAndMessageChain::test_message_wrong_chat_does_not_advance
+tests/test_auto_action.py::TestLikeAndMessageChain::test_like_message_disabled_sends_only_like
+tests/test_auto_action.py::TestLikeAndMessageChain::test_non_informative_like_is_like_only
+tests/test_auto_action.py::TestLikeAndMessageChain::test_message_db_error_does_not_break
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_successful_action_creates_one_log_and_updates_status
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_repeat_show_of_same_profile_gets_another_action
+tests/test_auto_action_audit.py::TestAutoActionAudit::test_like_and_message_are_independent_actions
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_failed_telegram_action_has_no_log
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_migration_adds_log_to_existing_database
 tests/test_collector.py::TestDedup::test_unknown_not_known
@@ -126,6 +154,7 @@ tests/test_collector.py::TestCollectorStats::test_uptime
 tests/test_collector.py::TestCollectorIntegration::test_register
 tests/test_collector.py::TestCollectorIntegration::test_handle_profile
 tests/test_collector.py::TestCollectorIntegration::test_handle_match
+tests/test_collector.py::TestCollectorIntegration::test_handle_match_records_response
 tests/test_collector.py::TestCollectorIntegration::test_handle_media_only
 tests/test_collector.py::TestCollectorIntegration::test_handle_unknown
 tests/test_collector.py::TestSourceFilter::test_authorized_chat_is_processed
@@ -188,9 +217,15 @@ tests/test_collector.py::TestOutgoingCapture::test_outgoing_saved_and_processed
 tests/test_collector.py::TestOutgoingCapture::test_outgoing_outside_dvinchik_ignored
 tests/test_collector.py::TestOutgoingCapture::test_outgoing_empty_text_ignored
 tests/test_collector.py::TestOutgoingCapture::test_outgoing_blank_whitespace_ignored
+tests/test_collector.py::TestOutgoingManualCapture::test_manual_message_captured
+tests/test_collector.py::TestOutgoingManualCapture::test_auto_client_outgoing_not_captured
+tests/test_collector.py::TestOutgoingManualCapture::test_button_text_not_captured
+tests/test_collector.py::TestOutgoingManualCapture::test_reaction_emoji_not_captured
 tests/test_collector.py::TestCallbackQueryCapture::test_callback_logs_data
 tests/test_collector.py::TestCallbackQueryCapture::test_callback_data_bytes_decoded
 tests/test_collector.py::TestCollectorAutoActions::test_like_decision_sends_heart_on_auto_account
+tests/test_collector.py::TestCollectorAutoActions::test_informative_like_starts_message_chain_on_auto_account
+tests/test_collector.py::TestCollectorAutoActions::test_non_informative_like_no_message_chain
 tests/test_collector.py::TestCollectorAutoActions::test_logged_profile_is_not_sent_twice
 tests/test_collector.py::TestCollectorAutoActions::test_log_failure_does_not_resend_action
 tests/test_collector.py::TestCollectorAutoActions::test_no_action_when_message_on_other_account
@@ -203,6 +238,7 @@ tests/test_collector.py::TestCollectorAutoActions::test_start_stream_no_active_p
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_presses_view_button_when_promo
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_no_button_press_when_already_sent
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_presses_right_button_on_captcha
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_geo_captcha_presses_plain_button
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_no_captcha_press_when_already_sent
 tests/test_collector.py::TestCollectorAutoActions::test_no_button_press_on_menu_or_premium
 tests/test_collector.py::TestCollectorAutoActions::test_live_ad_message_presses_view_button_on_separate_message
@@ -221,6 +257,8 @@ tests/test_control_bot.py::TestControlBotRouter::test_router_status
 tests/test_control_bot.py::TestControlBotRouter::test_router_mode_on
 tests/test_control_bot.py::TestControlBotRouter::test_router_stream
 tests/test_control_bot.py::TestControlBotRouter::test_router_denies_unauthorized
+tests/test_control_bot.py::TestControlBotRouter::test_router_msgs
+tests/test_control_bot.py::TestControlBotRouter::test_router_top
 tests/test_decision.py::TestAIDecisionModel::test_enum_values
 tests/test_decision.py::TestAIDecisionModel::test_result_validation
 tests/test_decision.py::TestAIDecisionModel::test_score_validation

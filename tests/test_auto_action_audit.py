@@ -129,7 +129,7 @@ class TestAutoActionAudit:
                 cursor = await db._connection.execute("PRAGMA table_info(auto_actions_log)")
                 assert {row[1] for row in await cursor.fetchall()} == {
                     "id", "profile_id", "action", "decision", "chat_id", "sent_at",
-                    "telegram_message_id",
+                    "telegram_message_id", "message_text",
                 }
             finally:
                 await db.close()

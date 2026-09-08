@@ -196,6 +196,25 @@ class TestCollectorIntegration:
 
         assert stats.summary["matches"] == 1
 
+    def test_handle_match_records_response(self) -> None:
+        """MATCH-сообщение фиксирует взаимный лайк (match_responses)."""
+        client = AsyncMock()
+        db = make_db_mock()
+        collector = DvinchikCollector(client, db, make_config())
+
+        text = "Начинай общаться 👉 [Anna](https://t.me/anna123?ref=abc)"
+        event = make_event(text=text, msg_id=201)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        db.record_match_response.assert_awaited_once()
+        args, kwargs = db.record_match_response.call_args
+        assert args[0] == "Anna"
+        assert args[1] == 1234060895
+        assert args[2] == 201
+        assert kwargs.get("telegram_username") == "anna123"
+
     def test_handle_media_only(self) -> None:
         client = AsyncMock()
         db = make_db_mock()
@@ -1809,6 +1828,58 @@ class TestOutgoingCapture:
             collector._handle_outgoing_message(event)
         )
         collector._db.save_raw_message.assert_not_called()
+
+
+class TestOutgoingManualCapture:
+    """Stage 8.5: ручные исходящие сообщения владельца → sent_messages.
+
+    Авто-сообщения (клиент авто-аккаунта) и кнопки/реакции не записываются —
+    они либо уже в auto_actions_log, либо не являются «сообщением при лайке».
+    """
+
+    def _collector(self) -> DvinchikCollector:
+        db = make_db_mock()
+        collector = DvinchikCollector(AsyncMock(), db, make_config())
+        return collector
+
+    def test_manual_message_captured(self) -> None:
+        collector = self._collector()
+        event = make_event(text="Беру)", msg_id=601)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_awaited_once()
+        args, kwargs = collector._db.record_sent_message.call_args
+        assert args[0] == "Беру)"
+        assert args[1] == 1234060895
+        assert args[2] == 601
+        assert kwargs.get("source") == "manual"
+
+    def test_auto_client_outgoing_not_captured(self) -> None:
+        collector = self._collector()
+        collector._auto_engine._client = AsyncMock()
+        event = make_event(text="Беру)", msg_id=602)
+        event.message.client = collector._auto_engine._client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_not_called()
+
+    def test_button_text_not_captured(self) -> None:
+        collector = self._collector()
+        event = make_event(text="🚀 Смотреть анкеты", msg_id=603)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_not_called()
+
+    def test_reaction_emoji_not_captured(self) -> None:
+        collector = self._collector()
+        event = make_event(text="❤️", msg_id=604)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_not_called()
 
 
 # ==================== CALLBACK QUERY (inline-кнопки/разведка LIKE) ====================
