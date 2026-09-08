@@ -931,8 +931,14 @@ class DvinchikCollector:
         t = (text or "").strip()
         if not t:
             return
+        # Исходящие с авто-аккаунта пропускаем ТОЛЬКО когда авто-действия
+        # реально включены (SEMI_AUTO/AUTO): тогда их шлёт AutoActionEngine,
+        # и они уже записаны в auto_actions_log. В OBSERVE авто ничего не
+        # шлёт — любой исходящий (в т.ч. с авто-аккаунта) = ручное действие
+        # владельца, его записываем в sent_messages.
         if (
-            self._auto_engine.client is not None
+            self._auto_engine.enabled
+            and self._auto_engine.client is not None
             and getattr(msg, "client", None) is self._auto_engine.client
         ):
             return

@@ -16,6 +16,7 @@ from collectors.dedup import Dedup
 from collectors.raw_queue import RawQueue
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from collectors.stats import CollectorStats
+from core.types import Mode
 from app.config import AppConfig, TelegramConfig, FiltersConfig, DvinchikConfig
 from database.database import Database
 from services.profile_service import ProfileService
@@ -1880,8 +1881,14 @@ class TestOutgoingManualCapture:
         assert args[0] == "👎"
         assert kwargs.get("action") == "DISLIKE"
 
-    def test_auto_client_outgoing_not_captured(self) -> None:
-        collector = self._collector()
+    def test_auto_client_outgoing_not_captured_when_enabled(self) -> None:
+        """При ВКЛЮЧЁННЫХ авто-действиях исходящие авто-аккаунта = авто
+        (уже в auto_actions_log), в sent_messages не дублируются."""
+        db = make_db_mock()
+        collector = DvinchikCollector(AsyncMock(), db, make_config(
+            auto_actions={"enabled": True, "account_session": "dvai_2"},
+        ))
+        collector.set_mode(Mode.SEMI_AUTO)
         collector._auto_engine._client = AsyncMock()
         event = make_event(text="Беру)", msg_id=604)
         event.message.client = collector._auto_engine._client
@@ -1889,6 +1896,21 @@ class TestOutgoingManualCapture:
             collector._handle_outgoing_message(event)
         )
         collector._db.record_sent_message.assert_not_called()
+
+    def test_auto_client_outgoing_captured_in_observe(self) -> None:
+        """В OBSERVE авто ничего не шлёт: исходящий с авто-аккаунта —
+        ручное действие владельца, записывается в sent_messages."""
+        collector = self._collector()
+        collector._auto_engine._client = AsyncMock()
+        event = make_event(text="❤️", msg_id=604)
+        event.message.client = collector._auto_engine._client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_awaited_once()
+        args, kwargs = collector._db.record_sent_message.call_args
+        assert args[0] == "❤️"
+        assert kwargs.get("action") == "LIKE"
 
     def test_button_text_not_captured(self) -> None:
         collector = self._collector()

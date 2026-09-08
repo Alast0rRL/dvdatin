@@ -205,7 +205,8 @@ tests/test_collector.py::TestOutgoingCapture::test_outgoing_blank_whitespace_ign
 tests/test_collector.py::TestOutgoingCapture::test_outgoing_empty_text_ignored
 tests/test_collector.py::TestOutgoingCapture::test_outgoing_outside_dvinchik_ignored
 tests/test_collector.py::TestOutgoingCapture::test_outgoing_saved_and_processed
-tests/test_collector.py::TestOutgoingManualCapture::test_auto_client_outgoing_not_captured
+tests/test_collector.py::TestOutgoingManualCapture::test_auto_client_outgoing_captured_in_observe
+tests/test_collector.py::TestOutgoingManualCapture::test_auto_client_outgoing_not_captured_when_enabled
 tests/test_collector.py::TestOutgoingManualCapture::test_button_text_not_captured
 tests/test_collector.py::TestOutgoingManualCapture::test_cyrillic_text_with_number_not_excluded
 tests/test_collector.py::TestOutgoingManualCapture::test_manual_heart_is_like
