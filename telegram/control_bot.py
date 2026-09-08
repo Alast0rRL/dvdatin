@@ -355,11 +355,13 @@ class ControlBot:
             lines.append("Лайков пока нет.")
         for i, r in enumerate(rows, start=1):
             city = r.get("city") or "—"
-            responded = " ✅ ответила" if r.get("responded") else ""
-            lines.append(
-                f"{i}. {r.get('name')} ({r.get('age')}/{city}) "
-                f"— ❤️{r.get('likes')}{responded}"
-            )
+            responded = " ✅ ответила" if r.get("responded") else " ❌ не ответила"
+            text = r.get("message_text") or ""
+            line = (f"{i}. {r.get('name')} ({r.get('age')}/{city}) "
+                    f"— ❤️{r.get('likes')}{responded}")
+            if text:
+                line += f" · 📩 «{text}»"
+            lines.append(line)
         lines.append("")
         lines.append(_SEP)
         return "\n".join(lines)

@@ -141,12 +141,13 @@ CREATE INDEX IF NOT EXISTS idx_match_responses_responded_at ON match_responses(r
 CREATE UNIQUE INDEX IF NOT EXISTS idx_match_responses_unique
     ON match_responses(chat_id, telegram_message_id);
 
--- sent_messages: отправленные в чат Дайвинчика тексты от имени владельца
--- (ручные сообщения при лайках). Авто-сообщения «Берем)» лежат в
--- auto_actions_log.message_text (action='MESSAGE'), здесь — только ручные.
+-- sent_messages: ручные действия владельца в чате Дайвинчика (Stage 8.5):
+-- «❤️» → action LIKE (сам лайкнул), «👎» → DISLIKE, текст → MESSAGE (сообщение
+-- при лайке). Авто-сообщения «Берем)» лежат в auto_actions_log.message_text.
 CREATE TABLE IF NOT EXISTS sent_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     profile_id INTEGER,
+    action TEXT NOT NULL DEFAULT 'MESSAGE',
     text TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'manual',
     chat_id INTEGER NOT NULL,
@@ -158,6 +159,28 @@ CREATE TABLE IF NOT EXISTS sent_messages (
 CREATE INDEX IF NOT EXISTS idx_sent_messages_profile_id ON sent_messages(profile_id);
 CREATE INDEX IF NOT EXISTS idx_sent_messages_text ON sent_messages(text);
 CREATE INDEX IF NOT EXISTS idx_sent_messages_sent_at ON sent_messages(sent_at);
+
+-- like_outcomes (Stage 8.5.1): результат на КАЖДЫЙ лайк (авто/ручной) —
+-- содержание сообщения при лайке (message_text, '' если без текста) и
+-- responded (0/1) — лайкнула девушка в ответ или нет (ставится взаимным
+-- лайком через match_responses). Бэкфилл старых лайков в _ensure_like_outcomes.
+CREATE TABLE IF NOT EXISTS like_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER,
+    source TEXT NOT NULL DEFAULT 'auto',
+    message_text TEXT NOT NULL DEFAULT '',
+    chat_id INTEGER NOT NULL,
+    like_tm_id INTEGER NOT NULL,
+    liked_at TEXT NOT NULL,
+    responded INTEGER NOT NULL DEFAULT 0,
+    responded_at TEXT,
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_like_outcomes_profile_id ON like_outcomes(profile_id);
+CREATE INDEX IF NOT EXISTS idx_like_outcomes_responded ON like_outcomes(responded);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_like_outcomes_unique
+    ON like_outcomes(source, chat_id, like_tm_id);
 
 CREATE TABLE IF NOT EXISTS human_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +244,11 @@ class Database:
         # Аналитика лайков (Stage 8.5): таблицы ответов/исходящих и текст
         # действия MESSAGE в авто-журнале (пустая строка = текста не было).
         await self._ensure_auto_actions_message_text()
+        # Ручные действия владельца в sent_messages: колонка action
+        # (LIKE/DISLIKE для «сам лайкнул», MESSAGE для текста).
+        await self._ensure_sent_messages_action()
+        # Результат каждого лайка («ответила/нет») + содержание сообщения.
+        await self._ensure_like_outcomes()
 
     async def _ensure_auto_actions_log(self) -> None:
         """Добавляет журнал успешных авто-действий для старых БД.
@@ -356,6 +384,7 @@ class Database:
             """CREATE TABLE IF NOT EXISTS sent_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER,
+                action TEXT NOT NULL DEFAULT 'MESSAGE',
                 text TEXT NOT NULL,
                 source TEXT NOT NULL DEFAULT 'manual',
                 chat_id INTEGER NOT NULL,
@@ -376,6 +405,119 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_sent_messages_sent_at "
             "ON sent_messages(sent_at)"
         )
+        await self._connection.commit()
+
+    async def _ensure_sent_messages_action(self) -> None:
+        """Добавляет колонку action в sent_messages (старые БД).
+
+        Ручные действия владельца: реакция «❤️»→LIKE, «👎»→DISLIKE,
+        текст→MESSAGE. Для аналитики «сам лайкнул» (ручные лайки, которые
+        тоже считаются в топе и влияют на привязку ответа).
+        """
+        cols = await self._connection.execute(
+            "PRAGMA table_info(sent_messages)"
+        )
+        names = {row[1] for row in await cols.fetchall()}
+        if "action" not in names:
+            try:
+                await self._connection.execute(
+                    "ALTER TABLE sent_messages "
+                    "ADD COLUMN action TEXT NOT NULL DEFAULT 'MESSAGE'"
+                )
+                await self._connection.commit()
+            except Exception as e:
+                logger.warning(f"sent_messages.action column: {e}")
+
+    async def _ensure_like_outcomes(self) -> None:
+        """Таблица результатов лайков (Stage 8.5.1).
+
+        На каждый лайк (авто/ручной) — строка: содержание сообщения при лайке
+        (``message_text``, '' если сообщения не было) и результат
+        ``responded`` (0/1) — лайкнула девушка в ответ или нет (ставится по
+        match_responses при взаимном лайке). Заполняется в рантайме из
+        record_auto_action/record_sent_message/record_match_response;
+        существующие лайки добираем однократным бэкфиллом (INSERT OR IGNORE —
+        идемпотентно).
+        """
+        await self._connection.execute(
+            """CREATE TABLE IF NOT EXISTS like_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'auto',
+                message_text TEXT NOT NULL DEFAULT '',
+                chat_id INTEGER NOT NULL,
+                like_tm_id INTEGER NOT NULL,
+                liked_at TEXT NOT NULL,
+                responded INTEGER NOT NULL DEFAULT 0,
+                responded_at TEXT,
+                FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL
+            )"""
+        )
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_like_outcomes_profile_id "
+            "ON like_outcomes(profile_id)"
+        )
+        await self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_like_outcomes_responded "
+            "ON like_outcomes(responded)"
+        )
+        await self._connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_like_outcomes_unique "
+            "ON like_outcomes(source, chat_id, like_tm_id)"
+        )
+        # Бэкфилл: авто-лайки (текст — из MESSAGE на ту же карточку).
+        try:
+            await self._connection.execute(
+                """INSERT OR IGNORE INTO like_outcomes
+                (profile_id, source, message_text, chat_id, like_tm_id, liked_at, responded)
+                SELECT a.profile_id, 'auto',
+                       COALESCE((
+                           SELECT m.message_text FROM auto_actions_log m
+                           WHERE m.profile_id = a.profile_id
+                             AND m.chat_id = a.chat_id
+                             AND m.telegram_message_id = a.telegram_message_id
+                             AND m.action = 'MESSAGE'
+                             AND m.message_text != ''
+                           ORDER BY m.sent_at DESC LIMIT 1
+                       ), ''),
+                       a.chat_id, a.telegram_message_id, a.sent_at,
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM match_responses r
+                           WHERE r.profile_id = a.profile_id
+                       ) THEN 1 ELSE 0 END
+                FROM auto_actions_log a
+                WHERE a.action = 'LIKE'
+                  AND a.profile_id IS NOT NULL
+                  AND a.telegram_message_id IS NOT NULL"""
+            )
+        except Exception as e:
+            logger.warning(f"like_outcomes backfill (auto): {e}")
+        # Бэкфилл: ручные лайки (текст — первый MESSAGE после ❤️ на тот же чат).
+        try:
+            await self._connection.execute(
+                """INSERT OR IGNORE INTO like_outcomes
+                (profile_id, source, message_text, chat_id, like_tm_id, liked_at, responded)
+                SELECT s.profile_id, 'manual',
+                       COALESCE((
+                           SELECT m.text FROM sent_messages m
+                           WHERE m.profile_id = s.profile_id
+                             AND m.chat_id = s.chat_id
+                             AND m.action = 'MESSAGE'
+                             AND m.text != ''
+                             AND m.telegram_message_id > s.telegram_message_id
+                           ORDER BY m.sent_at ASC LIMIT 1
+                       ), ''),
+                       s.chat_id, s.telegram_message_id, s.sent_at,
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM match_responses r
+                           WHERE r.profile_id = s.profile_id
+                       ) THEN 1 ELSE 0 END
+                FROM sent_messages s
+                WHERE s.action = 'LIKE'
+                  AND s.profile_id IS NOT NULL"""
+            )
+        except Exception as e:
+            logger.warning(f"like_outcomes backfill (manual): {e}")
         await self._connection.commit()
 
     async def _ensure_raw_unique_index(self) -> None:
@@ -759,10 +901,54 @@ class Database:
                     "UPDATE profiles SET status = ? WHERE id = ?",
                     (status, profile_id),
                 )
+            await self._track_like_outcome_from_auto(
+                action=action,
+                profile_id=profile_id,
+                chat_id=chat_id,
+                telegram_message_id=telegram_message_id,
+                message_text=message_text or "",
+                sent_at=sent_at,
+            )
             await self._connection.commit()
         except Exception:
             await self._connection.rollback()
             raise
+
+    async def _track_like_outcome_from_auto(
+        self,
+        action: str,
+        profile_id: int,
+        chat_id: int,
+        telegram_message_id: int | None,
+        message_text: str,
+        sent_at: str,
+    ) -> None:
+        """Заводит/обновляет like_outcome («каждый лайк + результат»).
+
+        LIKE → запись о лайке (текст пока пустой, появится при MESSAGE).
+        MESSAGE → прикрепляет содержание сообщения к лайку на ту же карточку.
+        Идемпотентность — UNIQUE(source, chat_id, like_tm_id).
+        """
+        if telegram_message_id is None:
+            return
+        try:
+            if action == "LIKE":
+                await self._connection.execute(
+                    """INSERT OR IGNORE INTO like_outcomes
+                    (profile_id, source, message_text, chat_id, like_tm_id, liked_at, responded)
+                    VALUES (?, 'auto', '', ?, ?, ?, 0)""",
+                    (profile_id, chat_id, telegram_message_id, sent_at),
+                )
+            elif action == "MESSAGE" and message_text:
+                await self._connection.execute(
+                    """UPDATE like_outcomes
+                    SET message_text = ?
+                    WHERE source = 'auto' AND chat_id = ? AND like_tm_id = ?
+                      AND message_text = ''""",
+                    (message_text, chat_id, telegram_message_id),
+                )
+        except Exception as e:
+            logger.warning(f"track_like_outcome(auto): {e}")
 
     # ── Аналитика лайков (Stage 8.5) ─────────────────────────────────
 
@@ -772,7 +958,7 @@ class Database:
         Привязка «девушка ответила» к конкретной анкете. Имя сравнивается
         регистронезависимо по-настоящему (Python lower — SQLite Cyrillic
         NOCASE/lower() работают только с ASCII). Приоритет — свежие записи
-        авто-журнала (то, на что реагировала девушка). None если профиль
+        (авто-журнал ∪ ручные sent_messages). None если профиль
         с таким именем ещё не лайкался.
         """
         needle = (name or "").strip().lower()
@@ -780,16 +966,21 @@ class Database:
             return None
         try:
             cursor = await self._connection.execute(
-                """SELECT DISTINCT p.id, p.name
-                FROM profiles p
-                JOIN auto_actions_log a ON a.profile_id = p.id
-                ORDER BY a.sent_at DESC"""
+                """SELECT p.id, p.name, MAX(u.sent_at) AS last_sent
+                FROM (
+                    SELECT profile_id AS pid, sent_at FROM auto_actions_log
+                    UNION ALL
+                    SELECT profile_id, sent_at FROM sent_messages
+                ) u
+                JOIN profiles p ON p.id = u.pid
+                GROUP BY p.id, p.name
+                ORDER BY last_sent DESC"""
             )
             rows = await cursor.fetchall()
         except Exception as e:
             logger.warning(f"resolve_profile_by_name: {e}")
             return None
-        for rid, rname in rows:
+        for rid, rname, _last in rows:
             if (rname or "").strip().lower() == needle:
                 return rid
         return None
@@ -839,6 +1030,14 @@ class Database:
                     responded_at,
                 ),
             )
+            if profile_id is not None:
+                # результат каждого лайка этой девушки: «лайкнула в ответ».
+                await self._connection.execute(
+                    """UPDATE like_outcomes
+                    SET responded = 1, responded_at = ?
+                    WHERE profile_id = ? AND responded = 0""",
+                    (responded_at, profile_id),
+                )
             await self._connection.commit()
         except Exception as e:
             await self._connection.rollback()
@@ -851,20 +1050,50 @@ class Database:
         telegram_message_id: int,
         source: str = "manual",
         profile_id: int | None = None,
+        action: str = "MESSAGE",
     ) -> None:
-        """Фиксирует ручное исходящее сообщение владельца в чате Дайвинчика.
+        """Фиксирует РУЧНОЕ действие владельца в чате Дайвинчика.
 
-        Ручные сообщения при лайке («Беру)» и т.п.) — вторая половина
-        аналитики текстов (авто-«Берем)» живут в auto_actions_log.message_text).
+        ``action``: 'LIKE' (сам лайкнул, ❤️), 'DISLIKE' (👎), 'MESSAGE'
+        (текст при лайке — «Беру)» и т.п.). Ручные действия — вторая половина
+        аналитики лайков (авто-«Берем)» живут в auto_actions_log.message_text).
+        LIKE заводит like_outcome (результат «ответила/нет»), MESSAGE
+        прикрепляет содержание текста к последнему ручному лайку.
         """
         sent_at = datetime.now(timezone.utc).isoformat()
         try:
             await self._connection.execute(
                 """INSERT INTO sent_messages
-                (profile_id, text, source, chat_id, telegram_message_id, sent_at)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                (profile_id, (text or "").strip(), source, chat_id, telegram_message_id, sent_at),
+                (profile_id, action, text, source, chat_id, telegram_message_id, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    profile_id,
+                    action or "MESSAGE",
+                    (text or "").strip(),
+                    source,
+                    chat_id,
+                    telegram_message_id,
+                    sent_at,
+                ),
             )
+            if action == "LIKE":
+                await self._connection.execute(
+                    """INSERT OR IGNORE INTO like_outcomes
+                    (profile_id, source, message_text, chat_id, like_tm_id, liked_at, responded)
+                    VALUES (?, 'manual', '', ?, ?, ?, 0)""",
+                    (profile_id, chat_id, telegram_message_id, sent_at),
+                )
+            elif action == "MESSAGE":
+                await self._connection.execute(
+                    """UPDATE like_outcomes
+                    SET message_text = ?
+                    WHERE id IN (
+                        SELECT id FROM like_outcomes
+                        WHERE source = 'manual' AND chat_id = ? AND message_text = ''
+                        ORDER BY liked_at DESC, id DESC LIMIT 1
+                    )""",
+                    ((text or "").strip(), chat_id),
+                )
             await self._connection.commit()
         except Exception as e:
             await self._connection.rollback()
@@ -887,7 +1116,7 @@ class Database:
                 UNION ALL
                 SELECT text, profile_id
                 FROM sent_messages
-                WHERE text != ''
+                WHERE action = 'MESSAGE' AND text != ''
             )
             SELECT m.text AS message_text,
                    COUNT(DISTINCT m.pid) AS sent,
@@ -908,15 +1137,22 @@ class Database:
         ]
 
     async def get_top_liked_profiles(self, limit: int = 10) -> list[dict]:
-        """Топ профилей по количеству лайков + ответили ли они."""
+        """Топ профилей по количеству лайков + ответили ли они.
+
+        Лайки считаются по like_outcomes (авто ❤️ ∪ ручные «сам лайкнул»),
+        на каждый лайк зафиксирован результат responded (0/1) — «лайкнула
+        в ответ». ``message_text`` — содержание последнего сообщения при лайке.
+        """
         cursor = await self._connection.execute(
             """SELECT p.id, p.name, p.age, p.normalized_city AS city,
-                      COUNT(a.id) AS likes,
-                      SUM(CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END) AS responded
-            FROM auto_actions_log a
-            JOIN profiles p ON p.id = a.profile_id
-            LEFT JOIN match_responses r ON r.profile_id = a.profile_id
-            WHERE a.action = 'LIKE'
+                      COUNT(o.id) AS likes,
+                      SUM(o.responded) AS responded,
+                      (SELECT sub.message_text FROM like_outcomes sub
+                       WHERE sub.profile_id = p.id AND sub.message_text != ''
+                       ORDER BY sub.liked_at DESC, sub.id DESC LIMIT 1
+                      ) AS last_text
+            FROM like_outcomes o
+            JOIN profiles p ON p.id = o.profile_id
             GROUP BY p.id
             ORDER BY likes DESC, responded DESC
             LIMIT ?""",
@@ -931,6 +1167,7 @@ class Database:
                 "city": row[3],
                 "likes": row[4],
                 "responded": row[5] or 0,
+                "message_text": row[6] or "",
             }
             for row in rows
         ]

@@ -1854,11 +1854,36 @@ class TestOutgoingManualCapture:
         assert args[1] == 1234060895
         assert args[2] == 601
         assert kwargs.get("source") == "manual"
+        assert kwargs.get("action") == "MESSAGE"
+
+    def test_manual_heart_is_like(self) -> None:
+        """Реакция владельца «❤️» = ручной LIKE (сам лайкнул)."""
+        collector = self._collector()
+        event = make_event(text="❤️", msg_id=602)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_awaited_once()
+        args, kwargs = collector._db.record_sent_message.call_args
+        assert args[0] == "❤️"
+        assert kwargs.get("action") == "LIKE"
+
+    def test_manual_thumbsdown_is_dislike(self) -> None:
+        """Реакция владельца «👎» = ручной DISLIKE."""
+        collector = self._collector()
+        event = make_event(text="👎", msg_id=603)
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        collector._db.record_sent_message.assert_awaited_once()
+        args, kwargs = collector._db.record_sent_message.call_args
+        assert args[0] == "👎"
+        assert kwargs.get("action") == "DISLIKE"
 
     def test_auto_client_outgoing_not_captured(self) -> None:
         collector = self._collector()
         collector._auto_engine._client = AsyncMock()
-        event = make_event(text="Беру)", msg_id=602)
+        event = make_event(text="Беру)", msg_id=604)
         event.message.client = collector._auto_engine._client
         asyncio.get_event_loop().run_until_complete(
             collector._handle_outgoing_message(event)
@@ -1867,15 +1892,7 @@ class TestOutgoingManualCapture:
 
     def test_button_text_not_captured(self) -> None:
         collector = self._collector()
-        event = make_event(text="🚀 Смотреть анкеты", msg_id=603)
-        asyncio.get_event_loop().run_until_complete(
-            collector._handle_outgoing_message(event)
-        )
-        collector._db.record_sent_message.assert_not_called()
-
-    def test_reaction_emoji_not_captured(self) -> None:
-        collector = self._collector()
-        event = make_event(text="❤️", msg_id=604)
+        event = make_event(text="🚀 Смотреть анкеты", msg_id=605)
         asyncio.get_event_loop().run_until_complete(
             collector._handle_outgoing_message(event)
         )

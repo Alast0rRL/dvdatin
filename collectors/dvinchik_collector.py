@@ -880,27 +880,36 @@ class DvinchikCollector:
     async def _maybe_record_sent_message(
         self, chat_id: int, text: str, msg: object,
     ) -> None:
-        """Stage 8.5: фиксирует РУЧНОЕ сообщение владельца при лайке.
+        """Stage 8.5: фиксирует РУЧНОЕ действие владельца при лайке.
 
         Авто-сообщения «Берем)» не попадают сюда: отправки с авто-аккаунта
-        уже отслеживаются в auto_actions_log(message_text). Здесь — только
-        тексты, напечатанные владельцем (клиент НЕ авто-аккаунт) и не похожие
-        на кнопки/реакции (MANUAL_MESSAGE_EXCLUDE). Профиль для привязки
-        ответа берём из «текущей» анкеты чата (chat_context / pending).
-        Ошибки БД не ломают перехват исходящих (RAW уже сохранён).
+        уже отслеживаются в auto_actions_log(message_text). Здесь — действия
+        владельца (клиент НЕ авто-аккаунт):
+          - «❤️»  → ручной LIKE (сам лайкнул),
+          - «👎»  → ручной DISLIKE,
+          - текст → ручное сообщение (MESSAGE), кроме кнопок/реакций из
+            MANUAL_MESSAGE_EXCLUDE и коротких (len < 2).
+        Профиль для привязки ответа берём из «текущей» анкеты чата
+        (chat_context / pending). Ошибки БД не ломают перехват исходящих
+        (RAW уже сохранён).
         """
         t = (text or "").strip()
         if not t:
-            return
-        if len(t) < 2:
-            return
-        if t in MANUAL_MESSAGE_EXCLUDE:
             return
         if (
             self._auto_engine.client is not None
             and getattr(msg, "client", None) is self._auto_engine.client
         ):
             return
+        # Реакции владельца = ручной лайк/дизлайк (сам лайкнул и т.п.).
+        if t == "❤️":
+            action = "LIKE"
+        elif t == "👎":
+            action = "DISLIKE"
+        else:
+            if len(t) < 2 or t in MANUAL_MESSAGE_EXCLUDE:
+                return
+            action = "MESSAGE"
         profile_id: int | None = None
         try:
             context = await self._db.get_chat_profile_context(chat_id)
@@ -913,7 +922,7 @@ class DvinchikCollector:
         try:
             await self._db.record_sent_message(
                 t, chat_id, getattr(msg, "id", 0), source="manual",
-                profile_id=profile_id,
+                action=action, profile_id=profile_id,
             )
         except Exception as e:
             logger.warning(f"record_sent_message error: {e}")

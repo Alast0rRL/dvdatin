@@ -373,17 +373,108 @@ class TestLikeMessageAnalytics:
         assert by_name["Лена"]["likes"] == 1
         assert by_name["Лена"]["responded"] == 1
 
+    def test_manual_like_counts_in_top_and_response(self, tmp_db) -> None:
+        """Ручной лайк («сам лайкнул» ❤️) считается в топе и в ответе.
+
+        Но НЕ попадает в конверсию текстов (там только MESSAGE).
+        """
+        db = tmp_db
+        pid = run(db.insert_profile(
+            name="Даша", age=19, raw_city="Москва", normalized_city="Москва",
+            description="Описание", fingerprint="fp_manual", source_chat_id=1234060895,
+            source_message_id=555, first_seen_at="now", last_seen_at="now",
+            status="NEW",
+        ))
+        # владелец сам лайкнул (ручной LIKE) и написала «Беру)»
+        run(db.record_sent_message("❤️", 1234060895, 6001, action="LIKE", profile_id=pid))
+        run(db.record_sent_message("Беру)", 1234060895, 6002, action="MESSAGE", profile_id=pid))
+        run(db.record_match_response("Даша", 1234060895, 9101))
+
+        rows = run(db.get_top_liked_profiles(limit=5))
+        by_name = {r["name"]: r for r in rows}
+        assert by_name["Даша"]["likes"] == 1
+        assert by_name["Даша"]["responded"] == 1
+        assert by_name["Даша"]["message_text"] == "Беру)"
+
+        # содержание сообщения прикреплено к ручному лайку + результат = 1
+        cursor = run(db._connection.execute(
+            """SELECT message_text, responded FROM like_outcomes
+            WHERE profile_id = ? AND source = 'manual'""", (pid,)
+        ))
+        text, responded = run(cursor.fetchone())
+        assert text == "Беру)"
+        assert responded == 1
+
+        stats = run(db.get_message_response_stats())
+        by_text = {r["message_text"]: r for r in stats}
+        # «❤️» (LIKE) в текстах отсутствует, только «Беру)»
+        assert "❤️" not in by_text
+        assert by_text["Беру)"]["sent"] == 1
+        assert by_text["Беру)"]["responded"] == 1
+
     def test_fresh_db_has_analytics_tables(self, tmp_db) -> None:
-        """Свежая БД сразу содержит match_responses/sent_messages + message_text."""
+        """Свежая БД сразу содержит match_responses/sent_messages/like_outcomes."""
         db = tmp_db
         cols = run(db._connection.execute("PRAGMA table_info(auto_actions_log)"))
         assert "message_text" in {row[1] for row in run(cols.fetchall())}
-        for table in ("match_responses", "sent_messages"):
+        cols = run(db._connection.execute("PRAGMA table_info(sent_messages)"))
+        assert "action" in {row[1] for row in run(cols.fetchall())}
+        cols = run(db._connection.execute("PRAGMA table_info(like_outcomes)"))
+        names = {row[1] for row in run(cols.fetchall())}
+        assert {"message_text", "responded", "source"}.issubset(names)
+        for table in ("match_responses", "sent_messages", "like_outcomes"):
             cursor = run(db._connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                 (table,),
             ))
             assert run(cursor.fetchone()) is not None
+
+    def test_like_outcome_gets_message_text_and_result(self, tmp_db) -> None:
+        """Лайк фиксируется с содержанием сообщения и результатом (0/1).
+
+        LIKE_AND_MESSAGE: лайк + «Берем)» на одну карточку; затем взаимный
+        лайк → responded=1 (лайкнула в ответ).
+        """
+        db = tmp_db
+        pid = run(self._liked_profile(db, "Маша"))  # авто LIKE (без текста)
+        # на ту же карточку ушло сообщение: tm карточки = tm в _liked_profile
+        cursor = run(db._connection.execute(
+            "SELECT like_tm_id FROM like_outcomes WHERE profile_id = ?", (pid,)
+        ))
+        like_tm = run(cursor.fetchone())[0]
+        # МЕШАЕТ: у MESSAGE свой tm в _liked_profile нет; просто повторный LIKE
+        run(db.record_auto_action(
+            pid, "MESSAGE", "LIKE", 1234060895, like_tm, message_text="Берём)",
+        ))
+        cursor = run(db._connection.execute(
+            "SELECT message_text, responded FROM like_outcomes WHERE profile_id = ?",
+            (pid,),
+        ))
+        text, responded = run(cursor.fetchone())
+        assert text == "Берём)"
+        assert responded == 0
+        # девушка лайкнула в ответ → результат по лайку = 1
+        run(db.record_match_response("Маша", 1234060895, 9500))
+        cursor = run(db._connection.execute(
+            "SELECT responded FROM like_outcomes WHERE profile_id = ?", (pid,)
+        ))
+        assert run(cursor.fetchone())[0] == 1
+
+    def test_like_outcome_idempotent_per_card(self, tmp_db) -> None:
+        """Повторный ручной лайк на ту же карточку (тот же tm) не дублируется."""
+        db = tmp_db
+        pid = run(db.insert_profile(
+            name="Оля", age=19, raw_city="Москва", normalized_city="Москва",
+            description="Описание", fingerprint="fp_olya", source_chat_id=1234060895,
+            source_message_id=7771, first_seen_at="now", last_seen_at="now",
+            status="NEW",
+        ))
+        run(db.record_sent_message("❤️", 1234060895, 6007, action="LIKE", profile_id=pid))
+        run(db.record_sent_message("❤️", 1234060895, 6007, action="LIKE", profile_id=pid))
+        cursor = run(db._connection.execute(
+            "SELECT COUNT(*) FROM like_outcomes WHERE profile_id = ?", (pid,)
+        ))
+        assert run(cursor.fetchone())[0] == 1
 
 
 class TestLikeMessageAnalyticsService:
