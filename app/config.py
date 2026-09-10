@@ -96,9 +96,14 @@ class AgeFilterConfig(BaseModel):
 
 
 class CityFilterConfig(BaseModel):
-    """Настройки фильтра города."""
+    """Настройки фильтра города.
 
-    allowed: list[str] = ["Санкт-Петербург"]
+    ``allowed`` — список разрешённых городов (нормализованные имена).
+    Пустой список = городской фильтр выключен: анкеты из любого города
+    проходят городскую проверку (CityRule её просто пропускает).
+    """
+
+    allowed: list[str] = []
 
 
 class FiltersConfig(BaseModel):

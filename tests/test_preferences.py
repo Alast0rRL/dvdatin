@@ -114,6 +114,7 @@ class TestDecisionHardRules:
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
             filter_decision=FilterDecision.PASS,
+            filter_reasons=[],
             score=0.8,
             informative=True,
             skip_labels=["не ищет отношений"],
@@ -127,7 +128,10 @@ class TestDecisionHardRules:
     def test_skip_smoking_hard(self) -> None:
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
-            FilterDecision.PASS, 0.8, True, ["не ищет отношений"], [], [], [],
+            filter_decision=FilterDecision.PASS, filter_reasons=[],
+            score=0.8, informative=True,
+            skip_labels=["не ищет отношений"], like_labels=[],
+            hard_negatives=[], positive_factors=[],
         )
         assert decision == AIDecision.DISLIKE
 
@@ -135,7 +139,10 @@ class TestDecisionHardRules:
         # LIKE-factor при низких скорах → REVIEW, а не DISLIKE.
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
-            FilterDecision.PASS, 0.4, False, [], ["игры"], [], [],
+            filter_decision=FilterDecision.PASS, filter_reasons=[],
+            score=0.4, informative=False,
+            skip_labels=[], like_labels=["игры"],
+            hard_negatives=[], positive_factors=[],
         )
         assert decision == AIDecision.REVIEW
         assert any("USER_LIKE" in r for r in reasons)
@@ -143,7 +150,10 @@ class TestDecisionHardRules:
     def test_like_factor_does_not_override_filter_reject(self) -> None:
         svc = make_service(PreferencesEngine(make_prefs()))
         decision, _, reasons = svc._decide(
-            FilterDecision.REJECT, 0.8, True, [], ["игры"], [], [],
+            filter_decision=FilterDecision.REJECT, filter_reasons=[],
+            score=0.8, informative=True,
+            skip_labels=[], like_labels=["игры"],
+            hard_negatives=[], positive_factors=[],
         )
         assert decision == AIDecision.DISLIKE
 
@@ -152,7 +162,10 @@ class TestDecisionHardRules:
         # и без подтверждённого негатива низкий скор → REVIEW, не DISLIKE.
         svc = make_service()
         decision, _, _ = svc._decide(
-            FilterDecision.PASS, 0.4, False, [], [], [], [],
+            filter_decision=FilterDecision.PASS, filter_reasons=[],
+            score=0.4, informative=False,
+            skip_labels=[], like_labels=[],
+            hard_negatives=[], positive_factors=[],
         )
         assert decision == AIDecision.REVIEW
 

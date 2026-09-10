@@ -43,13 +43,23 @@ class AgeRule(Rule):
 
 
 class CityRule(Rule):
-    """Проверка города."""
+    """Проверка города.
+
+    Если в конфиге не задан ни один разрешённый город (``city_allowed`` пуст)
+    — фильтр по региону выключен, и городская проверка всегда проходит
+    (возвращает CITY_OK). Иначе город должен быть в списке разрешённых.
+    """
 
     def evaluate(self, profile: Profile, config: AppConfig) -> tuple[bool, FilterReason]:
+        allowed = config.filters.city_allowed
+        if not allowed:
+            # Фильтр по региону отключён — не ограничиваем городом.
+            return True, FilterReason.CITY_OK
+
         if not profile.normalized_city:
             return False, FilterReason.CITY_UNKNOWN
 
-        if profile.normalized_city in config.filters.city_allowed:
+        if profile.normalized_city in allowed:
             return True, FilterReason.CITY_OK
 
         return False, FilterReason.CITY_OUT_OF_RANGE

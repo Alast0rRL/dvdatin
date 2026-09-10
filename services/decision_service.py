@@ -124,8 +124,12 @@ class DecisionService:
         )
 
         # 4. Decision Logic
+        filter_reason_codes = (
+            [r.value for r in filter_result.reasons] if filter_result else []
+        )
         decision, combined, reasons = self._decide(
             filter_decision=filter_decision,
+            filter_reasons=filter_reason_codes,
             score=scoring.score,
             informative=scoring.informative,
             skip_labels=skip_labels,
@@ -157,6 +161,7 @@ class DecisionService:
     def _decide(
         self,
         filter_decision: FilterDecision | None,
+        filter_reasons: list[str],
         score: float,
         informative: bool,
         skip_labels: list[str],
@@ -203,6 +208,9 @@ class DecisionService:
         # 3. HARD FILTER REJECT
         if filter_decision == FilterDecision.REJECT:
             reasons.append("FILTER_REJECTED")
+            for fr in filter_reasons:
+                if fr in ("AGE_OUT_OF_RANGE", "CITY_OUT_OF_RANGE"):
+                    reasons.append(fr)
             if like_labels:
                 reasons.append(f"USER_LIKE:{like_labels[0]}")
             return AIDecision.DISLIKE, score, reasons
