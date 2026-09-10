@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}DvAI — {{ profile.name }}{% endblock %}
+
+{% block content %}
+<div class="profile-detail">
+    <a href="{{ url_for('dashboard.index') }}" class="back-link">← Назад к ленте</a>
+
+    <div class="profile-card profile-card-detail">
+        <div class="profile-header">
+            <h1>{{ profile.name }}, {{ profile.age }}</h1>
+            <span class="profile-city">{{ profile.raw_city or profile.normalized_city or '—' }}</span>
+            <span class="profile-status status-{{ profile.status|lower }}">{{ profile.status }}</span>
+        </div>
+
+        {% if photos %}
+        <div class="photo-gallery photo-gallery-detail">
+            {% for photo in photos %}
+            <img src="{{ url_for('photos.serve_photo', profile_id=profile.id, message_id=photo.telegram_message_id) }}"
+                 alt="Фото {{ profile.name }}"
+                 class="profile-photo profile-photo-detail"
+                 loading="lazy">
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if profile.description %}
+        <div class="profile-description profile-description-detail">
+            {{ profile.description }}
+        </div>
+        {% endif %}
+
+        <div class="profile-meta-full">
+            <span>ID: {{ profile.id }}</span>
+            <span>Первое появление: {{ profile.first_seen_at[:10] if profile.first_seen_at else '—' }}</span>
+            <span>Последнее: {{ profile.last_seen_at[:10] if profile.last_seen_at else '—' }}</span>
+        </div>
+    </div>
+
+    {% if latest_ai %}
+    <div class="decision-detail-card">
+        <h3>AI Решение</h3>
+        <div class="decision-block">
+            <div class="decision-badge decision-{{ latest_ai.decision|lower }}">
+                {{ latest_ai.decision }}
+            </div>
+            <span class="score">Combined: {{ "%.3f"|format(latest_ai.combined_score) }}</span>
+            <span class="score">Confidence: {{ "%.2f"|format(latest_ai.confidence) }}</span>
+        </div>
+
+        {% if latest_ai.parsed_reasons %}
+        <div class="reasons">
+            {% for r in latest_ai.parsed_reasons %}
+            <span class="reason-tag reason-{{ r.type }}">{{ r.label }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="meta-line">Scoring: {{ latest_ai.scoring_version }} | {{ latest_ai.evaluated_at[:19] if latest_ai.evaluated_at else '' }}</div>
+
+        {% if latest_ai.decision == 'REVIEW' and not latest_human %}
+        <form method="POST" action="{{ url_for('profiles.profile_action', profile_id=profile.id) }}" class="action-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="action-buttons action-buttons-detail">
+                <button type="submit" name="action" value="LIKE" class="btn btn-like">❤️ LIKE</button>
+                <button type="submit" name="action" value="DISLIKE" class="btn btn-dislike">👎 DISLIKE</button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if latest_filter %}
+    <div class="decision-detail-card">
+        <h3>Фильтр</h3>
+        <div class="decision-block">
+            <div class="decision-badge filter-badge-{{ latest_filter.decision|lower }}">
+                {{ latest_filter.decision }}
+            </div>
+        </div>
+        {% if latest_filter.parsed_reasons %}
+        <div class="reasons">
+            {% for r in latest_filter.parsed_reasons %}
+            <span class="reason-tag reason-{{ r.type }}">{{ r.label }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if latest_human %}
+    <div class="decision-detail-card">
+        <h3>Ваше решение</h3>
+        <div class="human-decision">
+            {% if latest_human.decision == 'APPROVE' %}
+            <span class="badge badge-approved">✅ APPROVE (LIKE)</span>
+            {% elif latest_human.decision == 'REJECT' %}
+            <span class="badge badge-rejected">❌ REJECT (DISLIKE)</span>
+            {% else %}
+            <span class="badge badge-skipped">⏭ SKIP</span>
+            {% endif %}
+            {% if latest_human.agreement %}
+            <span class="agreement agreement-{{ latest_human.agreement|lower }}">{{ latest_human.agreement }}</span>
+            {% endif %}
+            <span class="meta-line">{{ latest_human.created_at[:19] if latest_human.created_at else '' }}</span>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if profile.ai_decisions|length > 1 %}
+    <div class="decision-detail-card">
+        <h3>История AI-решений</h3>
+        {% for ai_d in profile.ai_decisions %}
+        <div class="history-item">
+            <span class="decision-badge decision-{{ ai_d.decision|lower }}">{{ ai_d.decision }}</span>
+            <span class="score">{{ "%.3f"|format(ai_d.combined_score) }}</span>
+            <span class="meta-line">{{ ai_d.evaluated_at[:19] if ai_d.evaluated_at else '' }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if profile.human_decisions|length > 1 %}
+    <div class="decision-detail-card">
+        <h3>История решений</h3>
+        {% for hd in profile.human_decisions %}
+        <div class="history-item">
+            <span class="badge badge-{{ hd.decision|lower }}">{{ hd.decision }}</span>
+            <span class="agreement agreement-{{ hd.agreement|lower }}">{{ hd.agreement }}</span>
+            <span class="meta-line">{{ hd.created_at[:19] if hd.created_at else '' }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

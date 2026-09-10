@@ -38,6 +38,9 @@ config/preferences.yaml
 # Proxy (vendored xray-core + real VLESS credentials — NEVER commit)
 proxy/
 
+# Web UI photo cache (downloaded from Telegram at runtime — NEVER commit)
+media/
+
 # Test cache
 .pytest_cache/
 

@@ -1,0 +1,646 @@
+/* DvAI Web UI — Modern, mobile-first CSS */
+
+:root {
+    --bg: #0a0a0f;
+    --bg-card: #141420;
+    --bg-card-hover: #1a1a2e;
+    --bg-input: #1a1a2e;
+    --text: #e8e8f0;
+    --text-muted: #888899;
+    --accent: #6c5ce7;
+    --accent-hover: #7c6cf7;
+    --like: #00b894;
+    --dislike: #e17055;
+    --review: #fdcb6e;
+    --border: #2a2a3e;
+    --border-light: #3a3a4e;
+    --shadow: rgba(0,0,0,0.4);
+    --radius: 12px;
+    --radius-sm: 8px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+/* ── Login ── */
+.login-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+}
+
+.login-container {
+    width: 100%;
+    max-width: 400px;
+    padding: 20px;
+}
+
+.login-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 40px 30px;
+    text-align: center;
+}
+
+.login-card h1 {
+    font-size: 2em;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--like));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.login-subtitle {
+    color: var(--text-muted);
+    margin-bottom: 30px;
+}
+
+/* ── Navbar ── */
+.navbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.nav-brand a {
+    font-size: 1.3em;
+    font-weight: 700;
+    text-decoration: none;
+    background: linear-gradient(135deg, var(--accent), var(--like));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.nav-links {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+}
+
+.nav-links a {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.9em;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+}
+
+.nav-links a:hover, .nav-links a.active {
+    color: var(--text);
+    background: var(--bg-input);
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.9em;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    transition: all 0.2s;
+}
+
+.btn-link:hover {
+    color: var(--dislike);
+    background: var(--bg-input);
+}
+
+.inline-form { display: inline; }
+
+/* ── Container ── */
+.container {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 20px 16px;
+}
+
+/* ── Flash messages ── */
+.flash {
+    padding: 12px 16px;
+    border-radius: var(--radius-sm);
+    margin-bottom: 16px;
+    font-size: 0.9em;
+}
+
+.flash-success { background: rgba(0, 184, 148, 0.15); border: 1px solid var(--like); color: var(--like); }
+.flash-error { background: rgba(225, 112, 85, 0.15); border: 1px solid var(--dislike); color: var(--dislike); }
+.flash-info { background: rgba(108, 92, 231, 0.15); border: 1px solid var(--accent); color: var(--accent); }
+
+/* ── Stats bar ── */
+.stats-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    text-align: center;
+    flex: 1;
+    min-width: 60px;
+}
+
+.stat-value {
+    display: block;
+    font-size: 1.4em;
+    font-weight: 700;
+}
+
+.stat-label {
+    font-size: 0.75em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+/* ── Filter bar ── */
+.filter-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+}
+
+.filter-btn {
+    padding: 8px 16px;
+    border-radius: 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.85em;
+    transition: all 0.2s;
+}
+
+.filter-btn:hover, .filter-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+}
+
+/* ── Profile card ── */
+.profile-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.profile-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+
+.profile-card:hover {
+    border-color: var(--border-light);
+}
+
+.profile-card-detail {
+    margin-bottom: 24px;
+}
+
+.profile-header {
+    padding: 20px 20px 0;
+}
+
+.profile-header h1, .profile-header h2 {
+    font-size: 1.4em;
+    margin-bottom: 2px;
+}
+
+.profile-name-link {
+    text-decoration: none;
+    color: var(--text);
+}
+
+.profile-name-link:hover {
+    color: var(--accent);
+}
+
+.profile-city {
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+
+.profile-status {
+    display: inline-block;
+    font-size: 0.75em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    text-transform: uppercase;
+}
+
+.status-new { background: rgba(108, 92, 231, 0.2); color: var(--accent); }
+.status-seen { background: rgba(136, 136, 153, 0.2); color: var(--text-muted); }
+.status-liked { background: rgba(0, 184, 148, 0.2); color: var(--like); }
+.status-disliked { background: rgba(225, 112, 85, 0.2); color: var(--dislike); }
+.status-matched { background: rgba(253, 203, 110, 0.2); color: var(--review); }
+
+/* ── Photos ── */
+.photo-gallery {
+    padding: 16px 20px;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+}
+
+.photo-gallery-detail {
+    gap: 12px;
+}
+
+.profile-photo {
+    width: 200px;
+    height: 260px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    scroll-snap-align: start;
+    flex-shrink: 0;
+    background: var(--bg-input);
+}
+
+.profile-photo-detail {
+    width: 100%;
+    max-width: 400px;
+    height: auto;
+    aspect-ratio: 3/4;
+}
+
+/* ── Description ── */
+.profile-description {
+    padding: 0 20px 16px;
+    color: var(--text);
+    font-size: 0.95em;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.profile-description-detail {
+    font-size: 1em;
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+}
+
+.profile-meta-full {
+    padding: 12px 20px;
+    display: flex;
+    gap: 16px;
+    color: var(--text-muted);
+    font-size: 0.8em;
+    flex-wrap: wrap;
+}
+
+/* ── Decision ── */
+.decision-block {
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.decision-badge {
+    display: inline-block;
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.9em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.decision-like { background: rgba(0, 184, 148, 0.2); color: var(--like); }
+.decision-review { background: rgba(253, 203, 110, 0.2); color: var(--review); }
+.decision-dislike { background: rgba(225, 112, 85, 0.2); color: var(--dislike); }
+.decision-unknown { background: rgba(136, 136, 153, 0.2); color: var(--text-muted); }
+
+.filter-badge-pass { background: rgba(0, 184, 148, 0.15); color: var(--like); }
+.filter-badge-reject { background: rgba(225, 112, 85, 0.15); color: var(--dislike); }
+.filter-badge-review { background: rgba(253, 203, 110, 0.15); color: var(--review); }
+
+.score {
+    color: var(--text-muted);
+    font-size: 0.85em;
+}
+
+/* ── Reasons ── */
+.reasons {
+    padding: 0 20px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.reason-tag {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.8em;
+}
+
+.reason-negative { background: rgba(225, 112, 85, 0.12); color: #e17055; }
+.reason-positive { background: rgba(0, 184, 148, 0.12); color: #00b894; }
+.reason-neutral { background: rgba(136, 136, 153, 0.12); color: #888899; }
+
+.filter-info {
+    padding: 0 20px 12px;
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+/* ── Action buttons ── */
+.action-buttons {
+    padding: 12px 20px;
+    display: flex;
+    gap: 12px;
+}
+
+.action-buttons-detail {
+    padding: 16px 0 0;
+}
+
+.action-form { display: contents; }
+
+.btn {
+    padding: 10px 24px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.95em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-like {
+    background: var(--like);
+    color: white;
+}
+
+.btn-like:hover { background: #00a884; }
+
+.btn-dislike {
+    background: var(--dislike);
+    color: white;
+}
+
+.btn-dislike:hover { background: #d06040; }
+
+.btn-primary {
+    background: var(--accent);
+    color: white;
+}
+
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-full { width: 100%; }
+
+.btn-page {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    transition: all 0.2s;
+}
+
+.btn-page:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+/* ── Human decision ── */
+.human-decision {
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+
+.badge-approved { background: rgba(0, 184, 148, 0.2); color: var(--like); }
+.badge-rejected { background: rgba(225, 112, 85, 0.2); color: var(--dislike); }
+.badge-skipped { background: rgba(136, 136, 153, 0.2); color: var(--text-muted); }
+
+.agreement {
+    font-size: 0.8em;
+    padding: 2px 8px;
+    border-radius: 8px;
+}
+
+.agreement-agreement { background: rgba(0, 184, 148, 0.1); color: var(--like); }
+.agreement-disagreement { background: rgba(225, 112, 85, 0.1); color: var(--dislike); }
+.agreement-unresolved { background: rgba(136, 136, 153, 0.1); color: var(--text-muted); }
+
+.action-result {
+    padding: 0 20px 12px;
+    font-size: 0.85em;
+    color: var(--like);
+}
+
+.profile-meta {
+    padding: 8px 20px 12px;
+    font-size: 0.75em;
+    color: var(--text-muted);
+}
+
+/* ── Decision detail card ── */
+.decision-detail-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+.decision-detail-card h3 {
+    font-size: 1em;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.meta-line {
+    padding: 0 20px;
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+.history-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.history-item:last-child {
+    border-bottom: none;
+}
+
+/* ── Settings ── */
+.settings-page h1 {
+    margin-bottom: 24px;
+}
+
+.settings-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 20px;
+}
+
+.settings-card h2 {
+    font-size: 1.1em;
+    margin-bottom: 16px;
+    color: var(--text);
+}
+
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+.form-input {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 0.95em;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.form-input:focus {
+    border-color: var(--accent);
+}
+
+.form-textarea {
+    resize: vertical;
+    font-family: monospace;
+    font-size: 0.85em;
+    line-height: 1.5;
+}
+
+.mode-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.mode-btn {
+    flex: 1;
+    min-width: 100px;
+    padding: 12px 20px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-muted);
+    font-size: 0.9em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.mode-btn:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.mode-btn.active {
+    color: white;
+}
+
+.mode-observe.active { background: var(--accent); border-color: var(--accent); }
+.mode-semi_auto.active { background: var(--review); border-color: var(--review); color: #000; }
+.mode-auto.active { background: var(--dislike); border-color: var(--dislike); }
+
+/* ── Pagination ── */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 0;
+}
+
+.page-info {
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+
+/* ── Empty state ── */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-muted);
+}
+
+/* ── Back link ── */
+.back-link {
+    display: inline-block;
+    margin-bottom: 20px;
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.9em;
+}
+
+.back-link:hover {
+    text-decoration: underline;
+}
+
+/* ── Mobile ── */
+@media (max-width: 600px) {
+    .navbar { padding: 10px 16px; }
+    .nav-links { gap: 8px; }
+    .nav-links a { font-size: 0.8em; padding: 4px 8px; }
+    .container { padding: 12px 8px; }
+    .stats-bar { gap: 6px; }
+    .stat { padding: 8px 10px; min-width: 50px; }
+    .stat-value { font-size: 1.1em; }
+    .profile-photo { width: 160px; height: 210px; }
+    .settings-card { padding: 16px; }
+    .mode-buttons { flex-direction: column; }
+}

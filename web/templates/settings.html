@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}DvAI — Настройки{% endblock %}
+
+{% block content %}
+<div class="settings-page">
+    <h1>Настройки</h1>
+
+    <!-- Mode -->
+    <div class="settings-card">
+        <h2>Режим</h2>
+        <form method="POST" action="{{ url_for('settings.update_mode') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="mode-buttons">
+                {% for m in ['OBSERVE', 'SEMI_AUTO', 'AUTO'] %}
+                <button type="submit" name="mode" value="{{ m }}"
+                        class="btn mode-btn {% if mode == m %}active mode-{{ m|lower }}{% endif %}">
+                    {{ m }}
+                </button>
+                {% endfor %}
+            </div>
+        </form>
+    </div>
+
+    <!-- Filters -->
+    <div class="settings-card">
+        <h2>Фильтры</h2>
+        <form method="POST" action="{{ url_for('settings.update_filters') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="form-group">
+                <label for="age_min">Возраст (мин)</label>
+                <input type="number" id="age_min" name="age_min" value="{{ filter_cfg.age_min }}"
+                       min="14" max="99" class="form-input">
+            </div>
+
+            <div class="form-group">
+                <label for="age_max">Возраст (макс)</label>
+                <input type="number" id="age_max" name="age_max" value="{{ filter_cfg.age_max }}"
+                       min="14" max="99" class="form-input">
+            </div>
+
+            <div class="form-group">
+                <label for="city_allowed">Города (через запятую; пусто = все)</label>
+                <input type="text" id="city_allowed" name="city_allowed"
+                       value="{{ filter_cfg.city_allowed|join(', ') }}"
+                       placeholder="Санкт-Петербург, Москва" class="form-input">
+            </div>
+
+            <button type="submit" class="btn btn-primary">Сохранить фильтры</button>
+        </form>
+    </div>
+
+    <!-- Preferences -->
+    <div class="settings-card">
+        <h2>Предпочтения (SKIP / LIKE)</h2>
+        <form method="POST" action="{{ url_for('settings.update_preferences') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div class="form-group">
+                <label for="skip_rules">STOP-метки (формат: метка | подстрока1 | подстрока2)</label>
+                <textarea id="skip_rules" name="skip_rules" rows="10" class="form-input form-textarea"
+                          placeholder="не ищет отношений | ищу друга | ищу подругу">#{% for rule in preferences.get('skip', []) %}
+{{ rule.label }} | {{ rule.match | join(' | ') }}{% endfor %}</textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="like_rules">LIKE-метки (формат: метка | подстрока1 | подстрока2)</label>
+                <textarea id="like_rules" name="like_rules" rows="10" class="form-input form-textarea"
+                          placeholder="аниме | аниме | манга">#{% for rule in preferences.get('like', []) %}
+{{ rule.label }} | {{ rule.match | join(' | ') }}{% endfor %}</textarea>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Сохранить предпочтения</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

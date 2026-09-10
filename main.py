@@ -23,7 +23,7 @@ from app.preferences import load_preferences
 from collectors.dvinchik_collector import DvinchikCollector
 from collectors.raw_worker import DvinchikRawWorker
 from collectors.stats import CollectorStats
-from database.database import Database
+from database.database import Database, DB_PATH
 from services.filter_engine import FilterEngine
 from services.filter_service import FilterService
 from services.profile_service import ProfileService
@@ -184,6 +184,38 @@ async def main() -> None:
     worker = DvinchikRawWorker(process=collector._process_message)
     collector.attach_worker(worker)
     collector.start()
+
+    # Stage 9: Web UI (Flask) — запускается в daemon-потоке
+    try:
+        from web import create_app
+        from web.config import WebConfig
+        from web.db import SyncDB
+        from web.photos import set_telegram_client
+
+        web_cfg = WebConfig.from_env()
+        sync_db = SyncDB(str(DB_PATH))
+        flask_app = create_app(web_cfg)
+        flask_app.config["SYNC_DB"] = sync_db
+        flask_app.config["CONFIG_PATH"] = CONFIG_PATH
+
+        # Устанавливаем TelegramClient для скачивания фото
+        if clients:
+            set_telegram_client(clients[0])
+
+        import threading
+        flask_thread = threading.Thread(
+            target=lambda: flask_app.run(
+                host=web_cfg.host, port=web_cfg.port,
+                debug=False, use_reloader=False,
+            ),
+            daemon=True,
+        )
+        flask_thread.start()
+        logger.info(
+            f"Web UI запущен: http://{web_cfg.host}:{web_cfg.port}"
+        )
+    except Exception as e:
+        logger.warning(f"Web UI не запущен: {e}")
 
     # Stage 7 (SEMI_AUTO): обработка активной анкеты на авто-аккаунте
     auto_task = asyncio.get_event_loop().create_task(

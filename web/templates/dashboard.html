@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}DvAI — Лента{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div class="stats-bar">
+        <div class="stat">
+            <span class="stat-value">{{ total }}</span>
+            <span class="stat-label">Анкет</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">{{ decisions.get('LIKE', 0) }}</span>
+            <span class="stat-label">LIKE</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">{{ decisions.get('REVIEW', 0) }}</span>
+            <span class="stat-label">REVIEW</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">{{ decisions.get('DISLIKE', 0) }}</span>
+            <span class="stat-label">DISLIKE</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">{{ pending }}</span>
+            <span class="stat-label">Ожидают</span>
+        </div>
+    </div>
+
+    <div class="filter-bar">
+        <a href="{{ url_for('dashboard.index') }}" class="filter-btn {% if not decision_filter %}active{% endif %}">Все</a>
+        <a href="{{ url_for('dashboard.index', decision='LIKE') }}" class="filter-btn {% if decision_filter == 'LIKE' %}active{% endif %}">LIKE</a>
+        <a href="{{ url_for('dashboard.index', decision='REVIEW') }}" class="filter-btn {% if decision_filter == 'REVIEW' %}active{% endif %}">REVIEW</a>
+        <a href="{{ url_for('dashboard.index', decision='DISLIKE') }}" class="filter-btn {% if decision_filter == 'DISLIKE' %}active{% endif %}">DISLIKE</a>
+    </div>
+</div>
+
+<div class="profile-feed">
+    {% if not profiles %}
+        <div class="empty-state">
+            <p>Анкет пока нет</p>
+        </div>
+    {% endif %}
+
+    {% for profile in profiles %}
+    <div class="profile-card" id="profile-{{ profile.id }}">
+        <div class="profile-header">
+            <a href="{{ url_for('profiles.profile_detail', profile_id=profile.id) }}" class="profile-name-link">
+                <h2>{{ profile.name }}, {{ profile.age }}</h2>
+            </a>
+            <span class="profile-city">{{ profile.raw_city or profile.normalized_city or '—' }}</span>
+        </div>
+
+        {% if profile.photos %}
+        <div class="photo-gallery">
+            {% for photo in profile.photos %}
+            <img src="{{ url_for('photos.serve_photo', profile_id=profile.id, message_id=photo.telegram_message_id) }}"
+                 alt="Фото {{ profile.name }}"
+                 class="profile-photo"
+                 loading="lazy">
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if profile.description %}
+        <div class="profile-description">
+            {{ profile.description }}
+        </div>
+        {% endif %}
+
+        <div class="decision-block">
+            <div class="decision-badge decision-{{ profile.decision|lower if profile.decision else 'unknown' }}">
+                {{ profile.decision or '—' }}
+            </div>
+            {% if profile.combined_score is not none %}
+            <span class="score">Score: {{ "%.3f"|format(profile.combined_score) }}</span>
+            {% endif %}
+        </div>
+
+        {% if profile.parsed_reasons %}
+        <div class="reasons">
+            {% for r in profile.parsed_reasons %}
+            <span class="reason-tag reason-{{ r.type }}">{{ r.label }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if profile.filter_decision %}
+        <div class="filter-info">
+            Filter: {{ profile.filter_decision }}
+        </div>
+        {% endif %}
+
+        {% if profile.decision == 'REVIEW' and not profile.human_decision %}
+        <div class="action-buttons" data-profile-id="{{ profile.id }}">
+            <button class="btn btn-like" onclick="quickAction({{ profile.id }}, 'LIKE')">❤️ LIKE</button>
+            <button class="btn btn-dislike" onclick="quickAction({{ profile.id }}, 'DISLIKE')">👎 DISLIKE</button>
+        </div>
+        <div class="action-result" id="action-result-{{ profile.id }}"></div>
+        {% elif profile.human_decision %}
+        <div class="human-decision">
+            {% if profile.human_decision == 'APPROVE' %}
+            <span class="badge badge-approved">✅ APPROVE</span>
+            {% elif profile.human_decision == 'REJECT' %}
+            <span class="badge badge-rejected">❌ REJECT</span>
+            {% else %}
+            <span class="badge badge-skipped">⏭ SKIP</span>
+            {% endif %}
+            {% if profile.agreement %}
+            <span class="agreement agreement-{{ profile.agreement|lower }}">{{ profile.agreement }}</span>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="profile-meta">
+            <span>{{ profile.evaluated_at[:10] if profile.evaluated_at else '' }}</span>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="{{ url_for('dashboard.index', page=page-1, decision=decision_filter) }}" class="btn btn-page">← Назад</a>
+    {% endif %}
+    <span class="page-info">{{ page }} / {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="{{ url_for('dashboard.index', page=page+1, decision=decision_filter) }}" class="btn btn-page">Далее →</a>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

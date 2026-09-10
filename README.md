@@ -18,6 +18,7 @@
 - **Manual Review (Stage 8)** (`services/manual_review.py`): когда скоринг выдаёт REVIEW, бот **не действует сам** — пересылает карточку владельцу и ждёт его ручного решения. Исходящее `❤️`/`👎` владельца перехватывается и записывается в файл `data/reviews/review_log.json`/`.md` (только для активных REVIEW-анкет).
 - **Control Panel (Stage 7.5)** (`telegram/control_bot.py`): `/status /mode on|off /stream /recent /msgs /top /help` (+ inline-кнопки) только от `control.allowed_user_ids`; слушает **все** `telegram.accounts`; режим меняется на лету и персистится в `config.yaml`.
 - **Аналитика лайков (Stage 8.5)**: собирается «что я написал при лайке и ответила ли девушка». Авто-текст «Берем)» — в `auto_actions_log.message_text`, ручные действия владельца («❤️»→LIKE, «👎»→DISLIKE, текст→MESSAGE) — в `sent_messages` (`_handle_outgoing_message`); сигнал ответа — MATCH «Начинай общаться 👉 Имя» → `match_responses` (привязка к профилю по имени, `UNIQUE(chat_id, tm_id)`). **Результат на каждый лайк** (авто/ручной) — таблица `like_outcomes`: содержание сообщения (`message_text`, '' если без текста) и `responded` (0/1 — лайкнула в ответ). Отклонённые из-за лимита Leo лайки («Слишком много ❤️ за сегодня», детектор `is_like_rejection`) помечаются `rejected=1` и исключаются из аналитики (`mark_like_rejected`). Отчёты: `/msgs` — конверсия текстов (`sent`/`responded`/`rate`), `/top` — топ девушек по лайкам (+ ответила ли, последнее сообщение).
+- **Web UI (Stage 9)** (`web/`): веб-интерфейс поверх существующей системы — Flask + Jinja2 + HTML/CSS/JS, запускается в daemon-потоке `main.py`. НЕ содержит бизнес-логики (только читает существующую SQLite через `web/db.py` SyncDB и передаёт команды ручного ревью в `human_decisions`). Параллельно с Telegram ControlBot (бот не удаляется): `/login` (селф-пароль + CSRF), `/dashboard` (вертикальная лента карточек анкет со всеми фото, решением и причинами), `/profiles/<id>` (детальная страница), `/settings` (фильтры, preferences, режим OBSERVE/SEMI_AUTO/AUTO из `config.yaml`), быстрые действия ❤️/👎 только для REVIEW-профилей. Фото скачиваются по запросу через существующий Telethon-клиент с кэшем в `media/<profile_id>/<message_id>.jpg`. Пароль/логин: env-переменные `DVAI_WEB_PASSWORD_HASH`/`DVAI_WEB_SECRET`, дефолтный адрес `0.0.0.0:5000`. Без WebSocket/SSE/React, live-лента не планируется, новый AUTO не реализуется.
 - **SAFE по умолчанию**: режимы `project.mode` (OBSERVE / SEMI_AUTO / AUTO). `OBSERVE` только наблюдает и рекомендует; авто-действия включаются только явно.
 
 ---
@@ -49,6 +50,7 @@ Telegram (RAW)
 | **Scoring (детерминированный)** | решение | `filter_engine`, `filter_service`, `profile_normalizer`, `feature_extractor`, `score_engine`, `decision_service`, `app/preferences` | ❌ Telegram-free |
 | **Review + Analytics** | ручная рецензия и аналитика | `review_service`, `analytics_service`, `review_export`, `manual_review` | ❌ Telegram-free |
 | **Telegram UI** | вывод и управление | `review_bot`, `control_bot` | ✅ Telethon |
+| **Web UI (Stage 9)** | веб-интерфейс | `web/` (Flask, SyncDB, фото-кэш), `static/`, шаблоны | ⚠️ только фото по запросу |
 
 > Единственные слои с Telethon: `collectors/dvinchik_collector.py`, `collectors/auto_action.py`, `telegram/`. Всё остальное — чистая логика (Profile/str/Config), тестируется без живого Telegram.
 
@@ -72,7 +74,9 @@ dvdatin/
 ├── models/                      # raw.py, profile.py, filter.py, features.py, decision.py, human_decision.py
 ├── services/                    # Telegram-free бизнес-логика (см. таблицу выше)
 ├── collectors/                  # см. таблицу выше
-├── tests/                       # 463 теста (16 файлов), baseline в tests/baseline/
+├── web/                         # Stage 9 Web UI: Flask (create_app, blueprints, SyncDB, photos)
+├── static/                      # CSS/JS для Web UI
+├── tests/                       # 588 тестов (17 файлов), baseline в tests/baseline/
 ├── deploy/                      # systemd unit + runbook
 ├── proxy/                       # vendored xray-core + VLESS (НЕ коммитить)
 └── data/                        # БД, сессии, логи, экспорт (gitignored)
@@ -163,8 +167,20 @@ cp config/preferences.example.yaml config/preferences.yaml   # по желани
 python main.py                 # или run.bat на Windows
 python main.py --export-review # CSV-экспорт рецензий
 
-python -m pytest tests/ -v     # 463 теста
+python -m pytest tests/ -v     # 588 тестов
 ```
+
+### Web UI (Stage 9)
+
+Запускается автоматически внутри `main.py` в daemon-потоке Flask (порт по умолчанию `5000`). Настройка — env-переменные (без реальных секретов в конфиге):
+
+```bash
+export DVAI_WEB_SECRET="случайный-секрет"        # secret_key сессий
+export DVAI_WEB_PASSWORD_HASH="<werkzeug hash>"  # пароль для /login
+export DVAI_WEB_PORT="5000"                      # порт (по умолчанию 5000)
+```
+
+URL-ы: `/login` → `/dashboard` (лента анкет) → `/profiles/<id>` (детали) → `/settings` (фильтры/режим). Подробнее в `web/` и `AGENTS.md`.
 
 ### Ключевые константы
 
