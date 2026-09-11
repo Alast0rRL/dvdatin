@@ -18,6 +18,7 @@ class WebConfig:
         host: str = "0.0.0.0",
         port: int = 5000,
         debug: bool = False,
+        cookie_secure: bool = False,
     ) -> None:
         self.secret_key = secret_key or os.environ.get(
             "DVAI_WEB_SECRET", "dev-secret-change-me-in-production"
@@ -29,6 +30,11 @@ class WebConfig:
         self.host = host
         self.port = int(os.environ.get("DVAI_WEB_PORT", str(port)))
         self.debug = debug
+        #: True только за TLS-реверс-прокси: без HTTPS Secure-cookie
+        #: не отправляется браузером, и логин/CSRF ломаются.
+        self.cookie_secure = cookie_secure or os.environ.get(
+            "DVAI_WEB_COOKIE_SECURE", ""
+        ).lower() in {"1", "true", "yes", "on"}
 
     @classmethod
     def from_env(cls) -> WebConfig:

@@ -178,6 +178,7 @@ python -m pytest tests/ -v     # 588 тестов
 export DVAI_WEB_SECRET="случайный-секрет"        # secret_key сессий
 export DVAI_WEB_PASSWORD_HASH="<werkzeug hash>"  # пароль для /login
 export DVAI_WEB_PORT="5000"                      # порт (по умолчанию 5000)
+export DVAI_WEB_COOKIE_SECURE="0"                # 1 — только за HTTPS-реверс-прокси
 ```
 
 URL-ы: `/login` → `/dashboard` (лента анкет) → `/profiles/<id>` (детали) → `/settings` (фильтры/режим). Подробнее в `web/` и `AGENTS.md`.

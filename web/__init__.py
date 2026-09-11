@@ -36,7 +36,7 @@ def create_app(web_config: WebConfig | None = None) -> Flask:
     app.secret_key = cfg.secret_key
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    if not cfg.debug:
+    if cfg.cookie_secure:
         app.config["SESSION_COOKIE_SECURE"] = True
 
     app.config["WEB_CONFIG"] = cfg
