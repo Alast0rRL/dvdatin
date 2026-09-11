@@ -105,7 +105,7 @@ def download_photo_sync(
     if client is None:
         return get_photo_path(profile_id, message_id)
 
-    loop = client.loop if hasattr(client, "loop") else None
+    loop = getattr(client, "_loop", None)
     if loop is None or loop.is_closed():
         logger.warning(
             f"Photo sync: loop недоступен "
