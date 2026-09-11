@@ -75,9 +75,7 @@ async def download_photo(
         return None
 
     try:
-        logger.debug(f"[photo] get_messages chat={chat_id} msg={message_id}")
         messages = await client.get_messages(chat_id, ids=[message_id])
-        logger.debug(f"[photo] get_messages done n={len(messages)}")
         if not messages or not messages[0]:
             return None
         msg = messages[0]
@@ -86,7 +84,6 @@ async def download_photo(
 
         photo_dir = _ensure_media_dir(profile_id)
         file_path = photo_dir / f"{message_id}.jpg"
-        logger.debug(f"[photo] download_media to {file_path}")
         await client.download_media(msg, file=str(file_path))
         logger.info(f"Photo cached: profile={profile_id} msg={message_id}")
         return file_path
