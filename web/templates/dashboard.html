@@ -26,6 +26,20 @@
         </div>
     </div>
 
+    <div class="mode-switcher">
+        <span class="mode-label">Режим:</span>
+        <form method="POST" action="{{ url_for('settings.update_mode') }}" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ request.full_path }}">
+            {% for m in ['OBSERVE', 'SEMI_AUTO', 'AUTO'] %}
+            <button type="submit" name="mode" value="{{ m }}"
+                    class="btn mode-btn {% if mode == m %}active mode-{{ m|lower }}{% endif %}">
+                {{ m }}
+            </button>
+            {% endfor %}
+        </form>
+    </div>
+
     <div class="filter-bar">
         <a href="{{ url_for('dashboard.index') }}" class="filter-btn {% if not decision_filter %}active{% endif %}">Все</a>
         <a href="{{ url_for('dashboard.index', decision='LIKE') }}" class="filter-btn {% if decision_filter == 'LIKE' %}active{% endif %}">LIKE</a>

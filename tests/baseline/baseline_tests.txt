@@ -553,6 +553,8 @@ tests/test_web.py::TestDashboard::test_reasons_displayed
 tests/test_web.py::TestDashboard::test_stats_bar
 tests/test_web.py::TestDashboard::test_filter_by_decision
 tests/test_web.py::TestDashboard::test_review_action_buttons
+tests/test_web.py::TestDashboard::test_mode_switcher_on_dashboard
+tests/test_web.py::TestDashboard::test_mode_switch_from_dashboard_redirects_back
 tests/test_web.py::TestQuickAction::test_quick_like
 tests/test_web.py::TestQuickAction::test_quick_dislike
 tests/test_web.py::TestQuickAction::test_quick_action_already_reviewed

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from flask import Blueprint, render_template, request
 
 from web.blueprints.auth import login_required
@@ -13,6 +15,13 @@ dashboard_bp = Blueprint("dashboard", __name__)
 def _get_db() -> SyncDB:
     from flask import current_app
     return current_app.config["SYNC_DB"]
+
+
+def _get_config_path() -> Path:
+    from flask import current_app
+    return current_app.config.get(
+        "CONFIG_PATH", Path("config/config.yaml")
+    )
 
 
 def _parse_reasons(reasons_raw: str | list) -> list[dict[str, str]]:
@@ -146,6 +155,9 @@ def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
     human = db.count_human_decisions()
     pending = db.get_pending_review_count()
 
+    # Current mode for the switcher
+    mode = db.get_mode(_get_config_path())
+
     return render_template(
         "dashboard.html",
         profiles=profiles,
@@ -156,6 +168,7 @@ def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
         human_decisions=human,
         pending=pending,
         decision_filter=decision_filter,
+        mode=mode,
     )
 
 

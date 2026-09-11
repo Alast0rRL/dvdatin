@@ -281,6 +281,30 @@ class TestDashboard:
         assert "LIKE" in data
         assert "DISLIKE" in data
 
+    def test_mode_switcher_on_dashboard(self, client) -> None:
+        _login(client)
+        resp = client.get("/")
+        data = resp.data.decode()
+        # Переключатель режимов присутствует на ленте
+        assert "Режим:" in data
+        assert "OBSERVE" in data
+        assert "SEMI_AUTO" in data
+        assert "AUTO" in data
+        # Активная кнопка — текущий режим OBSERVE
+        assert 'class="btn mode-btn active mode-observe"' in data
+
+    def test_mode_switch_from_dashboard_redirects_back(self, client) -> None:
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        resp = client.post(
+            "/settings/mode",
+            data={"mode": "SEMI_AUTO", "csrf_token": token, "next": "/dashboard"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/dashboard") or "/dashboard" in resp.headers["Location"]
+
 
 # ── Quick Action Tests ───────────────────────────────────────────
 

@@ -81,12 +81,16 @@ def update_mode() -> tuple:
         return ("CSRF token invalid", 403)
 
     mode_str = request.form.get("mode", "OBSERVE")
+    redirect_target = request.form.get("next", "")
+    if not redirect_target or not redirect_target.startswith("/") or redirect_target.startswith("//"):
+        redirect_target = url_for("settings.settings")
+
     from core.types import Mode
     try:
         mode = Mode(mode_str)
     except ValueError:
         flash(f"Неизвестный режим: {mode_str}", "error")
-        return redirect(url_for("settings.settings"))
+        return redirect(redirect_target)
 
     config_path = _get_config_path()
     try:
@@ -97,7 +101,7 @@ def update_mode() -> tuple:
     except Exception as e:
         flash(f"Ошибка: {e}", "error")
 
-    return redirect(url_for("settings.settings"))
+    return redirect(redirect_target)
 
 
 @settings_bp.route("/settings/preferences", methods=["POST"])
