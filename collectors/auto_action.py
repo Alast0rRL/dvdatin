@@ -342,6 +342,22 @@ class AutoActionEngine:
         logger.info(f"AutoAction: нажата кнопка {text!r} на chat={self._chat_id}")
         return True
 
+    async def manual_reaction(self, text: str) -> bool:
+        """Отправляет реакцию владельца (❤️/👎) в чат Leo.
+
+        Используется Web UI (кнопки на ленте): человек решает по активной
+        анкете, движок отправляет реакцию как «нажатие кнопки» — Leo
+        переключает ленту на следующую карточку. Применяет rate-limit и
+        кэш сущности чата (ensure_peer). Возвращает True если отправлено.
+        """
+        if not self.enabled:
+            return False
+        await self._send_locked(text)
+        logger.info(
+            f"AutoAction: ручная реакция {text!r} отправлена на chat={self._chat_id}"
+        )
+        return True
+
     async def _send(self, text: str) -> None:
         """Отправляет текст в чат от имени сконфигурированного клиента."""
         if self._client is None:

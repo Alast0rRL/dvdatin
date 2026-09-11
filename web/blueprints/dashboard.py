@@ -204,4 +204,10 @@ def quick_action(profile_id: int, action: str) -> tuple:
         agreement=agreement.value,
     )
 
-    return ("OK", 200)
+    # Stage 7: реально отправляем реакцию в чат Leo, чтобы лента
+    # продолжилась (пользователь решил по анкете). Если авто-движок
+    # выключен/недоступен — решение уже записано в БД, возвращаем 200.
+    from web.actions import send_reaction_sync
+    status = send_reaction_sync(action)
+
+    return (f"OK:{status}", 200)

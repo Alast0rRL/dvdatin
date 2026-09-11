@@ -561,6 +561,8 @@ tests/test_web.py::TestQuickAction::test_quick_dislike
 tests/test_web.py::TestQuickAction::test_quick_action_already_reviewed
 tests/test_web.py::TestQuickAction::test_quick_action_non_review
 tests/test_web.py::TestQuickAction::test_quick_action_invalid
+tests/test_web.py::TestQuickAction::test_quick_action_sends_reaction
+tests/test_web.py::TestQuickAction::test_quick_action_returns_disabled_without_engine
 tests/test_web.py::TestProfileDetail::test_profile_renders
 tests/test_web.py::TestProfileDetail::test_profile_not_found
 tests/test_web.py::TestProfileDetail::test_profile_shows_decision

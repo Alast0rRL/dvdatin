@@ -191,6 +191,7 @@ async def main() -> None:
         from web.config import WebConfig
         from web.db import SyncDB
         from web.photos import set_telegram_client
+        from web.actions import set_action_engine
 
         web_cfg = WebConfig.from_env()
         sync_db = SyncDB(str(DB_PATH))
@@ -201,6 +202,10 @@ async def main() -> None:
         # Устанавливаем TelegramClient для скачивания фото
         if clients:
             set_telegram_client(clients[0])
+
+        # Stage 7: web-кнопки лайк/дизлайк реально отправляют реакцию
+        # в чат Leo через авто-аккаунт (чтобы лента двигалась дальше).
+        set_action_engine(collector.auto_engine())
 
         import threading
         flask_thread = threading.Thread(

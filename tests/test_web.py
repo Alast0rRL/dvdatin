@@ -371,6 +371,45 @@ class TestQuickAction:
         resp = client.get("/dashboard/action/2/INVALID")
         assert resp.status_code == 400
 
+    def test_quick_action_sends_reaction(self, client, sync_db) -> None:
+        """Клик по кнопке отправляет ❤️/👎 в чат Leo через авто-движок."""
+        import threading
+        from web import actions as web_actions
+
+        sent = []
+
+        class _FakeEngine:
+            async def manual_reaction(self, text: str) -> bool:
+                sent.append(text)
+                return True
+
+        # run_coroutine_threadsafe требует работающий loop в отдельном потоке.
+        worker_loop = asyncio.new_event_loop()
+        t = threading.Thread(target=worker_loop.run_forever, daemon=True)
+        t.start()
+        try:
+            with patch("web.actions._loop", return_value=worker_loop):
+                web_actions.set_action_engine(_FakeEngine())
+                _login(client)
+                resp = client.get("/dashboard/action/3/DISLIKE")
+                assert resp.status_code == 200
+                assert resp.data == b"OK:SENT"
+                assert sent == ["\U0001F44E"]
+        finally:
+            web_actions.set_action_engine(None)
+            worker_loop.call_soon_threadsafe(worker_loop.stop)
+            t.join(timeout=5)
+
+    def test_quick_action_returns_disabled_without_engine(self, client) -> None:
+        """Без авто-движка решение сохраняется, но реакция не отправляется."""
+        from web import actions as web_actions
+
+        web_actions.set_action_engine(None)
+        _login(client)
+        resp = client.get("/dashboard/action/3/DISLIKE")
+        assert resp.status_code == 200
+        assert resp.data == b"OK:DISABLED"
+
 
 # ── Profile Detail Tests ─────────────────────────────────────────
 
