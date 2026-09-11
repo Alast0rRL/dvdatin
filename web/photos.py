@@ -102,6 +102,10 @@ def download_photo_sync(
 
     loop = client.loop if hasattr(client, "loop") else None
     if loop is None or loop.is_closed():
+        logger.warning(
+            f"Photo sync: loop недоступен "
+            f"(loop={loop}, closed={loop.is_closed() if loop else None})"
+        )
         return get_photo_path(profile_id, message_id)
 
     try:
@@ -109,7 +113,10 @@ def download_photo_sync(
             download_photo(chat_id, message_id, profile_id),
             loop,
         )
-        return future.result(timeout=10)
+        return future.result(timeout=30)
     except Exception as e:
-        logger.error(f"Photo download bridge failed: {e}")
+        logger.error(
+            f"Photo download bridge failed: {type(e).__name__}: {e!r} "
+            f"(loop.running={loop.is_running()})"
+        )
         return get_photo_path(profile_id, message_id)
