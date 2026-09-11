@@ -281,6 +281,16 @@ class TestDashboard:
         assert "LIKE" in data
         assert "DISLIKE" in data
 
+    def test_action_buttons_on_all_profiles(self, client) -> None:
+        _login(client)
+        resp = client.get("/")
+        data = resp.data.decode()
+        # Кнопки есть на карточках без человеческого решения
+        # (Барби=REVIEW, Варвара=DISLIKE; Алиса уже отревьюена — кнопок нет)
+        assert "action-result-2" in data
+        assert "action-result-3" in data
+        assert "action-result-1" not in data
+
     def test_mode_switcher_on_dashboard(self, client) -> None:
         _login(client)
         resp = client.get("/")
@@ -345,11 +355,16 @@ class TestQuickAction:
         resp = client.get("/dashboard/action/2/LIKE")
         assert resp.status_code == 409
 
-    def test_quick_action_non_review(self, client) -> None:
+    def test_quick_action_non_review(self, client, sync_db) -> None:
         _login(client)
-        # Алиса = LIKE, не REVIEW
-        resp = client.get("/dashboard/action/1/LIKE")
-        assert resp.status_code == 400
+        # Варвара = DISLIKE (не REVIEW) — лайк теперь доступен на любой анкете
+        resp = client.get("/dashboard/action/3/LIKE")
+        assert resp.status_code == 200
+
+        sync, _, _ = sync_db
+        hd = sync.get_human_decision(3)
+        assert hd is not None
+        assert hd["decision"] == "APPROVE"
 
     def test_quick_action_invalid(self, client) -> None:
         _login(client)

@@ -175,7 +175,11 @@ def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
 @dashboard_bp.route("/dashboard/action/<int:profile_id>/<action>")
 @login_required
 def quick_action(profile_id: int, action: str) -> tuple:
-    """Быстрое действие для REVIEW-профиля (LIKE/DISLIKE) из ленты."""
+    """Быстрое действие для анкеты (LIKE/DISLIKE) прямо из ленты.
+
+    Доступно для любой анкеты в истории, не только REVIEW: записывает
+    ручное решение владельца (APPROVE/REJECT) по последней AI-оценке.
+    """
     if action not in ("LIKE", "DISLIKE"):
         return ("Invalid action", 400)
 
@@ -183,9 +187,6 @@ def quick_action(profile_id: int, action: str) -> tuple:
     ai_decision = db.get_latest_ai_decision(profile_id)
     if not ai_decision:
         return ("AI decision not found", 404)
-
-    if ai_decision["decision"] != "REVIEW":
-        return ("Only REVIEW profiles can be actioned", 400)
 
     if db.is_already_reviewed(ai_decision["id"]):
         return ("Already reviewed", 409)

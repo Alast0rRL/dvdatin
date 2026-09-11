@@ -104,7 +104,7 @@
         </div>
         {% endif %}
 
-        {% if profile.decision == 'REVIEW' and not profile.human_decision %}
+        {% if not profile.human_decision %}
         <div class="action-buttons" data-profile-id="{{ profile.id }}">
             <button class="btn btn-like" onclick="quickAction({{ profile.id }}, 'LIKE')">❤️ LIKE</button>
             <button class="btn btn-dislike" onclick="quickAction({{ profile.id }}, 'DISLIKE')">👎 DISLIKE</button>
