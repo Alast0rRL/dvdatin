@@ -20,35 +20,92 @@
 
     window.showToast = toast;
 
-    // ── Авто-обновление ленты ──
-    // Каждые 10с проверяем число анкет в БД. Если появились новые
-    // (total вырос) или изменился pending — молча перезагружаем страницу.
+    // ── Авто-обновление ленты (in-place, без перезагрузки страницы) ──
+    // Каждые ~8с спрашиваем лёгкую сигнатуру (/dashboard/new-count).
+    // Сигнатура учитывает не только total/pending, но и MAX(last_seen_at)
+    // и MAX(raw_messages.id) — поэтому подхватываются и повторы анкет.
+    // При изменении сигнатуры тянем HTML-фрагменты (/dashboard/feed)
+    // и подменяем DOM, минуя полную перезагрузку (F5 не нужен).
     const header = document.querySelector(".dashboard-header");
-    if (header) {
-        const known = {
-            total: parseInt(header?.dataset.total || "0", 10),
-            pending: parseInt(header?.dataset.pending || "0", 10),
+    const feedEl = document.getElementById("profile-feed");
+    const paginationEl = document.getElementById("pagination");
+
+    function currentParams() {
+        return new URLSearchParams(window.location.search);
+    }
+
+    function updateStats(data) {
+        if (!data || typeof data !== "object") return;
+        const map = {
+            total: "total",
+            pending: "pending",
+            like: "like",
+            review: "review",
+            dislike: "dislike",
         };
+        for (const [key, stat] of Object.entries(map)) {
+            if (data[key] === undefined) continue;
+            const el = document.querySelector(`[data-stat="${stat}"]`);
+            if (el && String(el.textContent) !== String(data[key])) {
+                el.textContent = data[key];
+            }
+        }
+    }
+
+    if (header && feedEl) {
+        let lastSignature = "";
+        let lastFeedHtml = feedEl.innerHTML;
+        let lastPaginationHtml = paginationEl
+            ? paginationEl.innerHTML
+            : "";
 
         setInterval(() => {
-            fetch("/dashboard/new-count", { credentials: "same-origin" })
+            if (Object.keys(busy).length > 0) return;
+            const params = currentParams();
+            const url = `/dashboard/new-count?decision=${encodeURIComponent(
+                params.get("decision") || ""
+            )}`;
+
+            fetch(url, { credentials: "same-origin" })
                 .then((resp) => (resp.ok ? resp.json() : null))
                 .then((data) => {
-                    if (!data) return;
-                    const totalChanged =
-                        !Number.isNaN(data.total) && data.total !== known.total;
-                    const pendingChanged =
-                        !Number.isNaN(data.pending) &&
-                        data.pending !== known.pending;
-                    if (totalChanged || pendingChanged) {
-                        const cur = window.location.href;
-                        window.location.href = cur.includes("?")
-                            ? cur + "&t=" + Date.now()
-                            : cur + "?t=" + Date.now();
-                    }
+                    if (!data || !data.signature) return;
+                    if (data.signature === lastSignature) return;
+
+                    const feedUrl =
+                        `/dashboard/feed` +
+                        (params.toString() ? `?${params.toString()}` : "");
+                    return fetch(feedUrl, { credentials: "same-origin" })
+                        .then((r) => (r.ok ? r.json() : null))
+                        .then((frag) => {
+                            if (!frag) return;
+
+                            updateStats(data);
+                            if (header) {
+                                header.dataset.total = data.total ?? "";
+                                header.dataset.pending = data.pending ?? "";
+                            }
+                            lastSignature = data.signature;
+
+                            if (
+                                frag.feed &&
+                                frag.feed !== lastFeedHtml
+                            ) {
+                                feedEl.innerHTML = frag.feed;
+                                lastFeedHtml = frag.feed;
+                            }
+                            if (
+                                paginationEl &&
+                                frag.pagination &&
+                                frag.pagination !== lastPaginationHtml
+                            ) {
+                                paginationEl.innerHTML = frag.pagination;
+                                lastPaginationHtml = frag.pagination;
+                            }
+                        });
                 })
                 .catch(() => {});
-        }, 10000);
+        }, 8000);
     }
 
     // ── Быстрое действие (LIKE / DISLIKE) из ленты ──

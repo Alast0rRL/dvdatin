@@ -243,6 +243,25 @@ class SyncDB:
         """)
         return row["cnt"] if row else 0
 
+    def get_feed_signals(self) -> dict[str, Any]:
+        """Signals для авто-обновления ленты.
+
+        Ловит и новые анкеты (MAX(profiles.id)), и повторы уже известных
+        (MAX(profiles.last_seen_at)), и любую новую активность в чате
+        (MAX(raw_messages.id) — RAW пишется ДО обработки).
+        """
+        row = self._query_one("""
+            SELECT
+                (SELECT MAX(id) FROM profiles) AS max_profile_id,
+                (SELECT MAX(last_seen_at) FROM profiles) AS max_last_seen,
+                (SELECT MAX(id) FROM raw_messages) AS max_raw_id
+        """)
+        return row or {
+            "max_profile_id": None,
+            "max_last_seen": None,
+            "max_raw_id": None,
+        }
+
     # ── Settings ──────────────────────────────────────────────────
 
     def get_filter_config(self, config_path: Path) -> dict[str, Any]:

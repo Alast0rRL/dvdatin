@@ -137,60 +137,109 @@ def dashboard() -> str:  # type: ignore[no-untyped-def]
     return dashboard_bpEndpoint("")
 
 
-@dashboard_bp.route("/dashboard/new-count")
-@login_required
-def new_count() -> tuple:
-    """Возвращает актуальное число анкет для авто-обновления ленты.
+def _load_dashboard_data(db: SyncDB, page: int, decision_filter: str | None) -> dict:
+    """Общий загрузчик данных ленты (страница + статистика).
 
-    Frontend опрашивает этот лёгкий эндпоинт; если total вырос —
-    страница перезагружается, и новые анкеты появляются без ручного F5.
+    Используется и для полной страницы, и для in-place обновления
+    (эндпоинт /dashboard/feed), чтобы не дублировать SQL/форматирование.
     """
-    db = _get_db()
-    total = db.get_profiles_count(None)
-    pending = db.get_pending_review_count()
-    import json
-    return (json.dumps({"total": total, "pending": pending}), 200,
-            {"Content-Type": "application/json"})
-
-
-def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
-    db = _get_db()
-    page = request.args.get("page", 1, type=int)
     per_page = 20
-    decision_filter = request.args.get("decision", None)
-
     offset = (page - 1) * per_page
     profiles = db.get_profiles_paginated(offset, per_page, decision_filter)
     total = db.get_profiles_count(decision_filter)
     total_pages = (total + per_page - 1) // per_page
 
-    # Format profiles
-    profiles = [_format_profile_for_template(p) for p in profiles]
+    return {
+        "profiles": [_format_profile_for_template(p) for p in profiles],
+        "total": total,
+        "total_pages": total_pages,
+        "decisions": db.count_decisions(),
+        "human_decisions": db.count_human_decisions(),
+        "pending": db.get_pending_review_count(),
+    }
 
-    # Stats
-    decisions = db.count_decisions()
-    human = db.count_human_decisions()
+
+@dashboard_bp.route("/dashboard/new-count")
+@login_required
+def new_count() -> tuple:
+    """Лёгкие сигналы для авто-обновления ленты.
+
+    Frontend опрашивает эндпоинт каждые ~8с; если сигнатура изменилась —
+    через /dashboard/feed данные подставляются в DOM (без перезагрузки).
+    Сигнатура ловит и новые анкеты, и повторы известных (меняется
+    MAX(last_seen_at)), и любую новую активность (MAX(raw_messages.id)).
+    """
+    import json
+    db = _get_db()
+    decision_filter = request.args.get("decision", None) or None
+    total = db.get_profiles_count(decision_filter)
     pending = db.get_pending_review_count()
+    decisions = db.count_decisions()
+    signals = db.get_feed_signals()
 
-    # Current mode for the switcher
+    signature = "|".join([
+        str(total), str(pending),
+        str(decisions.get("LIKE", 0)), str(decisions.get("REVIEW", 0)),
+        str(decisions.get("DISLIKE", 0)),
+        str(signals.get("max_profile_id") or ""),
+        str(signals.get("max_last_seen") or ""),
+        str(signals.get("max_raw_id") or ""),
+    ])
+
+    return (json.dumps({
+        "total": total,
+        "pending": pending,
+        "decisions": decisions,
+        "signature": signature,
+    }), 200, {"Content-Type": "application/json"})
+
+
+@dashboard_bp.route("/dashboard/feed")
+@login_required
+def feed() -> tuple:
+    """Возвращает HTML-фрагменты текущей страницы ленты.
+
+    {feed: <карточки>, pagination: <пагинация>} — для in-place замены DOM.
+    """
+    import json
+    db = _get_db()
+    page = request.args.get("page", 1, type=int)
+    decision_filter = request.args.get("decision", None) or None
+
+    data = _load_dashboard_data(db, page, decision_filter)
+    feed_html = render_template(
+        "partials/profile_cards.html", profiles=data["profiles"]
+    )
+    pagination_html = render_template(
+        "partials/pagination.html",
+        page=page, total_pages=data["total_pages"],
+        decision_filter=decision_filter,
+    )
+    return (json.dumps({
+        "feed": feed_html,
+        "pagination": pagination_html,
+    }), 200, {"Content-Type": "application/json; charset=utf-8"})
+
+
+def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
+    db = _get_db()
+    page = request.args.get("page", 1, type=int)
+    decision_filter = request.args.get("decision", None) or None
+
+    data = _load_dashboard_data(db, page, decision_filter)
+
+    # Текущий режим и аккаунт-исполнитель (переключатели на ленте)
     mode = db.get_mode(_get_config_path())
-
-    # Аккаунт-исполнитель авто-действий (переключение прямо с ленты)
     accounts, account_session = _get_accounts(_get_config_path())
 
     return render_template(
         "dashboard.html",
-        profiles=profiles,
         page=page,
-        total_pages=total_pages,
-        total=total,
-        decisions=decisions,
-        human_decisions=human,
-        pending=pending,
         decision_filter=decision_filter,
         mode=mode,
         accounts=accounts,
         account_session=account_session,
+        **data,
     )
 
 

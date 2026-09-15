@@ -5,23 +5,23 @@
 <div class="dashboard-header" data-total="{{ total }}" data-pending="{{ pending }}">
     <div class="stats-card">
         <div class="stat">
-            <span class="stat-value">{{ total }}</span>
+            <span class="stat-value" data-stat="total">{{ total }}</span>
             <span class="stat-label">Анкет</span>
         </div>
         <div class="stat stat--like">
-            <span class="stat-value">{{ decisions.get('LIKE', 0) }}</span>
+            <span class="stat-value" data-stat="like">{{ decisions.get('LIKE', 0) }}</span>
             <span class="stat-label">LIKE</span>
         </div>
         <div class="stat stat--review">
-            <span class="stat-value">{{ decisions.get('REVIEW', 0) }}</span>
+            <span class="stat-value" data-stat="review">{{ decisions.get('REVIEW', 0) }}</span>
             <span class="stat-label">REVIEW</span>
         </div>
         <div class="stat stat--dislike">
-            <span class="stat-value">{{ decisions.get('DISLIKE', 0) }}</span>
+            <span class="stat-value" data-stat="dislike">{{ decisions.get('DISLIKE', 0) }}</span>
             <span class="stat-label">DISLIKE</span>
         </div>
         <div class="stat stat--pending">
-            <span class="stat-value">{{ pending }}</span>
+            <span class="stat-value" data-stat="pending">{{ pending }}</span>
             <span class="stat-label">Ожидают</span>
         </div>
     </div>
@@ -65,131 +65,11 @@
     </div>
 </div>
 
-<div class="profile-feed">
-    {% if not profiles %}
-        <div class="empty-state">
-            <div class="empty-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            </div>
-            <p>Анкет пока нет</p>
-            <small>Как только появятся новые анкеты, они здесь отобразятся.</small>
-        </div>
-    {% endif %}
-
-    {% for profile in profiles %}
-    <div class="profile-card" id="profile-{{ profile.id }}">
-        <div class="profile-card-top">
-            <div class="profile-main">
-                <h2>
-                    <a href="{{ url_for('profiles.profile_detail', profile_id=profile.id) }}" class="profile-name-link">
-                        {{ profile.name }}, {{ profile.age }}
-                    </a>
-                </h2>
-                <span class="profile-city">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
-                    {{ profile.raw_city or profile.normalized_city or '—' }}
-                </span>
-            </div>
-            <div class="card-badges">
-                {% if profile.status %}
-                <span class="status status-{{ profile.status|lower }}">{{ profile.status }}</span>
-                {% endif %}
-                {% if profile.decision %}
-                <span class="decision-badge decision-{{ profile.decision|lower }}">
-                    {{ profile.decision }}
-                </span>
-                {% endif %}
-            </div>
-        </div>
-
-        {% if profile.photos %}
-        <div class="photo-gallery">
-            {% for photo in profile.photos %}
-            <img src="{{ url_for('photos.serve_photo', profile_id=profile.id, message_id=photo.telegram_message_id) }}"
-                 alt="Фото {{ profile.name }}"
-                 class="profile-photo"
-                 loading="lazy">
-            {% endfor %}
-        </div>
-        {% endif %}
-
-        {% if profile.description %}
-        <div class="profile-description">
-            {{ profile.description }}
-        </div>
-        {% endif %}
-
-        {% if profile.parsed_reasons %}
-        <div class="reasons">
-            {% for r in profile.parsed_reasons %}
-            <span class="reason-tag reason-{{ r.type }}">{{ r.label }}</span>
-            {% endfor %}
-        </div>
-        {% endif %}
-
-        {% if profile.filter_decision %}
-        <div class="filter-info">
-            {{ profile.filter_decision }}
-        </div>
-        {% endif %}
-
-        <div class="card-footer">
-            <div class="card-meta">
-                {% if profile.combined_score is not none %}
-                <span class="score">Score {{ "%.3f"|format(profile.combined_score) }}</span>
-                {% endif %}
-                {% if profile.evaluated_at %}
-                <span class="profile-meta">{{ profile.evaluated_at[:10] }}</span>
-                {% endif %}
-            </div>
-
-            {% set acted = profile.human_decision or profile.status in ('DISLIKED', 'LIKED', 'MATCHED') %}
-            {% if not acted %}
-            <div class="action-buttons" data-profile-id="{{ profile.id }}">
-                <button class="btn btn-like" onclick="quickAction({{ profile.id }}, 'LIKE')">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                    LIKE
-                </button>
-                <button class="btn btn-dislike" onclick="quickAction({{ profile.id }}, 'DISLIKE')">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                    DISLIKE
-                </button>
-            </div>
-            <div class="action-result" id="action-result-{{ profile.id }}"></div>
-            {% else %}
-            <div class="human-decision">
-                {% if profile.human_decision == 'APPROVE' %}
-                <span class="badge badge-approved">✅ APPROVE</span>
-                {% elif profile.human_decision == 'REJECT' %}
-                <span class="badge badge-rejected">❌ REJECT</span>
-                {% elif profile.status == 'DISLIKED' %}
-                <span class="badge badge-rejected">👎 DISLIKE</span>
-                {% elif profile.status == 'LIKED' %}
-                <span class="badge badge-approved">❤️ LIKE</span>
-                {% elif profile.status == 'MATCHED' %}
-                <span class="badge badge-matched">💬 MATCH</span>
-                {% else %}
-                <span class="badge badge-skipped">⏭ {{ profile.status }}</span>
-                {% endif %}
-                {% if profile.agreement %}
-                <span class="agreement agreement-{{ profile.agreement|lower }}">{{ profile.agreement }}</span>
-                {% endif %}
-            </div>
-            {% endif %}
-        </div>
-    </div>
-    {% endfor %}
+<div class="profile-feed" id="profile-feed">
+    {% include "partials/profile_cards.html" %}
 </div>
 
-{% if total_pages > 1 %}
-<div class="pagination">
-    {% if page > 1 %}
-    <a href="{{ url_for('dashboard.index', page=page-1, decision=decision_filter) }}" class="btn btn-page">← Назад</a>
-    {% endif %}
-    <span class="page-info">{{ page }} / {{ total_pages }}</span>
-    {% if page < total_pages %}
-    <a href="{{ url_for('dashboard.index', page=page+1, decision=decision_filter) }}" class="btn btn-page">Далее →</a>
-    {% endif %}
+<div class="pagination" id="pagination">
+    {% include "partials/pagination.html" %}
 </div>
-{% endif %}
 {% endblock %}
