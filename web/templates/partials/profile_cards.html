@@ -75,7 +75,14 @@
             {% endif %}
         </div>
 
-        {% set acted = profile.human_decision or profile.status in ('DISLIKED', 'LIKED', 'MATCHED') %}
+        {# Кнопки скрываются, если анкета уже «сыграна»: человек решил ИЛИ бот
+           реально лайкнул/дизлайкнул (статус LIKED/DISLIKED) ИЛИ AI уже вынес
+           терминальное решение LIKE/DISLIKE (даже если реакция ещё не ушла
+           или анкета была с не-авто-аккаунта). REVIEW кнопки сохраняет —
+           это точка входа ручного ревью. #}
+        {% set acted = profile.human_decision
+                       or profile.status in ('DISLIKED', 'LIKED', 'MATCHED')
+                       or profile.decision in ('LIKE', 'DISLIKE') %}
         {% if not acted %}
         <div class="action-buttons" data-profile-id="{{ profile.id }}">
             <button class="btn btn-like" onclick="quickAction({{ profile.id }}, 'LIKE')">
@@ -100,6 +107,10 @@
             <span class="badge badge-approved">❤️ LIKE</span>
             {% elif profile.status == 'MATCHED' %}
             <span class="badge badge-matched">💬 MATCH</span>
+            {% elif profile.decision == 'DISLIKE' %}
+            <span class="badge badge-rejected">👎 DISLIKE (решение AI)</span>
+            {% elif profile.decision == 'LIKE' %}
+            <span class="badge badge-approved">❤️ LIKE (решение AI)</span>
             {% else %}
             <span class="badge badge-skipped">⏭ {{ profile.status }}</span>
             {% endif %}
