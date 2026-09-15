@@ -29,6 +29,9 @@ data/database.db
 data/database.db-wal
 data/database.db-shm
 
+# Analysis exports + DB backups (runtime artifacts, NOT for VCS)
+data/exports/
+
 # Config (secrets)
 config/config.yaml
 

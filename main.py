@@ -31,6 +31,7 @@ from services.decision_service import DecisionService
 from services.review_service import ReviewService
 from services.analytics_service import AnalyticsService
 from services.review_export import EXPORTS_DIR, export_review_csv
+from services.analysis_export import export_analysis_csv, clear_database
 from services.manual_review import ManualReviewRecorder
 from telegram.review_bot import ReviewBot
 from telegram.control_bot import ControlBot
@@ -53,6 +54,48 @@ async def export_review() -> None:
         print(f"Экспорт завершён: {path}")
     except RuntimeError as e:
         logger.error(f"Экспорт не выполнен: {e}")
+        print(f"Ошибка: {e}")
+    finally:
+        await db.close()
+
+
+async def export_analysis() -> None:
+    """Экспортирует все анкеты в CSV для анализа (liked/skipped/etc.).
+
+    Не требует Telegram-авторизации.
+    """
+    config = AppConfig.load(CONFIG_PATH)
+    setup_logging(config)
+    db = Database()
+    await db.connect()
+    try:
+        path, summary = await export_analysis_csv(db, EXPORTS_DIR)
+        print(f"Анализ экспортирован: {path}")
+        print(f"Всего анкет: {summary['total']}")
+        for action, count in summary["breakdown"].items():
+            print(f"  {action}: {count}")
+    except RuntimeError as e:
+        logger.error(f"Анализ не выполнен: {e}")
+        print(f"Ошибка: {e}")
+    finally:
+        await db.close()
+
+
+async def clear_db() -> None:
+    """Создаёт бэкап и полностью очищает БД.
+
+    Не требует Telegram-авторизации. Перед удалением копия БД
+    сохраняется в data/exports/backups/.
+    """
+    config = AppConfig.load(CONFIG_PATH)
+    setup_logging(config)
+    db = Database()
+    await db.connect()
+    try:
+        backup = await clear_database(db)
+        print(f"БД очищена. Бэкап: {backup}")
+    except RuntimeError as e:
+        logger.error(f"Очистка не выполнена: {e}")
         print(f"Ошибка: {e}")
     finally:
         await db.close()
@@ -272,7 +315,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    if "--export-review" in sys.argv:
+    if "--export-analysis" in sys.argv:
+        asyncio.run(export_analysis())
+    elif "--export-review" in sys.argv:
         asyncio.run(export_review())
+    elif "--clear-db" in sys.argv:
+        asyncio.run(clear_db())
     else:
         asyncio.run(main())

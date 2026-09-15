@@ -60,6 +60,7 @@ Server **удалены из кодовой базы** (см. README → «Со�
 - [x] Stage 8: детерминированный скоринг (normalizer → features H01–H09/P01–P04 → score → decision; правила только в `preferences.yaml`; `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`; missing/unknown → REVIEW). Manual Review — ручные решения владельца по REVIEW-анкетам в файл (`services/manual_review.py`).
 - [x] Stage 8.5: аналитика лайков — «что я написал при лайке и ответила ли девушка». `auto_actions_log.message_text` (авто-«Берем)»), `sent_messages` (ручные действия: ❤️→LIKE, 👎→DISLIKE, текст→MESSAGE), `match_responses` (взаимный лайк, привязка по имени), `like_outcomes` — результат на каждый лайк (содержание сообщения + `responded` 0/1). Отчёты `/msgs` (конверсия текстов) и `/top` (топ девушек по лайкам, ответила ли, последнее сообщение) в ControlBot. Read-only, не влияет на действия.
 - [x] Упрощение кодовой базы (Phase 1–10): удалена вся legacy-инфраструктура LLM/CLIP (сервисы, модели, конфиг, тесты, e2e-скрипт), пустые плейсхолдер-пакеты (`dialogs/`, `filters/`, `managers/`, `prompts/`, `utils/`), неиспользуемый код.
+- [x] Stage 11: экспорт анализа всех анкет (liked/disliked/skipped/reviewed/pending/seen) в CSV (`main.py --export-analysis`) + полная очистка БД с бэкапом (`main.py --clear-db`; `data/exports/backups/`).
 
 ## Следующие этапы
 

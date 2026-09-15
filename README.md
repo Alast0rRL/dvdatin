@@ -58,7 +58,7 @@ Telegram (RAW)
 
 ```
 dvdatin/
-├── main.py                      # Точка входа: конфиг, сборка стека, цикл, --export-review
+├── main.py                      # Точка входа: конфиг, сборка стека, цикл, --export-review/--export-analysis/--clear-db
 ├── run.bat                      # Запуск на Windows (chcp 65001, UTF-8)
 ├── requirements.txt / requirements-dev.txt
 ├── AGENTS.md / Roadmap.md / README.md
@@ -166,8 +166,45 @@ cp config/preferences.example.yaml config/preferences.yaml   # по желани
 
 python main.py                 # или run.bat на Windows
 python main.py --export-review # CSV-экспорт рецензий
+python -m pytest tests/ -v     # 631 тест
+```
 
-python -m pytest tests/ -v     # 607 тестов
+### Экспорт анализа и очистка БД (Stage 11)
+
+CLI-утилиты, работающие **без Telegram-авторизации** (только БД + конфиг):
+
+```bash
+python main.py --export-analysis   # CSV всех анкет для анализа
+python main.py --clear-db          # бэкап + полная очистка БД
+```
+
+**`--export-analysis`** → `data/exports/analysis_<дата>.csv`. Одна строка на анкету:
+`profile_id`, `name`, `age`, `city`, `description`, `action`, `ai_decision`,
+`ai_score`, `ai_confidence`, `filter_decision`, `human_decision`,
+`human_agreement`, `auto_liked`, `auto_disliked`, `auto_message_text`,
+`auto_first_action`, `auto_first_action_at`, `manual_liked`, `manual_disliked`,
+`manual_action`, `manual_text`, `manual_at`, `matched`, `responded`, `status`,
+`first_seen_at`, `last_seen_at`, `action_reasons`.
+
+Категория `action` (кого лайкнул / проскипал / дизлайкнул и т.п.):
+- **liked** — лайк отправлен (авто ❤️ или ручной) 
+- **disliked** — дизлайк (авто 👎, ручной, либо human REJECT)
+- **skipped** — SKIP через ручное решение (преференсы)
+- **approved** — APPROVE через ручное решение
+- **reviewed** — AI вынес LIKE/DISLIKE, но реакция не отправлена
+- **pending** — AI REVIEW, ожидает решения
+- **seen** — без AI-решения
+
+`matched` — был ли взаимный лайк («Начинай общаться»), `responded` — ответила ли
+девушка на лайк (`like_outcomes.responded`), `ai_score`/`ai_confidence` — из
+последнего `ai_decisions`, `action_reasons` — причины решения (из `reasons`).
+
+**`--clear-db`** — создаёт бэкап `data/exports/backups/database_<дата>.db`
+(копия фактического файла БД) и полностью очищает все таблицы
+(`profiles`, `ai_decisions`, `filter_results`, `human_decisions`,
+`auto_actions_log`, `sent_messages`, `match_responses`, `like_outcomes`,
+`profile_messages`, `chat_context`, `raw_messages`). Схема остаётся
+(таблицы снова создаются при старте). Очистка необратима — только с бэкапом.
 ```
 
 ### Web UI (Stage 9)

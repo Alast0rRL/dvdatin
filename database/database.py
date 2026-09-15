@@ -1596,8 +1596,153 @@ class Database:
             return None
         return self._row_to_dict(cursor, row)
 
+    # ── Экспорт анализа всех анкет (Stage 11) ─────────────────────────
+
+    async def get_profiles_for_analysis(self) -> list[dict]:
+        """Возвращает все анкеты с данными для экспорта/анализа.
+
+        Каждая строка: профиль + последний AI-вердикт (decision/score/reasons),
+        последний фильтр, ручное решение, агрегированные авто-действия
+        (LIKE/DISLIKE/MESSAGE по профилю), последнее ручное сообщение,
+        метка взаимного лайка (matched) и ответ на лайк (responded).
+        """
+        cursor = await self._connection.execute(
+            """SELECT
+                p.id AS profile_id,
+                p.name,
+                p.age,
+                p.raw_city AS city,
+                p.description,
+                p.status,
+                p.first_seen_at,
+                p.last_seen_at,
+
+                ad.decision AS ai_decision,
+                ad.combined_score AS ai_score,
+                ad.confidence AS ai_confidence,
+                ad.reasons AS ai_reasons,
+                ad.evaluated_at AS ai_evaluated_at,
+
+                fr.decision AS filter_decision,
+
+                hd.decision AS human_decision,
+                hd.agreement AS human_agreement,
+                hd.created_at AS human_decided_at,
+
+                aal.liked AS auto_liked,
+                aal.disliked AS auto_disliked,
+                aal.message_text AS auto_message_text,
+                aal.first_action AS auto_first_action,
+                aal.first_action_at AS auto_first_action_at,
+
+                sm.liked AS manual_liked,
+                sm.disliked AS manual_disliked,
+                sm.action AS manual_action,
+                sm.text AS manual_text,
+                sm.sent_at AS manual_at,
+
+                CASE WHEN mr.profile_id IS NOT NULL THEN 1 ELSE 0 END AS matched,
+
+                lo.responded AS responded
+
+            FROM profiles p
+            LEFT JOIN ai_decisions ad ON ad.id = (
+                SELECT id FROM ai_decisions WHERE profile_id = p.id
+                ORDER BY evaluated_at DESC LIMIT 1
+            )
+            LEFT JOIN filter_results fr ON fr.id = (
+                SELECT id FROM filter_results WHERE profile_id = p.id
+                ORDER BY evaluated_at DESC LIMIT 1
+            )
+            LEFT JOIN human_decisions hd ON hd.ai_decision_id = ad.id
+
+            -- Авто-действия (агрегация по профилю): флаги LIKE/DISLIKE,
+            -- текст последнего сообщения и первое действие.
+            LEFT JOIN (
+                SELECT a.profile_id,
+                       MAX(CASE WHEN a.action = 'LIKE' THEN 1 ELSE 0 END) AS liked,
+                       MAX(CASE WHEN a.action = 'DISLIKE' THEN 1 ELSE 0 END) AS disliked,
+                       (SELECT a2.message_text FROM auto_actions_log a2
+                        WHERE a2.profile_id = a.profile_id
+                          AND a2.action = 'MESSAGE'
+                          AND a2.message_text != ''
+                        ORDER BY a2.sent_at DESC, a2.id DESC LIMIT 1) AS message_text,
+                       (SELECT a3.action FROM auto_actions_log a3
+                        WHERE a3.profile_id = a.profile_id
+                        ORDER BY a3.sent_at ASC, a3.id ASC LIMIT 1) AS first_action,
+                       (SELECT a3.sent_at FROM auto_actions_log a3
+                        WHERE a3.profile_id = a.profile_id
+                        ORDER BY a3.sent_at ASC, a3.id ASC LIMIT 1) AS first_action_at
+                FROM auto_actions_log a
+                GROUP BY a.profile_id
+            ) aal ON aal.profile_id = p.id
+
+            -- Последнее ручное сообщение (sent_messages) + флаги LIKE/DISLIKE.
+            LEFT JOIN (
+                SELECT s.profile_id, s.action, s.text, s.sent_at,
+                       mx.liked, mx.disliked
+                FROM sent_messages s
+                JOIN (
+                    SELECT profile_id,
+                           MAX(CASE WHEN action = 'LIKE' THEN 1 ELSE 0 END) AS liked,
+                           MAX(CASE WHEN action = 'DISLIKE' THEN 1 ELSE 0 END) AS disliked,
+                           MAX(sent_at) AS max_at
+                    FROM sent_messages GROUP BY profile_id
+                ) mx ON mx.profile_id = s.profile_id AND mx.max_at = s.sent_at
+            ) sm ON sm.profile_id = p.id
+
+            -- Взаимный лайк (матч)
+            LEFT JOIN (
+                SELECT DISTINCT profile_id FROM match_responses
+            ) mr ON mr.profile_id = p.id
+
+            -- Ответ на лайк (like_outcomes)
+            LEFT JOIN (
+                SELECT o.profile_id, MAX(o.responded) AS responded
+                FROM like_outcomes o
+                WHERE o.rejected = 0
+                GROUP BY o.profile_id
+            ) lo ON lo.profile_id = p.id
+
+            ORDER BY p.last_seen_at DESC, p.id DESC"""
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
+
+    async def clear_all_data(self) -> list[str]:
+        """Полностью очищает таблицы (после экспорта/бэкапа).
+
+        Порядок удаления — по зависимостям (FK). Возвращает список
+        очищенных таблиц. Используется CLI-флагом ``--clear-db``
+        (см. services/analysis_export.py).
+        """
+        tables = [
+            "human_decisions",
+            "auto_actions_log",
+            "filter_results",
+            "ai_decisions",
+            "profile_messages",
+            "sent_messages",
+            "match_responses",
+            "like_outcomes",
+            "chat_context",
+            "profiles",
+            "raw_messages",
+        ]
+        for table in tables:
+            try:
+                await self._connection.execute(f"DELETE FROM {table}")
+            except Exception as e:
+                logger.warning(f"Очистка {table} пропущена: {e}")
+        await self._connection.commit()
+        return tables
+
     def _row_to_dict(self, cursor, row) -> dict:
         return {col[0]: val for col, val in zip(cursor.description, row)}
+    @property
+    def path(self) -> Path:
+        """Путь к файлу БД (для бэкапов)."""
+        return self._path
     @property
     def connection(self):
         return self._connection

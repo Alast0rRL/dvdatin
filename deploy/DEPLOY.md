@@ -138,5 +138,7 @@ WantedBy=multi-user.target
 
 - Полный лог: `journalctl -u dvai -f`
 - Экспорт review-датасета: `/opt/dvai/venv/bin/python /opt/dvai/main.py --export-review`
+- Экспорт анализа всех анкет (liked/skipped/etc.): `/opt/dvai/venv/bin/python /opt/dvai/main.py --export-analysis` → `/opt/dvai/data/exports/analysis_*.csv`
+- Очистка БД (бэкап до удаления): `/opt/dvai/venv/bin/python /opt/dvai/main.py --clear-db`
 - Сверка после деплоя: `git -C /opt/dvai log --oneline -3`, `git -C /opt/dvai status -sb`
 - Проверка туннеля: `curl -x socks5h://127.0.0.1:10808 -s -o /dev/null -w '%{http_code}' https://api.telegram.org` (ожидание: `302`)
