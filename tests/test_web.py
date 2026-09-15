@@ -629,6 +629,117 @@ class TestSettings:
         assert cfg["project"]["mode"] == "OBSERVE"
 
 
+class TestAccountSettings:
+    """Переключение аккаунта-исполнителя авто-действий в Веб-панели."""
+
+    def _write_config(self, tmp_path: Path, account_session: str = "dvai_2") -> None:
+        import yaml
+        cfg_path = tmp_path / "config.yaml"
+        cfg_data = {
+            "telegram": {
+                "accounts": [
+                    {"api_id": 38219721, "api_hash": "a" * 32,
+                     "session": "dvai", "phone": "+79031234567"},
+                    {"api_id": 36266816, "api_hash": "b" * 32,
+                     "session": "dvai_2", "phone": "+79119876543"},
+                ]
+            },
+            "project": {"mode": "SEMI_AUTO"},
+            "auto_actions": {"enabled": True, "account_session": account_session},
+        }
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg_data, f, allow_unicode=True)
+
+    def test_settings_shows_account_dropdown(self, client, tmp_path) -> None:
+        self._write_config(tmp_path)
+        _login(client)
+        resp = client.get("/settings")
+        data = resp.data.decode()
+        assert 'name="account_session"' in data
+        assert "dvai" in data
+        assert "dvai_2" in data
+
+    def test_update_account_persists(self, client, tmp_path) -> None:
+        self._write_config(tmp_path)
+        import yaml
+        with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["auto_actions"]["account_session"] == "dvai_2"
+
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        resp = client.post(
+            "/settings/account",
+            data={"account_session": "dvai", "csrf_token": token},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+
+        with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["auto_actions"]["account_session"] == "dvai"
+
+    def test_update_account_unknown_skipped(self, client, tmp_path) -> None:
+        self._write_config(tmp_path)
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        resp = client.post(
+            "/settings/account",
+            data={"account_session": "nope", "csrf_token": token},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        import yaml
+        with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        # Неизвестный аккаунт не перезаписывает конфиг.
+        assert cfg["auto_actions"]["account_session"] == "dvai_2"
+
+    def test_update_account_switches_live_engine(self, client, tmp_path) -> None:
+        """Смена аккаунта на сайте переключает живой AutoActionEngine."""
+        self._write_config(tmp_path)
+        import asyncio
+        import threading
+        from web import actions as web_actions
+
+        switched = []
+        stream_ran = []
+
+        class _FakeCollector:
+            def switch_auto_account(self, session: str) -> bool:
+                switched.append(session)
+                return True
+
+            async def start_auto_stream(self) -> bool:
+                stream_ran.append(True)
+                return True
+
+        worker_loop = asyncio.new_event_loop()
+        t = threading.Thread(target=worker_loop.run_forever, daemon=True)
+        t.start()
+
+        _login(client)
+        try:
+            with patch("web.actions._loop", return_value=worker_loop):
+                web_actions.set_collector(_FakeCollector())
+                with client.session_transaction() as sess:
+                    token = sess.get("_csrf_token", "")
+                resp = client.post(
+                    "/settings/account",
+                    data={"account_session": "dvai", "csrf_token": token},
+                    follow_redirects=True,
+                )
+                assert resp.status_code == 200
+                assert switched == ["dvai"]
+                assert stream_ran == [True]
+        finally:
+            web_actions.set_collector(None)
+            worker_loop.call_soon_threadsafe(worker_loop.stop)
+            t.join(timeout=5)
+
+
 # ── CSRF Protection Tests ────────────────────────────────────────
 
 class TestCSRF:

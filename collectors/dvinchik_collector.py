@@ -314,6 +314,46 @@ class DvinchikCollector:
             db=self._db,
         )
 
+    def switch_auto_account(self, session: str) -> bool:
+        """Переключает аккаунт-исполнитель авто-действий на лету (Веб-панель).
+
+        Ищет аккаунт с ``acc.session == session`` среди accounts/clients
+        (они параллельны), переуказывает живому движку новый client и
+        сохраняет выбор в config.yaml (переживает restart).
+        """
+        client = None
+        notify_client = None
+        for i, acc in enumerate(self._config.telegram.accounts):
+            if i >= len(self._clients):
+                break
+            if acc.session == session:
+                client = self._clients[i]
+            elif notify_client is None:
+                # Первый аккаунт, не являющийся авто-аккаунтом, — получатель
+                # авто-уведомлений (для notify_chat_id == 0).
+                notify_client = self._clients[i]
+
+        if client is None:
+            logger.warning(
+                f"AutoAction: account_session={session!r} не найден среди accounts"
+            )
+            return False
+
+        if self._auto_engine is None:
+            self._auto_engine = self._build_auto_engine()
+            if self._auto_engine is not None:
+                self._auto_engine.swap_client(client, notify_client)
+        else:
+            self._auto_engine.swap_client(client, notify_client)
+
+        self._config.auto_actions.account_session = session
+        try:
+            self._config.persist_account_session(self._config_path, session)
+            logger.info(f"Авто-аккаунт сменён на {session!r} (сохранён в config.yaml)")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить авто-аккаунт в config.yaml: {e}")
+        return True
+
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
         """Привязывает worker; хендлер начинает только ставить в очередь."""
         self._worker = worker

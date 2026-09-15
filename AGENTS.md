@@ -57,7 +57,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analytics (33), test_audit (27), test_auto_action (63), test_auto_action_audit (5), test_collector (108), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (62), test_preferences (12), test_profile (18), test_review_ui (5) → **537 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analytics (33), test_audit (27), test_auto_action (63), test_auto_action_audit (5), test_collector (111), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (12), test_profile (18), test_review_ui (5), test_web (63) → **604 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -121,6 +121,7 @@ Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)*
 - Commands `/status /mode on|off /stream /recent /msgs /top /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (оба аккаунта-оператора: Бармалей `8525808108` + melancholic `1753676469`).
 - Регистрируется на ВСЕХ `telegram.accounts` (в `main.py` — цикл по `clients`); `config.control.enabled` гейтит регистрацию. Ответ шлётся с того же аккаунта, что получил команду (`event.client`).
 - Runtime-переключение: `collector.set_mode(Mode)` → обновляет `AutoActionEngine.mode` на лету (гатег `enabled` пересчитывается) + `AppConfig.persist_mode()` записывает `project.mode` в `config.yaml` (переживает restart). `AutoActionEngine.mode` — сеттер.
+- **Runtime-переключение аккаунта**: `collector.switch_auto_account(session)` → `AutoActionEngine.swap_client(client, notify_client)` (сброс peer-кэша и rate-limiter) + `AppConfig.persist_account_session()` в `config.yaml`. Веб-путь — `/settings/account` → `web.actions.set_account_sync` → тот же `switch_auto_account` + `start_auto_stream()` на новом клиенте. UI — выпадающий список аккаунтов в `/settings`.
 - `collector.auto_engine()` — доступ к движку для панели; `collector.mode` — текущий режим.
 
 ## Documentation Rule (IMPORTANT)

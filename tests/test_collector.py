@@ -2772,3 +2772,72 @@ class TestCollectorSetMode:
         assert collector.auto_engine().enabled is True
         collector.set_mode(Mode.OBSERVE)
         assert collector.auto_engine().enabled is False
+
+
+class TestCollectorSwitchAccount:
+    """Переключение аккаунта-исполнителя авто-действий (Stage 7.5, Веб)."""
+
+    def _make_collector(self) -> DvinchikCollector:
+        cfg = self._make_config()
+        db = make_db_mock()
+        # acc1 (idx 0) + acc2 (idx 1) — account_session по умолчанию dvai_2.
+        return DvinchikCollector([AsyncMock(), AsyncMock()], db, cfg)
+
+    def _make_config(self) -> AppConfig:
+        cfg = make_config()
+        data = cfg.model_dump()
+        data["telegram"] = {
+            "accounts": [
+                {"api_id": 38219721, "api_hash": "a" * 32, "session": "dvai"},
+                {"api_id": 36266816, "api_hash": "b" * 32, "session": "dvai_2"},
+            ]
+        }
+        data["project"] = {"mode": "SEMI_AUTO"}
+        data["auto_actions"] = {
+            "enabled": True,
+            "account_session": "dvai_2",
+            "interval_sec": 0.0,
+        }
+        return AppConfig(**data)
+
+    def test_switch_account_changes_client(self, tmp_path) -> None:
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            "auto_actions:\n  account_session: dvai_2\n", encoding="utf-8",
+        )
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+
+        # По умолчанию авто-клиент — clients[1] (dvai_2).
+        assert collector.auto_engine().client is collector._clients[1]
+
+        ok = collector.switch_auto_account("dvai")
+        assert ok is True
+        # Авто-клиент теперь clients[0] (dvai).
+        assert collector.auto_engine().client is collector._clients[0]
+        # Выбор сохранён в config.yaml.
+        text = cfg_path.read_text(encoding="utf-8")
+        assert "account_session: dvai" in text
+
+    def test_switch_account_unknown_session(self, tmp_path) -> None:
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("auto_actions:\n  account_session: dvai_2\n", encoding="utf-8")
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+
+        ok = collector.switch_auto_account("no_such_session")
+        assert ok is False
+        # Движок не тронут.
+        assert collector.auto_engine().client is collector._clients[1]
+
+    def test_switch_account_keeps_mode(self, tmp_path) -> None:
+        from core.types import Mode
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("auto_actions:\n  account_session: dvai_2\n", encoding="utf-8")
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+        assert collector.mode.value == "SEMI_AUTO"
+        # Переключение аккаунта не должно ронять режим движка.
+        collector.switch_auto_account("dvai")
+        assert collector.auto_engine().mode == Mode.SEMI_AUTO

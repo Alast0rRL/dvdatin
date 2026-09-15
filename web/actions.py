@@ -85,6 +85,45 @@ def send_reaction_sync(action: str) -> str:
         return "ERROR"
 
 
+def set_account_sync(session: str) -> str:
+    """Switch the auto-action account on the running collector.
+
+    Called from the Flask sync thread.  Updates the running AutoActionEngine
+    in place so the change takes effect immediately (no restart needed),
+    then kicks the stream on the new account.  Returns a status string
+    ("OK", "DISABLED" when no collector/engine attached, "ERROR").
+    """
+    if _collector is None:
+        return "DISABLED"
+
+    try:
+        ok = _collector.switch_auto_account(session)
+    except Exception as e:
+        logger.error(
+            f"Account bridge: switch failed: {type(e).__name__}: {e!r}"
+        )
+        return "ERROR"
+    if not ok:
+        return "ERROR"
+
+    # Аккаунт сменён; пробуем сразу оживить ленту на новом клиенте.
+    loop = _loop()
+    if loop is None or loop.is_closed():
+        logger.warning("Account bridge: loop unavailable")
+        return "OK"
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _collector.start_auto_stream(), loop,
+        )
+        future.result(timeout=30)
+    except Exception as e:
+        logger.error(
+            f"Account bridge: stream kick failed: {type(e).__name__}: {e!r} "
+            f"(loop.running={loop.is_running()})"
+        )
+    return "OK"
+
+
 def set_mode_sync(mode: "Mode") -> str:
     """Switch the live mode on the running collector and kick the stream.
 

@@ -127,6 +127,25 @@ class AutoActionEngine:
         """Клиент, от имени которого выполняются действия."""
         return self._client
 
+    def swap_client(
+        self, client: TelegramClient | None,
+        notify_client: TelegramClient | None = None,
+    ) -> None:
+        """Меняет аккаунт-исполнитель действий на лету (Веб-панель).
+
+        Сбрасывает кэш peer (у каждого аккаунта свой access_hash чата Leo)
+        и состояние rate-limiter. Оставшиеся цепочки LIKE_AND_MESSAGE
+        не обнуляются: они привязаны к chat_id и валидны на любом аккаунте.
+        """
+        self._client = client
+        self._peer = None
+        self._notify_user_id = None
+        self._last_action_at = 0.0
+        self._actions.clear()
+        if notify_client is not None:
+            self._notify_client = notify_client
+        logger.info(f"AutoAction: аккаунт-исполнитель сменён (client={client is not None})")
+
     @property
     def mode_label(self) -> str:
         return self._mode.value

@@ -371,3 +371,21 @@ class AppConfig(BaseModel):
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
         self.project.mode = mode
+
+    def persist_account_session(self, path: Path, session: str) -> None:
+        """Сохраняет auto_actions.account_session в YAML-файл.
+
+        Используется при переключении авто-аккаунта (с кого шлём ❤️/👎
+        в чат Leo) через Веб-панель: переживает restart.
+        """
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        else:
+            raw = {}
+        auto_actions = raw.get("auto_actions") or {}
+        auto_actions["account_session"] = session
+        raw["auto_actions"] = auto_actions
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+        self.auto_actions.account_session = session

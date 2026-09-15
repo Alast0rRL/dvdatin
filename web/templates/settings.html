@@ -21,6 +21,25 @@
         </form>
     </div>
 
+    <!-- Auto-account -->
+    <div class="settings-card">
+        <h2>Аккаунт-исполнитель авто-действий</h2>
+        <p class="settings-hint">С этого аккаунта отправляются ❤️/👎 и «Берем)» в чат Leo.</p>
+        <form method="POST" action="{{ url_for('settings.update_account') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <select name="account_session" class="form-input">
+                    {% for acc in accounts %}
+                    <option value="{{ acc.session }}" {% if acc.session == account_session %}selected{% endif %}>
+                        {{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Переключить аккаунт</button>
+        </form>
+    </div>
+
     <!-- Filters -->
     <div class="settings-card">
         <h2>Фильтры</h2>
