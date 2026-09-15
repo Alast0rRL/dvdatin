@@ -148,14 +148,17 @@ class DvinchikParser:
             return FilterResult.FILTER_MATCH
         return FilterResult.FILTER_NOT_MATCH
 
+    # Слова, которые должны матчиться границей слова: «лайк» в «лайкают»/
+    # «лайкать» (промо-тексты Leo «профиль, который лайкают») не является
+    # сервисным признаком. Остальные — срезы основ (совпадени/обоюдн).
+    _SERVICE_WORDS = re.compile(
+        r"\b(лайк|нравится|мэтч|начинай|напишите)\b"
+        r"|совпадени|обоюдн|написать"
+    )
+
     def _looks_like_service(self, text: str) -> bool:
         """Эвристика для сервисных сообщений."""
-        service_keywords = [
-            "лайк", "нравится", "мэтч", "совпадени",
-            "написать", "напишите", "обоюдн", "начинай",
-        ]
-        text_lower = text.lower()
-        return any(kw in text_lower for kw in service_keywords)
+        return bool(self._SERVICE_WORDS.search(text.lower()))
 
     def is_like_rejection(self, text: str | None) -> bool:
         """Отклонил ли Leo лайк/сообщение из-за лимита.

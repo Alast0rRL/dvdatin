@@ -42,6 +42,19 @@ class TestClassify:
     def test_service(self, parser: DvinchikParser) -> None:
         assert parser.classify("Вам поставили лайк!") == MessageType.SERVICE
 
+    def test_promo_like_plural_not_service(self, parser: DvinchikParser) -> None:
+        # Реальный промо Leo с кнопкой «Смотреть анкеты»: слово «лайкают»
+        # не должно трактоваться как сервисный признак, иначе кнопка не
+        # нажимается и лента застывает.
+        text = (
+            "Борюсь с эгоизмом, твоя анкета в Дайвинчике может больше 😉\n"
+            "Заходи 👉 @Leomatchglobal 💗\n"
+            "Научу делать профиль, который лайкают,\n"
+            "и не попадать в бан 👌\n"
+            "Следи за новостями 💗"
+        )
+        assert parser.classify(text) == MessageType.UNKNOWN
+
     def test_empty_is_service(self, parser: DvinchikParser) -> None:
         assert parser.classify("") == MessageType.SERVICE
 

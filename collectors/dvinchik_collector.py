@@ -1334,6 +1334,25 @@ class DvinchikCollector:
             elif msg_type == MessageType.SERVICE:
                 if self._stats:
                     self._stats.record_service()
+                # Сетка: промо/меню/капчи Leo иногда классифицируются как
+                # SERVICE (например «лайкают» в промо-тексте), но могут нести
+                # кнопку «Смотреть анкеты». Если это чат Дайвинчика на авто-
+                # аккаунте — пробуем продолжить ленту (идемпотентно).
+                if (
+                    self._auto_engine.enabled
+                    and chat_id == self._dvinchik_chat_id
+                    and msg is not None
+                    and getattr(msg, "client", None) is self._auto_engine.client
+                ):
+                    try:
+                        texts = self._extract_button_texts(msg)
+                        if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
+                            await self._press_view_button_if_needed()
+                    except Exception as e:
+                        logger.error(
+                            f"AutoAction: ошибка нажатия кнопки ленты "
+                            f"(SERVICE): {e}"
+                        )
 
             success = True
         except Exception as e:
