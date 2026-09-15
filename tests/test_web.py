@@ -236,6 +236,15 @@ class TestDashboard:
         resp = client.get("/dashboard")
         assert resp.status_code == 200
 
+    def test_dashboard_new_count(self, client) -> None:
+        _login(client)
+        resp = client.get("/dashboard/new-count")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert "total" in data
+        assert "pending" in data
+        assert isinstance(data["total"], int)
+
     def test_profiles_displayed(self, client) -> None:
         _login(client)
         resp = client.get("/")

@@ -2,7 +2,7 @@
 {% block title %}DvAI — Лента{% endblock %}
 
 {% block content %}
-<div class="dashboard-header">
+<div class="dashboard-header" data-total="{{ total }}" data-pending="{{ pending }}">
     <div class="stats-bar">
         <div class="stat">
             <span class="stat-value">{{ total }}</span>

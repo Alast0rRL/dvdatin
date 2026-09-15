@@ -136,6 +136,22 @@ def dashboard() -> str:  # type: ignore[no-untyped-def]
     return dashboard_bpEndpoint("")
 
 
+@dashboard_bp.route("/dashboard/new-count")
+@login_required
+def new_count() -> tuple:
+    """Возвращает актуальное число анкет для авто-обновления ленты.
+
+    Frontend опрашивает этот лёгкий эндпоинт; если total вырос —
+    страница перезагружается, и новые анкеты появляются без ручного F5.
+    """
+    db = _get_db()
+    total = db.get_profiles_count(None)
+    pending = db.get_pending_review_count()
+    import json
+    return (json.dumps({"total": total, "pending": pending}), 200,
+            {"Content-Type": "application/json"})
+
+
 def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
     db = _get_db()
     page = request.args.get("page", 1, type=int)

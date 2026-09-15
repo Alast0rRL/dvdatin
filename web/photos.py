@@ -3,6 +3,10 @@
 # Фото хранятся только на серверах Telegram (не на диске).
 # При первом запросе скачивает через Telethon, кэширует в media/<profile_id>/.
 # Повторные запросы отдают из кэша.
+#
+# Поддержка нескольких аккаунтов: message_id в личном диалоге с Leo
+# уникален для каждого аккаунта (разные number ranges: 697xxx vs 223xx).
+# download_photo пробует клиенты по очереди, пока один не вернёт фото.
 
 from __future__ import annotations
 
@@ -14,19 +18,30 @@ from loguru import logger
 #: Корневая директория кэша фото.
 MEDIA_ROOT = Path(__file__).resolve().parent.parent / "media"
 
-# Глобальная ссылка на TelegramClient (устанавливается из main.py).
-_telegram_client = None
+# Глобальные ссылки на TelegramClient(s) (устанавливается из main.py).
+_telegram_clients: list = []
+
+
+def set_telegram_clients(clients: list) -> None:
+    """Устанавливает список TelegramClient-ов для скачивания фото."""
+    global _telegram_clients
+    _telegram_clients = list(clients)
 
 
 def set_telegram_client(client) -> None:
-    """Устанавливает TelegramClient для скачивания фото."""
-    global _telegram_client
-    _telegram_client = client
+    """Обратная совместимость: один клиент."""
+    global _telegram_clients
+    _telegram_clients = [client]
+
+
+def get_telegram_clients() -> list:
+    """Возвращает текущий список TelegramClient-ов."""
+    return _telegram_clients
 
 
 def get_telegram_client():
-    """Возвращает текущий TelegramClient (или None)."""
-    return _telegram_client
+    """Обратная совместимость: первый клиент."""
+    return _telegram_clients[0] if _telegram_clients else None
 
 
 def get_photo_path(profile_id: int, message_id: int) -> Path | None:
@@ -53,27 +68,10 @@ def _ensure_media_dir(profile_id: int) -> Path:
     return photo_dir
 
 
-async def download_photo(
-    chat_id: int,
-    message_id: int,
-    profile_id: int,
+async def _try_download_one(
+    client, chat_id: int, message_id: int, profile_id: int,
 ) -> Path | None:
-    """Скачивает фото из Telegram и кэширует на диск.
-
-    Возвращает путь к файлу или None при ошибке.
-    """
-    logger.debug(f"[photo] start profile={profile_id} msg={message_id}")
-
-    # Проверяем кэш
-    cached = get_photo_path(profile_id, message_id)
-    if cached:
-        return cached
-
-    client = get_telegram_client()
-    if client is None:
-        logger.warning("TelegramClient недоступен для скачивания фото")
-        return None
-
+    """Пытается скачать фото одним клиентом."""
     try:
         messages = await client.get_messages(chat_id, ids=[message_id])
         if not messages or not messages[0]:
@@ -88,8 +86,49 @@ async def download_photo(
         logger.info(f"Photo cached: profile={profile_id} msg={message_id}")
         return file_path
     except Exception as e:
-        logger.error(f"Photo download failed: profile={profile_id} msg={message_id}: {type(e).__name__}: {e!r}")
+        logger.debug(
+            f"[photo] client download failed profile={profile_id} "
+            f"msg={message_id}: {type(e).__name__}: {e!r}"
+        )
         return None
+
+
+async def download_photo(
+    chat_id: int,
+    message_id: int,
+    profile_id: int,
+) -> Path | None:
+    """Скачивает фото из Telegram и кэширует на диск.
+
+    Пробует все авторизованные клиенты по очереди (разные аккаунты —
+    разные number spaces message_id в диалоге с Leo).
+    """
+    logger.debug(f"[photo] start profile={profile_id} msg={message_id}")
+
+    # Проверяем кэш
+    cached = get_photo_path(profile_id, message_id)
+    if cached:
+        return cached
+
+    clients = get_telegram_clients()
+    if not clients:
+        logger.warning("TelegramClient недоступен для скачивания фото")
+        return None
+
+    for client in clients:
+        if client is None:
+            continue
+        loop = getattr(client, "_loop", None)
+        if loop is None or loop.is_closed():
+            continue
+        result = await _try_download_one(client, chat_id, message_id, profile_id)
+        if result:
+            return result
+
+    logger.warning(
+        f"Photo not found on any client: profile={profile_id} msg={message_id}"
+    )
+    return None
 
 
 def download_photo_sync(
@@ -98,15 +137,24 @@ def download_photo_sync(
     profile_id: int,
 ) -> Path | None:
     """Синхронная обёртка для скачивания фото (из Flask thread)."""
-    client = get_telegram_client()
-    if client is None:
+    clients = get_telegram_clients()
+    if not clients:
         return get_photo_path(profile_id, message_id)
 
-    loop = getattr(client, "_loop", None)
-    if loop is None or loop.is_closed():
+    # Ищем клиент с рабочим loop
+    loop = None
+    for cl in clients:
+        if cl is None:
+            continue
+        l = getattr(cl, "_loop", None)
+        if l is not None and not l.is_closed():
+            loop = l
+            break
+
+    if loop is None:
         logger.warning(
-            f"Photo sync: loop недоступен "
-            f"(loop={loop}, closed={loop.is_closed() if loop else None})"
+            f"Photo sync: ни один loop недоступен "
+            f"(clients={len(clients)})"
         )
         return get_photo_path(profile_id, message_id)
 
