@@ -104,20 +104,27 @@
         </div>
         {% endif %}
 
-        {% if not profile.human_decision %}
+        {% set acted = profile.human_decision or profile.status in ('DISLIKED', 'LIKED', 'MATCHED') %}
+        {% if not acted %}
         <div class="action-buttons" data-profile-id="{{ profile.id }}">
             <button class="btn btn-like" onclick="quickAction({{ profile.id }}, 'LIKE')">❤️ LIKE</button>
             <button class="btn btn-dislike" onclick="quickAction({{ profile.id }}, 'DISLIKE')">👎 DISLIKE</button>
         </div>
         <div class="action-result" id="action-result-{{ profile.id }}"></div>
-        {% elif profile.human_decision %}
+        {% else %}
         <div class="human-decision">
             {% if profile.human_decision == 'APPROVE' %}
             <span class="badge badge-approved">✅ APPROVE</span>
             {% elif profile.human_decision == 'REJECT' %}
             <span class="badge badge-rejected">❌ REJECT</span>
+            {% elif profile.status == 'DISLIKED' %}
+            <span class="badge badge-rejected">👎 DISLIKE</span>
+            {% elif profile.status == 'LIKED' %}
+            <span class="badge badge-approved">❤️ LIKE</span>
+            {% elif profile.status == 'MATCHED' %}
+            <span class="badge badge-matched">💬 MATCH</span>
             {% else %}
-            <span class="badge badge-skipped">⏭ SKIP</span>
+            <span class="badge badge-skipped">⏭ {{ profile.status }}</span>
             {% endif %}
             {% if profile.agreement %}
             <span class="agreement agreement-{{ profile.agreement|lower }}">{{ profile.agreement }}</span>

@@ -453,6 +453,7 @@ body {
 .badge-approved { background: rgba(0, 184, 148, 0.2); color: var(--like); }
 .badge-rejected { background: rgba(225, 112, 85, 0.2); color: var(--dislike); }
 .badge-skipped { background: rgba(136, 136, 153, 0.2); color: var(--text-muted); }
+.badge-matched { background: rgba(253, 203, 110, 0.2); color: var(--review); }
 
 .agreement {
     font-size: 0.8em;
