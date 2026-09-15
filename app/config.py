@@ -145,11 +145,22 @@ class LikeMessageConfig(BaseModel):
 
     Отдельная от ``like``: отправка сообщения после успешного ❤️ — своя
     возможность. Отправляется только если включена и ``like``, и ``like_message``.
+
+    ``text`` — одно сообщение (строка) или пул вариантов (список строк);
+    при каждом запуске цепочки выбирается случайный вариант из пула.
     """
 
     enabled: bool = False
-    #: Текст начального сообщения после лайка.
-    text: str = "Берем)"
+    #: Текст(ы) начального сообщения после лайка: строка или список строк.
+    text: str | list[str] = "Берем)"
+
+    @field_validator("text")
+    @classmethod
+    def text_must_be_str_or_list(cls, v: str | list[str]) -> list[str]:
+        """Нормализует text к списку строк (str → [str])."""
+        if isinstance(v, str):
+            return [v]
+        return list(v)
 
 
 class AutoActionsConfig(BaseModel):

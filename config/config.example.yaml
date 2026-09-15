@@ -84,7 +84,9 @@ auto_actions:
 
   like_message:
     enabled: false
-    text: "Берем)"
+    text:                    # строка или список; из пула выбирается случайный вариант
+      - "Беру)"
+      - "Берем😍"
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.

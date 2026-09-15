@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import time
 from typing import TYPE_CHECKING
@@ -281,7 +282,7 @@ class AutoActionEngine:
                 m in (text or "") for m in MESSAGE_PROMPT_MARKERS
             ):
                 # Leo открыл композер → отправляем текст «Берем)» и завершаем.
-                msg_text = self._config.like_message.text
+                msg_text = self._pick_message_text()
                 await self._send_locked(msg_text)
                 logger.info(
                     f"AutoAction: «Берем)» шаг 3/3 — отправлено {msg_text!r} "
@@ -300,6 +301,19 @@ class AutoActionEngine:
                     except Exception as e:
                         logger.error(f"AutoAction: сообщение отправлено, но не записано: {e}")
                 self._pending_chains.pop(card_id, None)
+
+    def _pick_message_text(self) -> str:
+        """Выбирает текст сообщения «Берем)» из пула (or единственный).
+
+        ``LikeMessageConfig.text`` нормализуется к списку строк; берём
+        случайный вариант — чтобы лайки не выглядели одинаково.
+        """
+        texts = self._config.like_message.text
+        if isinstance(texts, str):
+            return texts
+        if not texts:
+            return "Берем)"
+        return random.choice(texts)
 
     async def ensure_peer(self) -> bool:
         """Резолвит сущность ЛЕО-чата в сессии авто-клиента.
