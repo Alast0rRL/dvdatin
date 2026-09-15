@@ -1,10 +1,13 @@
-# Action bridge — send reactions (👍/❤️) from Web UI to Telegram (Leo chat).
+# Web bridge — send reactions (👍/❤️) from Web UI to Telegram (Leo chat)
+# and switch the live mode (OBSERVE/SEMI_AUTO/AUTO) on the collector.
 #
 # When the owner clicks LIKE/DISLIKE in the web dashboard, the reaction
 # must actually be sent to the Leo chat via the auto account so that Leo
-# advances to the next profile.  This module bridges the Flask sync thread
-# to the async event loop via ``run_coroutine_threadsafe`` — same pattern
-# as ``web/photos.py``.
+# advances to the next profile.  When the owner switches the mode on the
+# site, the running AutoActionEngine must be updated in place (not just the
+# YAML file), otherwise the switch has no effect until restart.  This module
+# bridges the Flask sync thread to the async event loop via
+# ``run_coroutine_threadsafe`` — same pattern as ``web/photos.py``.
 
 from __future__ import annotations
 
@@ -15,6 +18,8 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from collectors.auto_action import AutoActionEngine
+    from collectors.dvinchik_collector import DvinchikCollector
+    from core.types import Mode
 
 #: React constants matching auto_action.py.
 LIKE_TEXT: str = "\u2764\ufe0f"
@@ -23,11 +28,20 @@ DISLIKE_TEXT: str = "\U0001F44E"
 #: Reference to the auto-action engine (set from main.py).
 _engine: AutoActionEngine | None = None
 
+#: Reference to the collector (set from main.py) for live mode switching.
+_collector: "DvinchikCollector | None" = None
+
 
 def set_action_engine(engine: AutoActionEngine | None) -> None:
     """Stores the AutoActionEngine reference for the web layer."""
     global _engine
     _engine = engine
+
+
+def set_collector(collector: "DvinchikCollector | None") -> None:
+    """Stores the DvinchikCollector reference for web mode switching."""
+    global _collector
+    _collector = collector
 
 
 def _loop():
@@ -69,3 +83,38 @@ def send_reaction_sync(action: str) -> str:
             f"(loop.running={loop.is_running()})"
         )
         return "ERROR"
+
+
+def set_mode_sync(mode: "Mode") -> str:
+    """Switch the live mode on the running collector and kick the stream.
+
+    Called from the Flask sync thread.  Unlike the persisted-only path
+    (settings.py), this updates ``AutoActionEngine`` in place so the switch
+    takes effect immediately — no restart needed.  Returns a status string
+    ("OK", "DISABLED" when no collector is attached, "ERROR").
+    """
+    if _collector is None:
+        return "DISABLED"
+
+    try:
+        _collector.set_mode(mode)
+    except Exception as e:
+        logger.error(f"Mode bridge: set_mode failed: {type(e).__name__}: {e!r}")
+        return "ERROR"
+
+    # Режим переключён; пробуем сразу оживить ленту (SEMI_AUTO/AUTO).
+    loop = _loop()
+    if loop is None or loop.is_closed():
+        logger.warning("Mode bridge: loop unavailable")
+        return "OK"
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _collector.start_auto_stream(), loop,
+        )
+        future.result(timeout=30)
+    except Exception as e:
+        logger.error(
+            f"Mode bridge: stream kick failed: {type(e).__name__}: {e!r} "
+            f"(loop.running={loop.is_running()})"
+        )
+    return "OK"

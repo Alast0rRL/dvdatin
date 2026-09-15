@@ -191,7 +191,7 @@ async def main() -> None:
         from web.config import WebConfig
         from web.db import SyncDB
         from web.photos import set_telegram_client
-        from web.actions import set_action_engine
+        from web.actions import set_action_engine, set_collector
 
         web_cfg = WebConfig.from_env()
         sync_db = SyncDB(str(DB_PATH))
@@ -206,6 +206,10 @@ async def main() -> None:
         # Stage 7: web-кнопки лайк/дизлайк реально отправляют реакцию
         # в чат Leo через авто-аккаунт (чтобы лента двигалась дальше).
         set_action_engine(collector.auto_engine())
+        # Stage 7.5/web: переключение режима на сайте меняет живой
+        # AutoActionEngine сразу (не только config.yaml), SEMI_AUTO
+        # начинает работать без перезапуска приложения.
+        set_collector(collector)
 
         import threading
         flask_thread = threading.Thread(

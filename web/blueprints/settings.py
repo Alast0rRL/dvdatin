@@ -74,7 +74,12 @@ def update_filters() -> tuple:
 @settings_bp.route("/settings/mode", methods=["POST"])
 @login_required
 def update_mode() -> tuple:
-    """Переключает режим DvAI (OBSERVE/SEMI_AUTO/AUTO)."""
+    """Переключает режим DvAI (OBSERVE/SEMI_AUTO/AUTO).
+
+    Персистит режим в config.yaml (переживает restart) И — главное —
+    переключает живой AutoActionEngine через бридж (web.actions),
+    чтобы SEMI_AUTO заработал сразу, без рестарта приложения.
+    """
     token = request.form.get("csrf_token", "")
     if token != session.get("_csrf_token"):
         flash("Ошибка безопасности", "error")
@@ -92,14 +97,32 @@ def update_mode() -> tuple:
         flash(f"Неизвестный режим: {mode_str}", "error")
         return redirect(redirect_target)
 
+    live_status = "OK"
     config_path = _get_config_path()
     try:
         from app.config import AppConfig
         config = AppConfig.load(config_path)
         config.persist_mode(config_path, mode)
-        flash(f"Режим переключён на {mode.value}", "success")
     except Exception as e:
         flash(f"Ошибка: {e}", "error")
+        return redirect(redirect_target)
+
+    # Живое переключение: обновляем AutoActionEngine и пробуем запустить ленту.
+    try:
+        from web.actions import set_mode_sync
+        live_status = set_mode_sync(mode)
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"Web mode switch: {type(e).__name__}: {e!r}")
+        live_status = "ERROR"
+
+    if live_status == "OK":
+        flashed = f"Режим переключён на {mode.value} (активен сразу)"
+    elif live_status == "ERROR":
+        flashed = f"Режим сохранён, но не активирован на лету: {mode.value}"
+    else:
+        flashed = f"Режим переключён на {mode.value} (применится после перезапуска)"
+    flash(flashed, "success" if live_status == "OK" else "warning")
 
     return redirect(redirect_target)
 

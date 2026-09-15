@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -553,6 +554,70 @@ class TestSettings:
         with open(tmp_path / "config.yaml", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
         assert cfg["project"]["mode"] == "SEMI_AUTO"
+
+    def test_update_mode_switches_live_engine(self, client, tmp_path) -> None:
+        """Переключение режима на сайте меняет живой AutoActionEngine.
+
+        Раньше веб-путь сохранял режим ТОЛЬКО в config.yaml — живой движок
+        оставался в OBSERVE, и SEMI_AUTO «не работал» до перезапуска.
+        Теперь через бридж web.actions вызывается collector.set_mode()
+        и движок переключается на лету.
+        """
+        from core.types import Mode
+        from web import actions as web_actions
+
+        switched = []
+        stream_ran = []
+
+        class _FakeCollector:
+            def set_mode(self, mode: Mode) -> None:
+                switched.append(mode)
+
+            async def start_auto_stream(self) -> bool:
+                stream_ran.append(True)
+                return True
+
+        worker_loop = asyncio.new_event_loop()
+        t = threading.Thread(target=worker_loop.run_forever, daemon=True)
+        t.start()
+
+        _login(client)
+        try:
+            with patch("web.actions._loop", return_value=worker_loop):
+                web_actions.set_collector(_FakeCollector())
+                with client.session_transaction() as sess:
+                    token = sess.get("_csrf_token", "")
+                resp = client.post(
+                    "/settings/mode",
+                    data={"mode": "SEMI_AUTO", "csrf_token": token},
+                    follow_redirects=True,
+                )
+                assert resp.status_code == 200
+                assert switched == [Mode.SEMI_AUTO]
+                assert stream_ran == [True]
+        finally:
+            web_actions.set_collector(None)
+            worker_loop.call_soon_threadsafe(worker_loop.stop)
+            t.join(timeout=5)
+
+    def test_update_mode_without_collector(self, client, tmp_path) -> None:
+        """Без привязанного коллектора режим сохраняется в YAML (как раньше)."""
+        from web import actions as web_actions
+
+        web_actions.set_collector(None)
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        resp = client.post(
+            "/settings/mode",
+            data={"mode": "OBSERVE", "csrf_token": token},
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        import yaml
+        with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["project"]["mode"] == "OBSERVE"
 
 
 # ── CSRF Protection Tests ────────────────────────────────────────
