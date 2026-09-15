@@ -124,6 +124,16 @@ Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)*
 - **Runtime-переключение аккаунта**: `collector.switch_auto_account(session)` → `AutoActionEngine.swap_client(client, notify_client)` (сброс peer-кэша и rate-limiter) + `AppConfig.persist_account_session()` в `config.yaml`. Веб-путь — `/settings/account` → `web.actions.set_account_sync` → тот же `switch_auto_account` + `start_auto_stream()` на новом клиенте. UI — выпадающий список аккаунтов в `/settings`.
 - `collector.auto_engine()` — доступ к движку для панели; `collector.mode` — текущий режим.
 
+## Deploy Rule (IMPORTANT)
+
+**Правило деплоя:** после **каждой новой версии** (любого завершённого коммита с изменениями кода/шаблонов/статики/конфига) работа НЕ считается завершённой, пока изменения не задеплоены и сервис не перезапущен:
+
+1. Локально: `python -m pytest tests/ -q` (минимум — затронутые файлы тестов).
+2. `git add <изменённые файлы>` → `git commit -m "<conventional-commit>"` → `git push origin main`.
+3. На сервере (Ubuntu, см. `deploy/DEPLOY.md`): `ssh root@144.31.118.3 -p 2200 -i ~/.ssh/homekey`
+   → `cd /opt/dvai && git pull origin main` → `systemctl restart dvai` → `systemctl is-active dvai` + лог `journalctl -u dvai -n 8 --no-pager`.
+4. NV: если изменения не деплоились после последнего коммита, это ошибка процесса — откатить/додеплоить.
+
 ## Documentation Rule (IMPORTANT)
 
 **Правило документирования:** Любые новые фичи, измененные архитектурные решения,
