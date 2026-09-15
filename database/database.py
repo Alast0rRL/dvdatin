@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS profile_messages (
     profile_id INTEGER NOT NULL,
     telegram_message_id INTEGER NOT NULL,
     chat_id INTEGER NOT NULL,
+    account_session TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
     UNIQUE(profile_id, telegram_message_id)
@@ -255,6 +256,10 @@ class Database:
         await self._ensure_sent_messages_action()
         # Результат каждого лайка («ответила/нет») + содержание сообщения.
         await self._ensure_like_outcomes()
+        # Аккаунт-получатель сообщений анкеты (profile_messages): фото в вебе
+        # качаются ТЕМ аккаунтом, который реально видел сообщение (message_id в
+        # диалоге с Leo у каждого аккаунта своя нумерация).
+        await self._ensure_profile_messages_account_session()
 
     async def _ensure_auto_actions_log(self) -> None:
         """Добавляет журнал успешных авто-действий для старых БД.
@@ -540,6 +545,27 @@ class Database:
         except Exception as e:
             logger.warning(f"like_outcomes backfill (manual): {e}")
         await self._connection.commit()
+
+    async def _ensure_profile_messages_account_session(self) -> None:
+        """Добавляет колонку account_session в profile_messages (старые БД).
+
+        Аккаунт-получатель нужен веб-панели, чтобы скачивать фото ТЕМ
+        аккаунтом, который реально видел сообщение: message_id в диалоге с Leo
+        у каждого аккаунта своя нумерация, и запрос того же id через другой
+        аккаунт может вернуть ФОТО ДРУГОЙ анкеты. Существующие записи получают
+        '' — для них остаётся прежнее поведение (проба всех клиентов).
+        """
+        cols = await self._connection.execute(
+            "PRAGMA table_info(profile_messages)"
+        )
+        names = {row[1] for row in await cols.fetchall()}
+        if "account_session" not in names:
+            await self._connection.execute(
+                "ALTER TABLE profile_messages "
+                "ADD COLUMN account_session TEXT DEFAULT ''"
+            )
+            await self._connection.commit()
+            logger.info("Миграция: profile_messages.account_session добавлен")
 
     async def _ensure_raw_unique_index(self) -> None:
         """Создаёт UNIQUE-индекс на (chat_id, telegram_message_id).
@@ -1248,13 +1274,19 @@ class Database:
         telegram_message_id: int,
         chat_id: int,
         created_at: str,
+        account_session: str = '',
     ) -> None:
-        """Связывает профиль с Telegram-сообщением."""
+        """Связывает профиль с Telegram-сообщением.
+
+        ``account_session`` — сессия аккаунта, который реально ПОЛУЧИЛ это
+        сообщение (message_id в диалоге с Leo у каждого аккаунта своя
+        нумерация). Нужен вебу, чтобы качать фото тем же аккаунтом.
+        """
         await self._connection.execute(
             """INSERT OR IGNORE INTO profile_messages
-            (profile_id, telegram_message_id, chat_id, created_at)
-            VALUES (?, ?, ?, ?)""",
-            (profile_id, telegram_message_id, chat_id, created_at),
+            (profile_id, telegram_message_id, chat_id, account_session, created_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (profile_id, telegram_message_id, chat_id, account_session, created_at),
         )
         await self._connection.commit()
 

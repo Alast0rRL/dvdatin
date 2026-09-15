@@ -19,24 +19,34 @@ def _get_db() -> SyncDB:
 @photos_bp.route("/photos/<int:profile_id>/<int:message_id>.jpg")
 @login_required
 def serve_photo(profile_id: int, message_id: int) -> tuple:
-    """Отдаёт фото профиля (из кэша или скачивает из Telegram)."""
-    # Check cache first
-    cached = get_photo_path(profile_id, message_id)
+    """Отдаёт фото профиля (из кэша или скачивает из Telegram).
+
+    Сообщение скачивается ТЕМ аккаунтом, который реально его получил
+    (account_session из profile_messages): message_id в диалоге с Leo у
+    каждого аккаунта своя нумерация, и запрос через другой аккаунт может
+    вернуть фото ДРУГОЙ анкеты.
+    """
+    db = _get_db()
+
+    # Аккаунт-получатель и chat_id берём из привязки сообщение↔профиль.
+    link = db.get_profile_message(profile_id, message_id)
+    if not link:
+        abort(404)
+    chat_id = link.get("chat_id") or 0
+    account_session = link.get("account_session", "") or ""
+
+    # Check cache first (ключ включает аккаунт)
+    cached = get_photo_path(profile_id, message_id, account_session)
     if cached and cached.exists():
         return send_file(str(cached), mimetype="image/jpeg")
 
-    # Get chat_id from profile
-    db = _get_db()
-    profile = db.get_profile_full(profile_id)
-    if not profile:
-        abort(404)
-
-    chat_id = profile.get("source_chat_id", 0)
     if not chat_id:
         abort(404)
 
     # Try to download
-    path = download_photo_sync(chat_id, message_id, profile_id)
+    path = download_photo_sync(
+        chat_id, message_id, profile_id, account_session=account_session,
+    )
     if path and path.exists():
         return send_file(str(path), mimetype="image/jpeg")
 

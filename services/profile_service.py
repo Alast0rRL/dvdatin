@@ -21,7 +21,7 @@ class ProfileService:
         self._db = db
 
     async def create_profile(
-        self, parsed: ParsedProfile,
+        self, parsed: ParsedProfile, account_session: str = '',
     ) -> Profile:
         """Создаёт новый профиль из ParsedProfile."""
         now = datetime.now(timezone.utc).isoformat()
@@ -48,6 +48,7 @@ class ProfileService:
             telegram_message_id=parsed.source_message_id,
             chat_id=parsed.source_chat_id,
             created_at=now,
+            account_session=account_session,
         )
 
         logger.info(f"Profile created: id={profile_id}, name={parsed.name}")
@@ -87,7 +88,9 @@ class ProfileService:
             return None
         return self._row_to_profile(row)
 
-    async def upsert_profile(self, parsed: ParsedProfile) -> Profile:
+    async def upsert_profile(
+        self, parsed: ParsedProfile, account_session: str = '',
+    ) -> Profile:
         """Находит существующий профиль или создаёт новый.
 
         Стратегия поиска: fingerprint (normalized_name + age + city).
@@ -99,15 +102,18 @@ class ProfileService:
         existing = await self._db.find_profile_by_fingerprint(fp)
 
         if existing:
-            return await self._update_existing(existing, parsed, fp)
+            return await self._update_existing(
+                existing, parsed, fp, account_session=account_session,
+            )
 
-        return await self.create_profile(parsed)
+        return await self.create_profile(parsed, account_session=account_session)
 
     async def _update_existing(
         self,
         existing: dict,
         parsed: ParsedProfile,
         fingerprint: str,
+        account_session: str = '',
     ) -> Profile:
         """Обновляет существующий профиль."""
         profile_id = existing["id"]
@@ -129,6 +135,7 @@ class ProfileService:
             telegram_message_id=parsed.source_message_id,
             chat_id=parsed.source_chat_id,
             created_at=now,
+            account_session=account_session,
         )
 
         msg_count = await self._db.get_profile_message_count(profile_id)
@@ -148,6 +155,7 @@ class ProfileService:
         profile_id: int,
         telegram_message_id: int,
         chat_id: int,
+        account_session: str = '',
     ) -> None:
         """Связывает сообщение с профилем."""
         now = datetime.now(timezone.utc).isoformat()
@@ -156,6 +164,7 @@ class ProfileService:
             telegram_message_id=telegram_message_id,
             chat_id=chat_id,
             created_at=now,
+            account_session=account_session,
         )
         logger.info(
             f"Linked message {telegram_message_id} to profile {profile_id}"

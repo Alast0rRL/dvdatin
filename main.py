@@ -74,6 +74,7 @@ async def main() -> None:
 
     # === Авторизация всех аккаунтов (multi-account) ===
     clients: list = []
+    client_sessions: list[str] = []
     statuses: list[str] = []
     for idx, acc in enumerate(config.telegram.accounts):
         session_name = acc.session or (
@@ -89,6 +90,7 @@ async def main() -> None:
                 name = None
         if name:
             clients.append(client)
+            client_sessions.append(session_name)
             statuses.append(f"acc{idx + 1}:[green]{name}[/green]")
         else:
             statuses.append(f"acc{idx + 1}:[yellow]Not Authorized[/yellow]")
@@ -190,7 +192,7 @@ async def main() -> None:
         from web import create_app
         from web.config import WebConfig
         from web.db import SyncDB
-        from web.photos import set_telegram_clients
+        from web.photos import set_telegram_clients_with_sessions
         from web.actions import set_action_engine, set_collector
 
         web_cfg = WebConfig.from_env()
@@ -199,10 +201,11 @@ async def main() -> None:
         flask_app.config["SYNC_DB"] = sync_db
         flask_app.config["CONFIG_PATH"] = CONFIG_PATH
 
-        # Устанавливаем TelegramClient-ы для скачивания фото
-        # (все аккаунты — message_id в диалоге с Leo уникален для каждого)
+        # Устанавливаем TelegramClient-ы для скачивания фото (все аккаунты +
+        # их session-имена). message_id в диалоге с Leo уникален для каждого
+        # аккаунта, поэтому фото качается тем, кто реально получил сообщение.
         if clients:
-            set_telegram_clients(clients)
+            set_telegram_clients_with_sessions(clients, client_sessions)
 
         # Stage 7: web-кнопки лайк/дизлайк реально отправляют реакцию
         # в чат Leo через авто-аккаунт (чтобы лента двигалась дальше).

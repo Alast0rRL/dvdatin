@@ -149,6 +149,26 @@ class SyncDB:
         )
         return profile
 
+    def get_profile_message(
+        self, profile_id: int, telegram_message_id: int,
+    ) -> dict[str, Any] | None:
+        """Отдаёт связку сообщение↔профиль (chat_id, account_session и т.д.).
+
+        Нужно фото-роуту, чтобы качать фото ТЕМ аккаунтом, который реально
+        получил сообщение (account_session), и не подсунуть фото другой анкеты.
+        """
+        return self._query_one(
+            """
+            SELECT pm.*, rm.text as raw_text, rm.media_type
+            FROM profile_messages pm
+            LEFT JOIN raw_messages rm
+                ON rm.telegram_message_id = pm.telegram_message_id
+                AND rm.chat_id = pm.chat_id
+            WHERE pm.profile_id = ? AND pm.telegram_message_id = ?
+            """,
+            (profile_id, telegram_message_id),
+        )
+
     def get_profile_messages(self, profile_id: int) -> list[dict[str, Any]]:
         return self._query(
             """

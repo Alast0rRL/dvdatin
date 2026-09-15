@@ -225,6 +225,67 @@ class TestUniqueMessages:
         assert len(msgs) == 1
 
 
+# ── 9.1. Account-привязка profile_messages ───────────────────────────
+
+class TestAccountSession:
+    """profile_messages хранит аккаунт-получателя для скачивания фото."""
+
+    def test_create_profile_stores_session(self, service: ProfileService) -> None:
+        p = asyncio.get_event_loop().run_until_complete(
+            service.create_profile(make_parsed(source_message_id=100),
+                                   account_session="dvai_2")
+        )
+        msgs = asyncio.get_event_loop().run_until_complete(
+            service._db.get_profile_messages(p.id)
+        )
+        assert len(msgs) == 1
+        assert msgs[0]["account_session"] == "dvai_2"
+
+    def test_link_message_stores_session(self, service: ProfileService) -> None:
+        p = asyncio.get_event_loop().run_until_complete(
+            service.create_profile(make_parsed(source_message_id=100))
+        )
+        asyncio.get_event_loop().run_until_complete(
+            service.link_message_to_profile(p.id, 101, 1234060895,
+                                            account_session="dvai")
+        )
+        msgs = asyncio.get_event_loop().run_until_complete(
+            service._db.get_profile_messages(p.id)
+        )
+        assert len(msgs) == 2
+        by_id = {m["telegram_message_id"]: m["account_session"] for m in msgs}
+        assert by_id[100] == ""  # дефолт для старых/неизвестных клиентов
+        assert by_id[101] == "dvai"
+
+    def test_upsert_keeps_new_session(self, service: ProfileService) -> None:
+        """Повторная карточка той же личности запоминает актуальную сессию."""
+        loop = asyncio.get_event_loop()
+        parsed = make_parsed(source_message_id=100)
+        p1 = loop.run_until_complete(
+            service.create_profile(parsed, account_session="dvai")
+        )
+        # Пересоздание ParsedProfile с новым message_id той же личности
+        from models.raw import ParsedProfile
+        parsed2 = ParsedProfile(
+            name=parsed.name,
+            age=parsed.age,
+            raw_city=parsed.raw_city,
+            normalized_city=parsed.normalized_city,
+            description=parsed.description,
+            filter_result=parsed.filter_result,
+            source_message_id=200,
+            source_chat_id=parsed.source_chat_id,
+        )
+        p2 = loop.run_until_complete(
+            service.upsert_profile(parsed2, account_session="dvai_2")
+        )
+        assert p2.id == p1.id
+        msgs = loop.run_until_complete(service._db.get_profile_messages(p2.id))
+        by_id = {m["telegram_message_id"]: m["account_session"] for m in msgs}
+        assert by_id[100] == "dvai"
+        assert by_id[200] == "dvai_2"
+
+
 # ── 10. UNKNOWN не создаёт Profile ───────────────────────────────────
 
 class TestUnknownNoProfile:

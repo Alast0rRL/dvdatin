@@ -740,6 +740,74 @@ class TestMediaLinkingPersistent:
         finally:
             asyncio.get_event_loop().run_until_complete(db.close())
 
+    def test_account_session_recorded_for_receiver(self, tmp_path: Path) -> None:
+        """profile_messages запоминает аккаунт, реально получивший сообщение.
+
+        message_id в диалоге с Leo у каждого аккаунта своя нумерация, и эта
+        сессия нужна вебу, чтобы качать фото тем же аккаунтом (иначе чужой
+        аккаунт на тот же id может вернуть фото ДРУГОЙ анкеты).
+        """
+        db = self._real_db(tmp_path)
+        try:
+            loop = asyncio.get_event_loop()
+            clients = [AsyncMock(), AsyncMock()]
+            config = make_config(telegram={
+                "accounts": [
+                    {"api_id": 123, "api_hash": "abc", "session": "dvai"},
+                    {"api_id": 124, "api_hash": "abd", "session": "dvai_2"},
+                ]
+            })
+            profile_service = ProfileService(db)
+            collector = DvinchikCollector(
+                clients, db, config,
+                profile_service=profile_service,
+                stats=CollectorStats(),
+            )
+
+            # Анкета и её фото приходят на ВТОРОЙ аккаунт (dvai_2)
+            ev_profile = make_event(
+                text="wimx, 18, Санкт-Петербург",
+                chat_id=1234060895, msg_id=700,
+            )
+            ev_profile.message.client = clients[1]
+            loop.run_until_complete(collector._handle_new_message(ev_profile))
+
+            ev_media = make_event(
+                text="", chat_id=1234060895, msg_id=701,
+                media_type=self._photo(),
+            )
+            ev_media.message.client = clients[1]
+            loop.run_until_complete(collector._handle_new_message(ev_media))
+
+            p = loop.run_until_complete(
+                collector._profile_service.find_profile_by_message(1234060895, 700)
+            )
+            assert p is not None
+            msgs = loop.run_until_complete(db.get_profile_messages(p.id))
+            # Обе привязки (PROFILE + MEDIA_ONLY) — с сессией получателя
+            assert {m["telegram_message_id"] for m in msgs} == {700, 701}
+            assert all(m["account_session"] == "dvai_2" for m in msgs)
+        finally:
+            asyncio.get_event_loop().run_until_complete(db.close())
+
+    def test_account_session_empty_when_client_unknown(self, tmp_path: Path) -> None:
+        """Без известного клиента (backlog-рекавери, msg=None) сессия пустая."""
+        db = self._real_db(tmp_path)
+        try:
+            loop = asyncio.get_event_loop()
+            c = self._collector(db)
+            loop.run_until_complete(c._handle_new_message(
+                make_event(text="wimx, 18, Санкт-Петербург", chat_id=1234060895, msg_id=800)
+            ))
+            p = loop.run_until_complete(
+                c._profile_service.find_profile_by_message(1234060895, 800)
+            )
+            assert p is not None
+            msgs = loop.run_until_complete(db.get_profile_messages(p.id))
+            assert msgs and all(m["account_session"] == "" for m in msgs)
+        finally:
+            asyncio.get_event_loop().run_until_complete(db.close())
+
 
 class TestBacklogRecovery:
     """W3: восстановление необработанных RAW при старте.

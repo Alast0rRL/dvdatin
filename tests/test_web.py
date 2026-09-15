@@ -8,7 +8,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from werkzeug.security import generate_password_hash
@@ -124,6 +124,18 @@ async def _seed_test_data(db: Database) -> None:
         reasons=json.dumps(["FILTER_REJECTED", "AGE_OUT_OF_RANGE", "CITY_OUT_OF_RANGE"]),
         scoring_version="deterministic-v2",
         evaluated_at="2025-01-03T00:00:02",
+    )
+
+    # Фото профиля 1: привязка message↔profile с аккаунтом-получателем.
+    await db.link_profile_message(
+        profile_id=pid1, telegram_message_id=111, chat_id=1234060895,
+        created_at="2025-01-01T00:00:04", account_session="dvai",
+    )
+    await db.save_raw_message(
+        telegram_message_id=111, chat_id=1234060895, sender_id=100,
+        sender_username="", sender_name="", message_date="2025-01-01T00:00:04",
+        text="", raw_entities="[]", reply_markup="[]",
+        media_type="photo", received_at="2025-01-01T00:00:04",
     )
 
 
@@ -291,15 +303,46 @@ class TestDashboard:
         assert "LIKE" in data
         assert "DISLIKE" in data
 
+    def test_ai_like_without_action_hides_buttons(self, client, sync_db) -> None:
+        """Баг: бот решил LIKE/DISLIKE, а действие не записалось (не-авто
+        аккаунт) → статус SEEN, но кнопки всё равно висели. Теперь решение
+        AI LIKE/DISLIKE скрывает кнопки и показывает бейдж."""
+        _login(client)
+        _, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        pid = loop.run_until_complete(db.insert_profile(
+            name="Зоя", age=20, raw_city="Санкт-Петербург",
+            normalized_city="Санкт-Петербург",
+            description="Хочу гулять по городу",
+            fingerprint="fp_ai_like_no_act",
+            source_chat_id=1234060895, source_message_id=700001,
+            first_seen_at="2025-01-05T00:00:00",
+            last_seen_at="2025-01-05T00:00:00",
+            status="SEEN",
+        ))
+        loop.run_until_complete(db.save_ai_decision(
+            profile_id=pid, decision="LIKE",
+            combined_score=0.8, confidence=0.85,
+            reasons=json.dumps(["INFORMATIVE_CLEAN"]),
+            scoring_version="deterministic-v2",
+            evaluated_at="2025-01-05T00:00:01",
+        ))
+        resp = client.get("/")
+        data = resp.data.decode()
+        assert f"action-result-{pid}" not in data
+        assert "LIKE (решение AI)" in data
+
     def test_action_buttons_on_all_profiles(self, client) -> None:
         _login(client)
         resp = client.get("/")
         data = resp.data.decode()
-        # Кнопки есть на карточках без человеческого решения
-        # (Барби=REVIEW, Варвара=DISLIKE; Алиса уже отревьюена — кнопок нет)
+        # Кнопки есть только на REVIEW-карточках (Барби — ждёт ручного
+        # решения). Алиса уже отревьюена человеком (APPROVE), Варвара получила
+        # терминальное решение AI (DISLIKE) — для них вместо кнопок — бейдж.
         assert "action-result-2" in data
-        assert "action-result-3" in data
+        assert "action-result-3" not in data
         assert "action-result-1" not in data
+        assert "DISLIKE (решение AI)" in data
 
     def test_mode_switcher_on_dashboard(self, client) -> None:
         _login(client)
@@ -780,6 +823,161 @@ class TestSecurity:
         resp = client.get("/settings")
         data = resp.data.decode()
         assert "test-secret-key" not in data
+
+
+# ── Photo Account Selection Tests ───────────────────────────────────
+
+class TestPhotoAccountSelection:
+    """Фото качаются аккаунтом, который реально получил сообщение.
+
+    message_id в диалоге с Leo у каждого аккаунта своя нумерация: запрос того
+    же id через чужой аккаунт может вернуть фото ДРУГОЙ анкеты.
+    """
+
+    class _FakePhotoClient:
+        def __init__(self, name: str, loop, fail: bool = False) -> None:
+            self.name = name
+            self._loop = loop
+            self.fail = fail
+            self.calls: list[list] = []
+
+        async def get_messages(self, chat_id, ids=None):
+            self.calls.append(list(ids or []))
+            if self.fail:
+                return [None]
+            msg = MagicMock()
+            msg.photo = object()
+            return [msg]
+
+        async def download_media(self, msg, file: str):
+            from pathlib import Path
+            Path(file).write_bytes(self.name.encode())
+            return file
+
+    def _setup(self, tmp_path: Path):
+        import web.photos as photos
+        client_a = self._FakePhotoClient(
+            "dvai", asyncio.get_event_loop(),
+        )
+        client_b = self._FakePhotoClient(
+            "dvai_2", asyncio.get_event_loop(),
+        )
+        photos.set_telegram_clients_with_sessions(
+            [client_a, client_b], ["dvai", "dvai_2"],
+        )
+        return photos, client_a, client_b
+
+    def test_ordered_clients_prefers_receiver(self, tmp_path: Path) -> None:
+        photos, client_a, client_b = self._setup(tmp_path)
+        ordered = photos._ordered_clients("dvai_2")
+        assert ordered == [client_b, client_a]
+        legacy = photos._ordered_clients("")
+        assert legacy == [client_a, client_b]
+
+    def test_download_uses_receiver_account(self, tmp_path: Path) -> None:
+        photos, client_a, client_b = self._setup(tmp_path)
+        media = tmp_path / "media"
+        try:
+            with patch("web.photos.MEDIA_ROOT", media):
+                loop = asyncio.get_event_loop()
+                path = loop.run_until_complete(
+                    photos.download_photo(
+                        1234060895, 501, 42, account_session="dvai_2",
+                    )
+                )
+            assert path is not None
+            assert path == media / "42" / "501.dvai_2.jpg"
+            assert path.read_bytes() == b"dvai_2"
+            # Правильный (получатель) аккаунт скачал первым; чужой не пробовался
+            assert client_b.calls == [[501]]
+            assert client_a.calls == []
+        finally:
+            photos.set_telegram_clients([])
+
+    def test_download_fallback_when_no_session(self, tmp_path: Path) -> None:
+        """Старые записи без сессии: клиенты пробуются по очереди (как раньше)."""
+        photos, client_a, client_b = self._setup(tmp_path)
+        media = tmp_path / "media"
+        try:
+            # Первый аккаунт не видит сообщение — fallback на второй
+            client_a.fail = True
+            with patch("web.photos.MEDIA_ROOT", media):
+                loop = asyncio.get_event_loop()
+                path = loop.run_until_complete(
+                    photos.download_photo(1234060895, 502, 43, account_session="")
+                )
+            assert path is not None
+            assert path == media / "43" / "502.jpg"
+            assert path.read_bytes() == b"dvai_2"
+        finally:
+            photos.set_telegram_clients([])
+
+    def test_receiver_failed_then_fallback(self, tmp_path: Path) -> None:
+        """Если аккаунт-получатель не смог — пробуется чужой (не теряем фото)."""
+        photos, client_a, client_b = self._setup(tmp_path)
+        client_b.fail = True  # правильный аккаунт недоступен
+        media = tmp_path / "media"
+        try:
+            with patch("web.photos.MEDIA_ROOT", media):
+                loop = asyncio.get_event_loop()
+                path = loop.run_until_complete(
+                    photos.download_photo(
+                        1234060895, 503, 44, account_session="dvai_2",
+                    )
+                )
+            assert path is not None
+            assert path == media / "44" / "503.dvai_2.jpg"
+            assert path.read_bytes() == b"dvai"
+        finally:
+            photos.set_telegram_clients([])
+
+
+class TestPhotoServingRoute:
+    """Роут фото: кэш и скачивание привязаны к аккаунту-получателю."""
+
+    def test_serves_account_cached_photo(self, client, sync_db, tmp_path: Path) -> None:
+        media = tmp_path / "media"
+        (media / "1").mkdir(parents=True)
+        (media / "1" / "111.dvai.jpg").write_bytes(b"jpg-bytes")
+        _login(client)
+        with patch("web.photos.MEDIA_ROOT", media):
+            resp = client.get("/photos/1/111.jpg")
+        assert resp.status_code == 200
+        assert resp.data == b"jpg-bytes"
+
+    def test_photo_404_without_message_link(self, client, sync_db) -> None:
+        _login(client)
+        resp = client.get("/photos/1/99999.jpg")
+        assert resp.status_code == 404
+
+    def test_photo_404_when_not_cached(self, client, sync_db, tmp_path: Path) -> None:
+        _login(client)
+        with patch("web.blueprints.photos.download_photo_sync", return_value=None):
+            resp = client.get("/photos/1/111.jpg")
+        assert resp.status_code == 404
+
+    def test_download_passes_receiver_account(self, client, sync_db, tmp_path: Path) -> None:
+        """Незакэшированное фото качается через аккаунт-получателя."""
+        media = tmp_path / "media"
+        seen = []
+
+        def _fake_download(
+            chat_id: int, message_id: int, profile_id: int,
+            account_session: str = '',
+        ):
+            seen.append((chat_id, message_id, profile_id, account_session))
+            out = media / str(profile_id) / f"{message_id}.{account_session}.jpg"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"downloaded")
+            return out
+
+        _login(client)
+        with patch("web.blueprints.photos.download_photo_sync",
+                   side_effect=_fake_download):
+            resp = client.get("/photos/1/111.jpg")
+        assert resp.status_code == 200
+        assert resp.data == b"downloaded"
+        assert seen == [(1234060895, 111, 1, "dvai")]
 
 
 # ── SyncDB Tests ────────────────────────────────────────────────

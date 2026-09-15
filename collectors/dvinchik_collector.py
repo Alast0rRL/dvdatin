@@ -354,6 +354,26 @@ class DvinchikCollector:
             logger.error(f"Не удалось сохранить авто-аккаунт в config.yaml: {e}")
         return True
 
+    def _session_for_client(self, client: object) -> str:
+        """Возвращает session-имя аккаунта, которому принадлежит client.
+
+        accounts/clients параллельны (main.py строит их в одном порядке),
+        поэтому сессия находится по индексу. Значение обязано совпадать с тем,
+        что main.py передаёт в ``create_client(session_name=...)`` (
+        acc.session или дефолт ``dvai``/``dvai_{idx}``) — по нему
+        веб-панель выбирает клиент для скачивания фото. '' — если client
+        не найден (например, backlog-рекавери без живого msg).
+        """
+        if client is None:
+            return ''
+        accounts = self._config.telegram.accounts
+        for i, c in enumerate(self._clients):
+            if c is client:
+                if i < len(accounts) and accounts[i].session:
+                    return accounts[i].session
+                return "dvai" if len(accounts or []) == 1 else f"dvai_{i}"
+        return ''
+
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
         """Привязывает worker; хендлер начинает только ставить в очередь."""
         self._worker = worker
@@ -1197,7 +1217,12 @@ class DvinchikCollector:
 
                 if self._profile_service:
                     try:
-                        profile = await self._profile_service.upsert_profile(parsed)
+                        account_session = self._session_for_client(
+                            getattr(msg, "client", None) if msg is not None else None
+                        )
+                        profile = await self._profile_service.upsert_profile(
+                            parsed, account_session=account_session,
+                        )
 
                         # PROFILE-сообщение становится "контекстом" для
                         # последующих MEDIA_ONLY того же чата. Фиксируем сразу
@@ -1351,7 +1376,12 @@ class DvinchikCollector:
                     self._stats.record_match()
 
             elif msg_type == MessageType.MEDIA_ONLY:
-                await self._handle_media_only(chat_id, task.message_id)
+                account_session = self._session_for_client(
+                    getattr(msg, "client", None) if msg is not None else None
+                )
+                await self._handle_media_only(
+                    chat_id, task.message_id, account_session=account_session,
+                )
                 if self._stats:
                     self._stats.record_media_only()
 
@@ -1436,7 +1466,9 @@ class DvinchikCollector:
                     f"processed_at не помечен — W3 повторит после restart."
                 )
 
-    async def _handle_media_only(self, chat_id: int, message_id: int) -> None:
+    async def _handle_media_only(
+        self, chat_id: int, message_id: int, account_session: str = '',
+    ) -> None:
         """Обработка photo-only сообщений: привязка к ПРЕДЫДУЩЕЙ анкете.
 
         Контекст (последнее PROFILE-сообщение чата) восстанавливается из БД
@@ -1462,7 +1494,8 @@ class DvinchikCollector:
                 )
                 if profile is not None:
                     await self._profile_service.link_message_to_profile(
-                        profile.id, message_id, chat_id
+                        profile.id, message_id, chat_id,
+                        account_session=account_session,
                     )
                     logger.info(
                         f"Media-only linked to profile: "
