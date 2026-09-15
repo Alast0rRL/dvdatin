@@ -2670,6 +2670,98 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_start_stream_menu_after_profile_marks_it_stale(self) -> None:
+        """После анкеты Leo перешёл в меню/премиум-промо (лента кончилась) —
+        старая анкета НЕ «активная», ❤️/👎 на неё не шлём («Нет такого варианта
+        ответа»). Профилируется по переключению аккаунта: в истории dvai могла
+        остаться анкета, на которую реагировать уже нельзя."""
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config()
+        collector = self._make_collector(
+            config, self._make_decision(AIDecision.LIKE), auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: главное меню Leo (самое свежее) → Premium-промо →
+            # старая анкета. Самое свежее входящее — НЕ анкета → активной нет.
+            yield self._iter_msg(
+                auto_client, 720, "1. Смотреть анкеты.\n2. Моя анкета.\n3. Не искать",
+                buttons=["1 🚀", "2", "3", "4"],
+            )
+            yield self._iter_msg(
+                auto_client, 719, "твоя анкета может больше", buttons=["⭐️"]
+            )
+            yield self._iter_msg(auto_client, 718, "Полина, 19, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_like_ack_after_profile_marks_it_stale(self) -> None:
+        """Входящее подтверждение Leo «Лайк отправлен, ждем ответа.» после анкеты
+        — анкета уже обработана, повторно ❤️ не шлём."""
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(),
+            self._make_decision(AIDecision.LIKE), auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: лайк-эк Leo → старая анкета.
+            yield self._iter_msg(
+                auto_client, 705, "Лайк отправлен, ждем ответа."
+            )
+            yield self._iter_msg(auto_client, 704, "Полина, 19, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_media_after_profile_keeps_it_active(self) -> None:
+        """Медиа/фото БЕЗ текста после анкеты — та же карточка, анкета активна,
+        реакция шлётся (фото относится к текущей анкете, а не смена состояния)."""
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(),
+            self._make_decision(AIDecision.DISLIKE), auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: фото без текста (медиа карточки) → анкета.
+            yield self._iter_msg(auto_client, 701, "")
+            yield self._iter_msg(auto_client, 700, "Полина, 19, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        # Анкета активна → отправился 👎 (первый вызов), второй — пояснение.
+        assert auto_client.send_message.call_args_list[0] == (
+            (1234060895, "\U0001F44E"),  # 👎
+        )
+
     def test_live_ad_message_presses_view_button_on_separate_message(self) -> None:
         """Реклама приходит БЕЗ кнопки, а «🚀 Смотреть анкеты» — на ОТДЕЛЬНОМ
         сообщении после неё. Живая обработка рекламного UNKNOWN-сообщения должна

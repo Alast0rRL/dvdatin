@@ -404,6 +404,15 @@ class DvinchikCollector:
         ещё не отправлена реакция (нет исходящего ❤️/👎 после неё). Прогоняем
         её через штатный pipeline (_process_message: parse → filter → AI →
         авто-действие). Если активной анкеты нет — возвращаем False.
+
+        Важно: анкета считается активной, только если после неё нет СВЕЖЕГО
+        содержательного входящего сообщения Leo (меню, Premium-промо, MATCH,
+        «Лайк отправлен…», капча, «Нет такого варианта ответа») — такое
+        сообщение означает, что фаза реакции на анкету завершена/лента ушла
+        вперёд (после переключения аккаунта в истории может остаться старая
+        анкета, на которую больше нельзя отвечать — отправка ❤️/👎 даст
+        «Нет такого варианта ответа»). Медиа/фото без текста игнорируются
+        (они относятся к текущей карточке анкеты).
         """
         client = self._auto_engine.client
         if client is None:
@@ -413,9 +422,14 @@ class DvinchikCollector:
             active = None
             async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
                 text = (msg.text or "").strip()
-                if getattr(msg, "out", False) and text in (LIKE_TEXT, DISLIKE_TEXT):
-                    if latest_action_id is None:
-                        latest_action_id = msg.id
+                if getattr(msg, "out", False):
+                    if text in (LIKE_TEXT, DISLIKE_TEXT):
+                        if latest_action_id is None:
+                            latest_action_id = msg.id
+                    continue
+                if not text:
+                    # Медиа/стикер без текста — часть карточки анкеты,
+                    # состояние чата не меняет.
                     continue
                 if self._is_profile_text(msg):
                     if (
@@ -426,6 +440,14 @@ class DvinchikCollector:
                         continue
                     active = msg
                     break
+                # Самое свежее входящее — НЕ анкета (меню/промо/MATCH/лайк-эк/
+                # капча/отказ Leo): активной анкеты нет.
+                logger.info(
+                    f"AutoAction: нет активной анкеты — самое свежее сообщение "
+                    f"Leo (msg={msg.id}) не анкета: {text[:60]!r}"
+                )
+                active = None
+                break
 
             if active is None:
                 logger.info("AutoAction: активная анкета в чате не найдена")
