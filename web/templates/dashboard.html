@@ -43,19 +43,24 @@
             </form>
         </div>
 
-        <div class="seg" role="tablist" aria-label="Фильтр по решению">
-            <a href="{{ url_for('dashboard.index') }}" class="seg-link {% if not decision_filter %}active{% endif %}">
-                <span class="seg-dot"></span>Все
-            </a>
-            <a href="{{ url_for('dashboard.index', decision='LIKE') }}" class="seg-link {% if decision_filter == 'LIKE' %}active{% endif %}">
-                <span class="seg-dot seg-dot--like"></span>LIKE
-            </a>
-            <a href="{{ url_for('dashboard.index', decision='REVIEW') }}" class="seg-link {% if decision_filter == 'REVIEW' %}active{% endif %}">
-                <span class="seg-dot seg-dot--review"></span>REVIEW
-            </a>
-            <a href="{{ url_for('dashboard.index', decision='DISLIKE') }}" class="seg-link {% if decision_filter == 'DISLIKE' %}active{% endif %}">
-                <span class="seg-dot seg-dot--dislike"></span>DISLIKE
-            </a>
+        <div class="account-control">
+            <span class="account-label">Аккаунт:</span>
+            <form method="POST" action="{{ url_for('settings.update_account') }}" id="account-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ request.full_path }}">
+                <select name="account_session" class="form-input account-select"
+                        title="Аккаунт-исполнитель авто-действий" onchange="this.form.submit()">
+                    {% if accounts %}
+                    {% for acc in accounts %}
+                    <option value="{{ acc.session }}" {% if acc.session == account_session %}selected{% endif %}>
+                        {{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}
+                    </option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="" disabled>нет аккаунтов</option>
+                    {% endif %}
+                </select>
+            </form>
         </div>
     </div>
 </div>

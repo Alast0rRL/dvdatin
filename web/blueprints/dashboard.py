@@ -7,6 +7,7 @@ from pathlib import Path
 from flask import Blueprint, render_template, request
 
 from web.blueprints.auth import login_required
+from web.blueprints.settings import _get_accounts
 from web.db import SyncDB
 
 dashboard_bp = Blueprint("dashboard", __name__)
@@ -174,6 +175,9 @@ def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
     # Current mode for the switcher
     mode = db.get_mode(_get_config_path())
 
+    # Аккаунт-исполнитель авто-действий (переключение прямо с ленты)
+    accounts, account_session = _get_accounts(_get_config_path())
+
     return render_template(
         "dashboard.html",
         profiles=profiles,
@@ -185,6 +189,8 @@ def dashboard_bpEndpoint(endpoint: str) -> str:  # noqa: N802
         pending=pending,
         decision_filter=decision_filter,
         mode=mode,
+        accounts=accounts,
+        account_session=account_session,
     )
 
 

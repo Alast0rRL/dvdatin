@@ -341,43 +341,30 @@ a { color: inherit; }
 .btn.mode-semi_auto.active { background: var(--review); box-shadow: 0 4px 12px rgba(217, 119, 6, 0.3); }
 .btn.mode-auto.active { background: var(--dislike); box-shadow: 0 4px 12px rgba(229, 72, 77, 0.3); }
 
-/* ── Segmented filter ── */
+/* ── Account selector ── */
 
-.seg {
-  display: inline-flex;
-  gap: 2px;
-  background: var(--surface-muted);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-}
-
-.seg-link {
-  display: inline-flex;
+.account-control {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border-radius: 8px;
-  font-size: 0.88em;
-  font-weight: 500;
-  color: var(--text-secondary);
-  text-decoration: none;
-  transition: all 0.15s;
+  gap: 10px;
 }
 
-.seg-link:hover { color: var(--text); }
-
-.seg-link.active {
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
+.account-label {
+  font-size: 0.82em;
   font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
-.seg-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
-
-.seg-link.active .seg-dot--like { background: var(--like); }
-.seg-link.active .seg-dot--review { background: var(--review); }
-.seg-link.active .seg-dot--dislike { background: var(--dislike); }
+select.account-select {
+  width: 250px;
+  padding: 8px 34px 8px 12px;
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+}
 
 /* ── Profile feed ── */
 
@@ -959,8 +946,8 @@ select.form-input {
 
   .toolbar { flex-direction: column; align-items: stretch; }
   .mode { justify-content: space-between; }
-  .seg { width: 100%; }
-  .seg-link { flex: 1; justify-content: center; }
+  .account-control { justify-content: space-between; }
+  select.account-select { width: 100%; }
 
   .profile-card-top { padding: 14px 14px 0; }
   .photo-gallery { padding: 12px 14px 0; gap: 8px; }
