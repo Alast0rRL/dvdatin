@@ -3,11 +3,11 @@
 
 {% block content %}
 <div class="settings-page">
-    <h1>Настройки</h1>
+    <h1 class="page-title">Настройки</h1>
 
-    <!-- Mode -->
     <div class="settings-card">
-        <h2>Режим</h2>
+        <h2>Режим работы</h2>
+        <p class="settings-hint">OBSERVE — только смотрим; SEMI_AUTO — авто-действия с уведомлением; AUTO — полная автоматика.</p>
         <form method="POST" action="{{ url_for('settings.update_mode') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="mode-buttons">
@@ -21,14 +21,14 @@
         </form>
     </div>
 
-    <!-- Auto-account -->
     <div class="settings-card">
         <h2>Аккаунт-исполнитель авто-действий</h2>
         <p class="settings-hint">С этого аккаунта отправляются ❤️/👎 и «Берем)» в чат Leo.</p>
         <form method="POST" action="{{ url_for('settings.update_account') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="form-group">
-                <select name="account_session" class="form-input">
+                <label class="form-label" for="account_session">Аккаунт</label>
+                <select id="account_session" name="account_session" class="form-input">
                     {% for acc in accounts %}
                     <option value="{{ acc.session }}" {% if acc.session == account_session %}selected{% endif %}>
                         {{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}
@@ -36,60 +36,68 @@
                     {% endfor %}
                 </select>
             </div>
-            <button type="submit" class="btn btn-primary">Переключить аккаунт</button>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Переключить аккаунт</button>
+            </div>
         </form>
     </div>
 
-    <!-- Filters -->
     <div class="settings-card">
         <h2>Фильтры</h2>
+        <p class="settings-hint">Возраст и города, по которым фильтруются анкеты.</p>
         <form method="POST" action="{{ url_for('settings.update_filters') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-            <div class="form-group">
-                <label for="age_min">Возраст (мин)</label>
-                <input type="number" id="age_min" name="age_min" value="{{ filter_cfg.age_min }}"
-                       min="14" max="99" class="form-input">
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label" for="age_min">Возраст (мин)</label>
+                    <input type="number" id="age_min" name="age_min" value="{{ filter_cfg.age_min }}"
+                           min="14" max="99" class="form-input">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="age_max">Возраст (макс)</label>
+                    <input type="number" id="age_max" name="age_max" value="{{ filter_cfg.age_max }}"
+                           min="14" max="99" class="form-input">
+                </div>
             </div>
 
             <div class="form-group">
-                <label for="age_max">Возраст (макс)</label>
-                <input type="number" id="age_max" name="age_max" value="{{ filter_cfg.age_max }}"
-                       min="14" max="99" class="form-input">
-            </div>
-
-            <div class="form-group">
-                <label for="city_allowed">Города (через запятую; пусто = все)</label>
+                <label class="form-label" for="city_allowed">Города (через запятую; пусто — все)</label>
                 <input type="text" id="city_allowed" name="city_allowed"
                        value="{{ filter_cfg.city_allowed|join(', ') }}"
                        placeholder="Санкт-Петербург, Москва" class="form-input">
             </div>
 
-            <button type="submit" class="btn btn-primary">Сохранить фильтры</button>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Сохранить фильтры</button>
+            </div>
         </form>
     </div>
 
-    <!-- Preferences -->
     <div class="settings-card">
         <h2>Предпочтения (SKIP / LIKE)</h2>
+        <p class="settings-hint">Правила калибровки решений. Формат: <code>метка | подстрока1 | подстрока2</code>.</p>
         <form method="POST" action="{{ url_for('settings.update_preferences') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
             <div class="form-group">
-                <label for="skip_rules">STOP-метки (формат: метка | подстрока1 | подстрока2)</label>
-                <textarea id="skip_rules" name="skip_rules" rows="10" class="form-input form-textarea"
+                <label class="form-label" for="skip_rules">STOP-метки</label>
+                <textarea id="skip_rules" name="skip_rules" rows="8" class="form-input form-textarea"
                           placeholder="не ищет отношений | ищу друга | ищу подругу">#{% for rule in preferences.get('skip', []) %}
 {{ rule.label }} | {{ rule.match | join(' | ') }}{% endfor %}</textarea>
             </div>
 
             <div class="form-group">
-                <label for="like_rules">LIKE-метки (формат: метка | подстрока1 | подстрока2)</label>
-                <textarea id="like_rules" name="like_rules" rows="10" class="form-input form-textarea"
+                <label class="form-label" for="like_rules">LIKE-метки</label>
+                <textarea id="like_rules" name="like_rules" rows="8" class="form-input form-textarea"
                           placeholder="аниме | аниме | манга">#{% for rule in preferences.get('like', []) %}
 {{ rule.label }} | {{ rule.match | join(' | ') }}{% endfor %}</textarea>
             </div>
 
-            <button type="submit" class="btn btn-primary">Сохранить предпочтения</button>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Сохранить предпочтения</button>
+            </div>
         </form>
     </div>
 </div>

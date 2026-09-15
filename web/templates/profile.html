@@ -3,13 +3,23 @@
 
 {% block content %}
 <div class="profile-detail">
-    <a href="{{ url_for('dashboard.index') }}" class="back-link">← Назад к ленте</a>
+    <a href="{{ url_for('dashboard.index') }}" class="back-link">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        Назад к ленте
+    </a>
 
     <div class="profile-card profile-card-detail">
-        <div class="profile-header">
-            <h1>{{ profile.name }}, {{ profile.age }}</h1>
-            <span class="profile-city">{{ profile.raw_city or profile.normalized_city or '—' }}</span>
-            <span class="profile-status status-{{ profile.status|lower }}">{{ profile.status }}</span>
+        <div class="profile-card-top">
+            <div class="profile-main">
+                <h1 class="profile-name">{{ profile.name }}, {{ profile.age }}</h1>
+                <span class="profile-city">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+                    {{ profile.raw_city or profile.normalized_city or '—' }}
+                </span>
+            </div>
+            {% if profile.status %}
+            <span class="status status-{{ profile.status|lower }}">{{ profile.status }}</span>
+            {% endif %}
         </div>
 
         {% if photos %}
@@ -37,12 +47,13 @@
     </div>
 
     {% if latest_ai %}
-    <div class="decision-detail-card">
-        <h3>AI Решение</h3>
+    <div class="detail-section">
+        <h3 class="detail-title">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            AI-решение
+        </h3>
         <div class="decision-block">
-            <div class="decision-badge decision-{{ latest_ai.decision|lower }}">
-                {{ latest_ai.decision }}
-            </div>
+            <span class="decision-badge decision-{{ latest_ai.decision|lower }}">{{ latest_ai.decision }}</span>
             <span class="score">Combined: {{ "%.3f"|format(latest_ai.combined_score) }}</span>
             <span class="score">Confidence: {{ "%.2f"|format(latest_ai.confidence) }}</span>
         </div>
@@ -55,27 +66,32 @@
         </div>
         {% endif %}
 
-        <div class="meta-line">Scoring: {{ latest_ai.scoring_version }} | {{ latest_ai.evaluated_at[:19] if latest_ai.evaluated_at else '' }}</div>
+        <div class="meta-line" style="margin-top: 10px;">Scoring: {{ latest_ai.scoring_version }} | {{ latest_ai.evaluated_at[:19] if latest_ai.evaluated_at else '' }}</div>
 
         {% if latest_ai.decision == 'REVIEW' and not latest_human %}
-        <form method="POST" action="{{ url_for('profiles.profile_action', profile_id=profile.id) }}" class="action-form">
+        <form method="POST" action="{{ url_for('profiles.profile_action', profile_id=profile.id) }}" class="action-form" style="margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <div class="action-buttons action-buttons-detail">
-                <button type="submit" name="action" value="LIKE" class="btn btn-like">❤️ LIKE</button>
-                <button type="submit" name="action" value="DISLIKE" class="btn btn-dislike">👎 DISLIKE</button>
-            </div>
+            <button type="submit" name="action" value="LIKE" class="btn btn-like">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                LIKE
+            </button>
+            <button type="submit" name="action" value="DISLIKE" class="btn btn-dislike">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                DISLIKE
+            </button>
         </form>
         {% endif %}
     </div>
     {% endif %}
 
     {% if latest_filter %}
-    <div class="decision-detail-card">
-        <h3>Фильтр</h3>
+    <div class="detail-section">
+        <h3 class="detail-title">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+            Фильтр
+        </h3>
         <div class="decision-block">
-            <div class="decision-badge filter-badge-{{ latest_filter.decision|lower }}">
-                {{ latest_filter.decision }}
-            </div>
+            <span class="decision-badge filter-badge-{{ latest_filter.decision|lower }}">{{ latest_filter.decision }}</span>
         </div>
         {% if latest_filter.parsed_reasons %}
         <div class="reasons">
@@ -88,8 +104,11 @@
     {% endif %}
 
     {% if latest_human %}
-    <div class="decision-detail-card">
-        <h3>Ваше решение</h3>
+    <div class="detail-section">
+        <h3 class="detail-title">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Ваше решение
+        </h3>
         <div class="human-decision">
             {% if latest_human.decision == 'APPROVE' %}
             <span class="badge badge-approved">✅ APPROVE (LIKE)</span>
@@ -107,8 +126,8 @@
     {% endif %}
 
     {% if profile.ai_decisions|length > 1 %}
-    <div class="decision-detail-card">
-        <h3>История AI-решений</h3>
+    <div class="detail-section">
+        <h3 class="detail-title">История AI-решений</h3>
         {% for ai_d in profile.ai_decisions %}
         <div class="history-item">
             <span class="decision-badge decision-{{ ai_d.decision|lower }}">{{ ai_d.decision }}</span>
@@ -120,8 +139,8 @@
     {% endif %}
 
     {% if profile.human_decisions|length > 1 %}
-    <div class="decision-detail-card">
-        <h3>История решений</h3>
+    <div class="detail-section">
+        <h3 class="detail-title">История решений</h3>
         {% for hd in profile.human_decisions %}
         <div class="history-item">
             <span class="badge badge-{{ hd.decision|lower }}">{{ hd.decision }}</span>

@@ -183,6 +183,8 @@ export DVAI_WEB_COOKIE_SECURE="0"                # 1 — только за HTTPS
 
 URL-ы: `/login` → `/dashboard` (лента анкет) → `/profiles/<id>` (детали) → `/settings` (фильтры/режим). Подробнее в `web/` и `AGENTS.md`.
 
+**Дизайн**: светлая чистая тема (статика без внешних зависимостей — `static/css/style.css` + `static/js/app.js`). Секции по решениям окрашены в LIKE/REVIEW/DISLIKE, статусы и решения — pill-бейджи, быстрые действия LIKE/DISLIKE — SVG-иконки, уведомления о результате — toast-snackbar (без перезагрузки страницы). Навигация/лого/favicon — inline SVG (data-URI), responsive-адаптация под мобильные (640px).
+
 **Режим на сайте меняется на лету** (`web/actions.py` → `set_mode_sync`): POST на `/settings/mode` не только пишет `project.mode` в `config.yaml`, но и вызывает `collector.set_mode()` — живой `AutoActionEngine` переключается сразу, а для SEMI_AUTO/AUTO запускается `start_auto_stream()` (обработка активной анкеты / продолжение ленты Leo). Перезапуск не нужен. Без привязанного коллектора (например в тестах) режим просто сохраняется в YAML.
 
 **Аккаунт-исполнитель меняется на лету** (`web/actions.py` → `set_account_sync`): POST на `/settings/account` пишет `auto_actions.account_session` в `config.yaml` И вызывает `collector.switch_auto_account(session)` — живой `AutoActionEngine` получает клиент другого аккаунта (`AutoActionEngine.swap_client`), кэш peer сбрасывается (у каждого аккаунта свой access_hash чата Leo), rate-limiter обнуляется, затем запускается `start_auto_stream()` на новом аккаунте. UI: выпадающий список в `/settings` (аккаунты читаются из `telegram.accounts` конфига).
