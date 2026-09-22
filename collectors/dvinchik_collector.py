@@ -58,6 +58,12 @@ _MEDIA_TYPE_MAP: dict[type, str] = {
 #: Парсим по частичному вхождению, т.к. эмодзи могут различаться.
 VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 
+#: Кнопка-отказ от Premium Leo («Пока без Premium»): после ❤️/👎 бот иногда
+#: присылает премиум-реклму с кнопками [⭐️Активировать, Пока без Premium].
+#: Без нажатия отказной кнопки лента встаёт (новые анкеты/капчи не идут).
+#: Нажимаем ТОЛЬКО кнопку с этим фрагментом («Активировать» — никогда).
+PREMIUM_DECLINE_FRAGMENT: str = "без premium"
+
 #: Stage 8.5: тексты, которые НЕ считаются ручным «сообщением при лайке»
 #: (кнопки Leo/эмодзи-реакции/навигация). Они не попадают в sent_messages,
 #: чтобы навигация и реакции не засоряли аналитику текстов.
@@ -80,6 +86,7 @@ MANUAL_MESSAGE_EXCLUDE: frozenset[str] = frozenset(
         "👌 Готово",
         "Готово",
         "Активировать Premium",
+        "Пока без Premium",
         "Показать девушку",
     }
 )
@@ -94,6 +101,8 @@ MANUAL_MESSAGE_EXCLUDE_FRAGMENTS: tuple[str, ...] = (
     "продолжить",
     "вернуться назад",
     "активировать premium",
+    "пока без premium",
+    "без premium",
     "показать девушку",
 )
 
@@ -419,6 +428,8 @@ class DvinchikCollector:
                 return True
             if await self._press_view_button_if_needed():
                 return True
+            if await self._press_premium_decline_if_needed():
+                return True
             return await self._handle_captcha()
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
@@ -569,6 +580,65 @@ class DvinchikCollector:
             return True
         except Exception as e:
             logger.error(f"AutoAction: ошибка нажатия кнопки «Смотреть анкеты»: {e}")
+            return False
+
+    async def _press_premium_decline_if_needed(self) -> bool:
+        """Нажимает кнопку-отказ у Premium-промо Leo («Пока без Premium»).
+
+        После ❤️/👎 Leo иногда присылает премиум-реклму («Борюсь с
+        эгоизмом…», кнопки [⭐️Активировать, Пока без Premium]) — без
+        нажатия отказной кнопки лента встаёт. Ищем самую свежую карточку
+        с кнопкой, содержащей PREMIUM_DECLINE_FRAGMENT, и нажимаем её
+        (идемпотентно: только если текст кнопки ещё не отправлялся после
+        карточки). Кнопку «Активировать» никогда не нажимаем.
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            card_msg = None
+            button_text = ""
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                texts = self._extract_button_texts(msg)
+                hit = next(
+                    (t for t in texts if PREMIUM_DECLINE_FRAGMENT in t.lower()), None
+                )
+                if hit:
+                    card_msg = msg
+                    button_text = hit
+                    break
+
+            if card_msg is None or not button_text:
+                return False
+
+            # Идемпотентность: если после карточки уже отправлен текст кнопки,
+            # не нажимаем повторно (тот же поток уже продолжен).
+            sent_at = card_msg.id
+            already_sent = False
+            async for msg in client.iter_messages(
+                self._dvinchik_chat_id, limit=15
+            ):
+                if msg.id <= sent_at:
+                    break
+                if (
+                    getattr(msg, "out", False)
+                    and (msg.text or "").strip() == button_text
+                ):
+                    already_sent = True
+                    break
+
+            if already_sent:
+                logger.info("AutoAction: кнопка «Пока без Premium» уже нажата")
+                return False
+
+            logger.info(
+                f"AutoAction: Premium-промо (msg={card_msg.id}) — нажимаю "
+                f"«{button_text}», продолжаю ленту"
+            )
+            await self._auto_engine.send_text(button_text)
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия кнопки Premium-промо: {e}")
             return False
 
     async def _handle_captcha(self, msg: object | None = None) -> bool:
@@ -1510,8 +1580,11 @@ class DvinchikCollector:
                             # _press_view_button_if_needed уже идемпотентен (жмёт
                             # только если кнопка реально есть и ещё не нажата), а
                             # меню/Premium-промо такой кнопки не содержат → не
-                            # зацикливаемся.
+                            # зацикливаемся. Плюс Premium-промо с кнопкой «Пока
+                            # без Premium» (после ❤️/👎) — нажимаем отказ, чтобы
+                            # лента не встала.
                             await self._press_view_button_if_needed()
+                            await self._press_premium_decline_if_needed()
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
 
@@ -1532,6 +1605,8 @@ class DvinchikCollector:
                         texts = self._extract_button_texts(msg)
                         if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
+                        else:
+                            await self._press_premium_decline_if_needed()
                     except Exception as e:
                         logger.error(
                             f"AutoAction: ошибка нажатия кнопки ленты "

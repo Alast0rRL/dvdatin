@@ -2614,6 +2614,86 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_start_stream_premium_promo_presses_decline(self) -> None:
+        """Premium-промо после реакции [⭐️Активировать, Пока без Premium]:
+        нажимаем отказную кнопку («Активировать» никогда) — лента продолжается."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        decline = "\U0001F680 Пока без Premium"
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: Premium-промо → исходящий 👎 → предыдущая анкета.
+            yield self._iter_msg(
+                auto_client, 715,
+                "Борюсь с эгоизмом, больше внимания — больше знакомств",
+                buttons=["\u2b50\ufe0f Активировать Premium", decline],
+            )
+            yield self._iter_msg(auto_client, 714, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 713, "Катьк, 18, Сургут")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, decline)
+
+    def test_start_stream_premium_decline_already_sent(self) -> None:
+        """Отказ «Пока без Premium» уже отправлен после промо — повторно не шлём."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        decline = "\U0001F680 Пока без Premium"
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: уже нажатый отказ (out) → Premium-промо.
+            yield self._iter_msg(auto_client, 717, decline, out=True)
+            yield self._iter_msg(
+                auto_client, 716, "Борюсь с эгоизмом, больше внимания",
+                buttons=["\u2b50\ufe0f Активировать Premium", decline],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_premium_promo_without_decline_does_nothing(self) -> None:
+        """Premium-промо БЕЗ отказной кнопки («Активировать»/«⭐️») — не трогаем."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 719, "твоя анкета может больше",
+                buttons=["\u2b50\ufe0f Активировать Premium"],
+            )
+            yield self._iter_msg(auto_client, 718, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 717, "Катьк, 18, Сургут")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
     def test_start_stream_unknown_captcha_waits_for_owner(self) -> None:
         """Неизвестная капча: кнопку НЕ жмём, капча записывается (на сайт)."""
         auto_client = AsyncMock()
