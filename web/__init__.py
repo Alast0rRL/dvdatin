@@ -66,12 +66,14 @@ def create_app(web_config: WebConfig | None = None) -> Flask:
 
     # Register blueprints
     from web.blueprints.auth import auth_bp
+    from web.blueprints.captchas import captchas_bp
     from web.blueprints.dashboard import dashboard_bp
     from web.blueprints.profiles import profiles_bp
     from web.blueprints.settings import settings_bp
     from web.blueprints.photos import photos_bp
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(captchas_bp)
     app.register_blueprint(dashboard_bp)
     app.register_blueprint(profiles_bp)
     app.register_blueprint(settings_bp)

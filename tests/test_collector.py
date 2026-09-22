@@ -43,6 +43,9 @@ def make_db_mock() -> Database:
     db.has_auto_action = AsyncMock(return_value=False)
     db.has_auto_action_for_message = AsyncMock(return_value=False)
     db.record_auto_action = AsyncMock()
+    db.get_captcha_answer = AsyncMock(return_value=None)
+    db.record_pending_captcha = AsyncMock(return_value=True)
+    db.mark_captcha_used = AsyncMock(return_value=True)
     return db
 
 
@@ -2611,16 +2614,15 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
-    def test_start_stream_presses_right_button_on_captcha(self) -> None:
-        """Активной анкеты нет, но Leo показал капчу/проверку — жмём ПОСЛЕДНЮЮ кнопку."""
+    def test_start_stream_unknown_captcha_waits_for_owner(self) -> None:
+        """Неизвестная капча: кнопку НЕ жмём, капча записывается (на сайт)."""
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
-        # Капча/сделка: кнопки «Меню»/«Сообщение …»/«Готово»/«Возможно позже»
-        # → нажимаем последнюю («Возможно позже»).
+        # Капча/сделка: кнопки «Меню»/«Сообщение …»/«Готово»/«Возможно позже».
         last_button = "Возможно позже"
 
         async def iter_messages(*args, **kwargs):
@@ -2637,20 +2639,153 @@ class TestCollectorAutoActions:
         ok = asyncio.get_event_loop().run_until_complete(
             collector.start_auto_stream()
         )
-        assert ok is True
-        auto_client.send_message.assert_called_once_with(
-            1234060895, last_button
-        )
+        # Ответа на капчу нет → наугад не нажимаем, ждём владельца на сайте.
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+        # Капча попала в captcha_memory как pending (сигнатура = текст).
+        collector._db.record_pending_captcha.assert_awaited_once()
+        sig = collector._db.record_pending_captcha.call_args[0][0]
+        assert sig == "бармалей, предлагаю тебе сделку"
 
-    def test_start_stream_geo_captcha_presses_plain_button(self) -> None:
-        """Гео-капча Leo («Пришли расположение…») — нажимаем ОБЫЧНУЮ кнопку,
-        а не специальную с запросом геолокации (её текстом не нажать)."""
+    def test_start_stream_known_captcha_sends_stored_answer(self) -> None:
+        """Выученная капча — бот сам отправляет запомненный ответ."""
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        collector._db.get_captcha_answer = AsyncMock(
+            return_value="Пока без Premium"
+        )
+        last_button = "Возможно позже"
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 710, "Бармалей, предлагаю тебе сделку",
+                buttons=["Меню", "Сообщение ...", "Готово", last_button],
+            )
+            yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 708, "Margo, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(
+            1234060895, "Пока без Premium"
+        )
+        # Ответ не записывается снова как pending (он уже выучен).
+        collector._db.record_pending_captcha.assert_not_awaited()
+        collector._db.mark_captcha_used.assert_awaited_once()
+
+    def test_start_stream_known_captcha_idempotent(self) -> None:
+        """Выученный ответ уже отправлен после капчи — повторно не шлём."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        collector._db.get_captcha_answer = AsyncMock(
+            return_value="Пока без Premium"
+        )
+        last_button = "Возможно позже"
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: уже отправленный выученный ответ (out) → капча.
+            yield self._iter_msg(auto_client, 712, "Пока без Premium", out=True)
+            yield self._iter_msg(
+                auto_client, 711, "Подтвердите, что вы человек",
+                buttons=["Готово", last_button],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+        collector._db.mark_captcha_used.assert_not_awaited()
+
+    def test_start_stream_unknown_captcha_fallback_presses_last_button(
+        self,
+    ) -> None:
+        """fallback_press_last=true: неизвестную капчу пробиваем последней кнопкой."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config()
+        config.auto_actions.captcha.fallback_press_last = True
+        collector = self._make_collector(config, None, auto_client, other_client)
+        last_button = "Возможно позже"
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 710, "Бармалей, предлагаю тебе сделку",
+                buttons=["Меню", "Сообщение ...", "Готово", last_button],
+            )
+            yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 708, "Margo, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(
+            1234060895, last_button
+        )
+        # Капча всё равно попала на сайт (владелец может обучить ответ).
+        collector._db.record_pending_captcha.assert_awaited_once()
+
+    def test_start_stream_captcha_memory_disabled_presses_last_button(
+        self,
+    ) -> None:
+        """captcha.enabled=false — полностью старое поведение: последняя кнопка."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config()
+        config.auto_actions.captcha.enabled = False
+        collector = self._make_collector(config, None, auto_client, other_client)
+        last_button = "Возможно позже"
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 710, "Бармалей, предлагаю тебе сделку",
+                buttons=["Меню", "Сообщение ...", "Готово", last_button],
+            )
+            yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 708, "Margo, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(
+            1234060895, last_button
+        )
+        # Память выключена: в captcha_memory ничего не пишем.
+        collector._db.record_pending_captcha.assert_not_awaited()
+
+    def test_start_stream_geo_captcha_fallback_presses_plain_button(
+        self,
+    ) -> None:
+        """Гео-капча Leo («Пришли расположение…») — нажимаем ОБЫЧНУЮ кнопку,
+        а не специальную с запросом геолокации (её текстом не нажать)."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config()
+        config.auto_actions.captcha.fallback_press_last = True
+        collector = self._make_collector(config, None, auto_client, other_client)
         plain_button = "Продолжить смотреть анкеты"
         geo_text = "\U0001F4CD Отправить мои координаты"  # 📍
 
@@ -2686,8 +2821,11 @@ class TestCollectorAutoActions:
             1234060895, plain_button
         )
 
-    def test_start_stream_no_captcha_press_when_already_sent(self) -> None:
-        """Последняя кнопка капчи уже нажата (после неё исходящий текст) — повторно нет."""
+    def test_start_stream_no_captcha_press_when_unknown_and_already_sent(
+        self,
+    ) -> None:
+        """Неизвестная капча без fallback: кнопка не нажимается (даже если
+        какая-то кнопка уже отправлялась — для неё ответа владельца всё равно нет)."""
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
@@ -2697,7 +2835,7 @@ class TestCollectorAutoActions:
         last_button = "Возможно позже"
 
         async def iter_messages(*args, **kwargs):
-            # Новые→старые: уже нажатая последняя кнопка (out) → капча.
+            # Новые→старые: исходящий текст → капча «Подтвердите, что вы человек».
             yield self._iter_msg(auto_client, 712, last_button, out=True)
             yield self._iter_msg(
                 auto_client, 711, "Подтвердите, что вы человек",
@@ -2711,6 +2849,7 @@ class TestCollectorAutoActions:
         )
         assert ok is False
         auto_client.send_message.assert_not_called()
+        collector._db.record_pending_captcha.assert_awaited_once()
 
     def test_no_button_press_on_menu_or_premium(self) -> None:
         """Меню/Premium-промо Leo (без маркера капчи) НЕ трогаем — кнопки не жмём."""

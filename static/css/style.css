@@ -799,6 +799,61 @@ select.account-select {
   margin-bottom: 16px;
 }
 
+/* ── Captcha memory (Stage 7.6) ── */
+
+.captcha-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.captcha-item--known { border-color: var(--border); }
+
+.captcha-text {
+  white-space: pre-line;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.captcha-meta {
+  margin-bottom: 10px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.captcha-meta code {
+  background: var(--surface);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 0.9em;
+}
+
+.captcha-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.captcha-answer-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.captcha-answer-row .form-input { flex: 1; }
+
+.captcha-delete { margin-top: 8px; }
+
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 0.85em;
+}
+
 .form-group { margin-bottom: 16px; }
 
 .form-label {

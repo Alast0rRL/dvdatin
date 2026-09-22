@@ -85,6 +85,41 @@ def send_reaction_sync(action: str) -> str:
         return "ERROR"
 
 
+def send_captcha_answer_sync(answer: str) -> str:
+    """Send the owner's captcha answer to Leo chat from the auto account.
+
+    Called from the Flask sync thread (web captchas page).  ``send_text`` is
+    not rate-limited (same as pressing a reply button), so the stuck Leo
+    stream resumes immediately and the next identical captcha is answered
+    automatically from captcha_memory.  Returns "SENT"/"DISABLED"/"ERROR".
+    """
+    if _engine is None or not _engine.enabled:
+        return "DISABLED"
+
+    text = (answer or "").strip()
+    if not text:
+        return "DISABLED"
+
+    loop = _loop()
+    if loop is None or loop.is_closed():
+        logger.warning("Captcha bridge: loop unavailable")
+        return "DISABLED"
+
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _engine.send_text(text),
+            loop,
+        )
+        result = future.result(timeout=30)
+        return "SENT" if result else "DISABLED"
+    except Exception as e:
+        logger.error(
+            f"Captcha bridge failed: {type(e).__name__}: {e!r} "
+            f"(loop.running={loop.is_running()})"
+        )
+        return "ERROR"
+
+
 def set_account_sync(session: str) -> str:
     """Switch the auto-action account on the running collector.
 

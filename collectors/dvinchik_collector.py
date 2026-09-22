@@ -147,6 +147,16 @@ CAPTCHA_MARKERS: tuple[str, ...] = (
 )
 
 
+def captcha_signature(text: str) -> str:
+    """Нормализует текст капчи в сигнатуру для сопоставления (Stage 7.6).
+
+    Нижний регистр + схлопывание всех пробельных символов: одинаковое
+    сообщение с разными переносами строк/отступами даёт одну сигнатуру.
+    Используется как ключ в captcha_memory (выученные ответы владельца).
+    """
+    return " ".join((text or "").lower().split())
+
+
 def _detect_media_type(msg: object) -> str:
     """Определяет тип media через MessageMedia объект."""
     if not hasattr(msg, "media") or msg.media is None:
@@ -409,7 +419,7 @@ class DvinchikCollector:
                 return True
             if await self._press_view_button_if_needed():
                 return True
-            return await self._press_captcha_button()
+            return await self._handle_captcha()
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
             return False
@@ -561,71 +571,153 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка нажатия кнопки «Смотреть анкеты»: {e}")
             return False
 
-    async def _press_captcha_button(self) -> bool:
-        """Нажимает ответную кнопку на проверке/капче Leo (сбрасывает диалог).
+    async def _handle_captcha(self, msg: object | None = None) -> bool:
+        """Разруливает капчу/проверку Leo (Stage 7.6 «память капч»).
 
-        Leo присылает сделки/подписки/подтверждения/гео-проверки с reply-кнопками
-        («Готово»/«Возможно позже», «Продолжить смотреть анкеты» и т.п.). Чтобы
-        не зависала лента, авто-аккаунт нажимает ПОСЛЕДНЮЮ ОБЫЧНУЮ кнопку —
-        сбрасывает диалог и продолжает ленту. Специальные кнопки (запрос
-        геолокации/телефона и т.п.) текстом не нажимаются — нужен реальный
-        reply-маркап/локация, поэтому их пропускаем и берём обычную (в гео-капче
-        это «Продолжить смотреть анкеты» = отказ от координат).
-        Реагируем ТОЛЬКО на явные капчи/сделки: текст сообщения должен содержать
-        один из CAPTCHA_MARKERS, а reply-кнопок должно быть >= CAPTCHA_MIN_BUTTONS.
-        Иначе легко зациклиться, нажимая кнопки в главном меню/Premium-промо Leo.
-        Идемпотентно: если после карточки уже отправлен текст кнопки — не нажимаем.
+        Капча = текст с одним из CAPTCHA_MARKERS и >= CAPTCHA_MIN_BUTTONS
+        reply-кнопок (иначе легко зациклиться в меню/Premium).
+
+        Поведение:
+        1. Если для этой капчи (сигнатура = нормализованный текст) уже
+           выучен ответ владельца — отправляем его (идемпотентно: только
+           если текст ещё не отправлялся после карточки капчи).
+        2. Если ответа нет — капча записывается в captcha_memory (pending,
+           answer IS NULL) и выводится на сайт (/captchas). Кнопку наугад
+           НЕ нажимаем: ждём ответа владельца. Исключение — включённый
+           fallback_press_last: тогда пробиваем капчу последней ОБЫЧНОЙ
+           кнопкой (старое поведение, чтобы не замирала лента).
+        3. Если капча-память выключена (captcha.enabled=false) — полностью
+           старое поведение: нажимаем последнюю обычную кнопку.
+
+        ``msg`` — конкретное сообщение капчи из live-обработки (уже есть);
+        если None — сканируем последние сообщения чата (start_auto_stream).
+        Возвращает True, если на капчу отправлен текст.
         """
         client = self._auto_engine.client
         if client is None or not self._auto_engine.enabled:
             return False
         try:
-            card_msg = None
-            button_text = ""
-            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
-                text = (getattr(msg, "text", None) or "").lower()
-                if not any(m in text for m in CAPTCHA_MARKERS):
-                    continue
-                texts = self._extract_button_texts(msg)
-                if len(texts) < CAPTCHA_MIN_BUTTONS:
-                    continue
-                plain = self._extract_plain_button_texts(msg)
-                if not plain:
-                    continue
-                card_msg = msg
-                button_text = plain[-1]  # последняя ОБЫЧНАЯ кнопка
-                break
-
-            if card_msg is None or not button_text:
+            if msg is not None:
+                card = msg if self._is_captcha_message(msg) else None
+            else:
+                card = await self._find_captcha_message()
+            if card is None:
                 return False
 
-            sent_at = card_msg.id
-            already_sent = False
-            async for msg in client.iter_messages(
-                self._dvinchik_chat_id, limit=15
-            ):
-                if msg.id <= sent_at:
+            # Сигнатура капчи: одинаковый текст — одинаковая капча, один ответ.
+            text_full = (getattr(card, "text", None) or "").strip()
+            signature = captcha_signature(text_full)
+            buttons = self._extract_button_texts(card)
+            cc = self._config.auto_actions.captcha
+
+            if cc.enabled:
+                # 1) Выученный ответ — отправляем авто-ответ.
+                if cc.auto_answer and self._db is not None:
+                    try:
+                        answer = await self._db.get_captcha_answer(signature)
+                    except Exception as e:
+                        logger.error(f"AutoAction: ошибка чтения ответа капчи: {e}")
+                        answer = None
+                    if answer:
+                        return await self._send_captcha_text(
+                            card, answer, used_signature=signature
+                        )
+
+                # 2) Неизвестная капча — выводим на сайт, наугад не нажимаем.
+                if self._db is not None:
+                    try:
+                        await self._db.record_pending_captcha(
+                            signature,
+                            text_full,
+                            json.dumps(buttons, ensure_ascii=False),
+                        )
+                    except Exception as e:
+                        logger.error(f"AutoAction: ошибка записи pending-капчи: {e}")
+                logger.warning(
+                    f"AutoAction: неизвестная капча (msg={card.id}) — жду ответа "
+                    f"владельца на сайте (/captchas)"
+                )
+                if not cc.fallback_press_last:
+                    return False
+                # fallback_press_last: проваливаемся в старое нажатие кнопки.
+
+            # 3) Обычная кнопка: последняя ОБЫЧНАЯ reply-кнопка (не спец-запрос).
+            # Спец-кнопки (гео/телефон) текстом не нажимаются — нужен реальный
+            # маркап, поэтому в гео-капче берём «Продолжить смотреть анкеты».
+            plain = self._extract_plain_button_texts(card)
+            if not plain:
+                return False
+            return await self._send_captcha_text(card, plain[-1])
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка обработки капчи: {e}")
+            return False
+
+    async def _send_captcha_text(
+        self, card: object, text: str, used_signature: str | None = None
+    ) -> bool:
+        """Отправляет текст (выученный ответ или кнопку) на капчу. Идемпотентно."""
+        try:
+            if await self._captcha_text_sent_after(card.id, text):
+                logger.info(
+                    f"AutoAction: ответ на капчу «{text}» уже отправлен "
+                    f"(msg={card.id})"
+                )
+                return False
+            logger.info(
+                f"AutoAction: капча/проверка (msg={card.id}) — отвечаю «{text}»"
+            )
+            await self._auto_engine.send_text(text)
+            if used_signature and self._db is not None:
+                try:
+                    await self._db.mark_captcha_used(used_signature)
+                except Exception as e:
+                    logger.error(f"AutoAction: mark_captcha_used error: {e}")
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка отправки текста на капчу: {e}")
+            return False
+
+    async def _captcha_text_sent_after(self, msg_id: int, text: str) -> bool:
+        """Отправлялся ли уже ``text`` после сообщения капчи (идемпотентность)."""
+        client = self._auto_engine.client
+        if client is None:
+            return False
+        try:
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                if msg.id <= msg_id:
                     break
                 if (
                     getattr(msg, "out", False)
-                    and (msg.text or "").strip() == button_text
+                    and (msg.text or "").strip() == text
                 ):
-                    already_sent = True
-                    break
-
-            if already_sent:
-                logger.info("AutoAction: правая кнопка капчи уже нажата")
-                return False
-
-            logger.info(
-                f"AutoAction: капча/проверка (msg={card_msg.id}) — "
-                f"нажимаю правую кнопку «{button_text}»"
-            )
-            await self._auto_engine.send_text(button_text)
-            return True
+                    return True
         except Exception as e:
-            logger.error(f"AutoAction: ошибка нажатия кнопки капчи: {e}")
+            logger.error(f"AutoAction: ошибка проверки уже отправленного ответа: {e}")
+        return False
+
+    def _is_captcha_message(self, msg: object) -> bool:
+        """Является ли сообщение капчей/сделкой/проверкой Leo.
+
+        Текст содержит один из CAPTCHA_MARKERS, а reply-кнопок — не меньше
+        CAPTCHA_MIN_BUTTONS. Меню/Premium-промо без маркеров НЕ капча.
+        """
+        text = (getattr(msg, "text", None) or "").lower()
+        if not any(m in text for m in CAPTCHA_MARKERS):
             return False
+        return len(self._extract_button_texts(msg)) >= CAPTCHA_MIN_BUTTONS
+
+    async def _find_captcha_message(self) -> object | None:
+        """Ищет самую свежую капчу среди последних сообщений чата."""
+        client = self._auto_engine.client
+        if client is None:
+            return None
+        try:
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                if self._is_captcha_message(msg):
+                    return msg
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка поиска капчи: {e}")
+        return None
 
     def _extract_button_texts(self, msg: object) -> list[str]:
         """Извлекает тексты reply-кнопок сообщения (пусто, если их нет).
@@ -1409,8 +1501,8 @@ class DvinchikCollector:
                             len(texts) >= CAPTCHA_MIN_BUTTONS
                             and any(m in (text or "").lower() for m in CAPTCHA_MARKERS)
                         ):
-                            # Капча/сделка/проверка — нажимаем последнюю кнопку.
-                            await self._press_captcha_button()
+                            # Капча/сделка/проверка — выученный ответ или вывод на сайт.
+                            await self._handle_captcha(msg)
                         else:
                             # Рекламное/промо-сообщение без кнопки на самом себе:
                             # «🚀 Смотреть анкеты» может прийти на ОТДЕЛЬНОМ сообщении

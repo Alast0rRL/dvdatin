@@ -20,6 +20,7 @@
         </a>
         <div class="nav-links">
             <a href="{{ url_for('dashboard.index') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('dashboard') %}active{% endif %}">Лента</a>
+            <a href="{{ url_for('captchas.index') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('captchas') %}active{% endif %}">Капчи</a>
             <a href="{{ url_for('settings.settings') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('settings') %}active{% endif %}">Настройки</a>
         </div>
         <form method="POST" action="{{ url_for('auth.logout') }}" class="inline-form">

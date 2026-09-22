@@ -205,6 +205,28 @@ CREATE INDEX IF NOT EXISTS idx_human_decisions_profile_id ON human_decisions(pro
 CREATE INDEX IF NOT EXISTS idx_human_decisions_ai_decision_id ON human_decisions(ai_decision_id);
 CREATE INDEX IF NOT EXISTS idx_human_decisions_decision ON human_decisions(decision);
 CREATE INDEX IF NOT EXISTS idx_human_decisions_created_at ON human_decisions(created_at);
+
+-- Память капч Leo (Stage 7.6): тексты капч/сделок, на которые бот когда-то
+-- затруднился ответить, и выученные ответы владельца. signal signature =
+-- нормализованный текст сообщения капчи (нижний регистр + схлопнутые
+-- пробелы). answer NULL — капча НЕизвестная и ждёт ответа владельца на сайте
+-- (/captchas); запись с ответом — бот отвечает автоматически.
+CREATE TABLE IF NOT EXISTS captcha_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signature TEXT NOT NULL UNIQUE,
+    message_text TEXT NOT NULL,
+    buttons_json TEXT NOT NULL DEFAULT '[]',
+    answer TEXT,
+    answered_at TEXT,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_captcha_memory_pending
+    ON captcha_memory(answer) WHERE answer IS NULL;
+CREATE INDEX IF NOT EXISTS idx_captcha_memory_updated
+    ON captcha_memory(updated_at);
 """
 
 
@@ -1709,6 +1731,142 @@ class Database:
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
 
+    # ========================= Память капч (Stage 7.6) =========================
+
+    async def record_pending_captcha(
+        self, signature: str, message_text: str, buttons_json: str = "[]"
+    ) -> bool:
+        """Записывает (или освежает) капчу с неизвестным ответом.
+
+        Неизвестная капча выводится на сайт (/captchas). Повторное появление
+        той же капчи обновляет текст/кнопки, но НЕ затирает уже выученный
+        ответ (UPSERT только для строк с answer IS NULL).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cursor = await self._connection.execute(
+                """INSERT INTO captcha_memory
+                       (signature, message_text, buttons_json, answer, created_at, updated_at)
+                   VALUES (?, ?, ?, NULL, ?, ?)
+                   ON CONFLICT(signature) DO UPDATE SET
+                       message_text = excluded.message_text,
+                       buttons_json = excluded.buttons_json,
+                       updated_at = excluded.updated_at
+                   WHERE answer IS NULL""",
+                (signature, message_text, buttons_json, now, now),
+            )
+            await self._connection.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"record_pending_captcha: {e}")
+            return False
+
+    async def get_captcha_answer(self, signature: str) -> str | None:
+        """Возвращает выученный ответ для капчи с указанной сигнатурой."""
+        try:
+            cursor = await self._connection.execute(
+                "SELECT answer FROM captcha_memory WHERE signature = ?",
+                (signature,),
+            )
+            row = await cursor.fetchone()
+            if row is None or row[0] is None:
+                return None
+            return str(row[0])
+        except Exception as e:
+            logger.error(f"get_captcha_answer: {e}")
+            return None
+
+    async def get_pending_captchas(self, limit: int = 50) -> list[dict]:
+        """Неизвестные капчи, ждущие ответа владельца (свежие сначала)."""
+        try:
+            cursor = await self._connection.execute(
+                """SELECT * FROM captcha_memory
+                   WHERE answer IS NULL
+                   ORDER BY updated_at DESC, id DESC
+                   LIMIT ?""",
+                (int(limit),),
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_dict(cursor, row) for row in rows]
+        except Exception as e:
+            logger.error(f"get_pending_captchas: {e}")
+            return []
+
+    async def get_known_captchas(self, limit: int = 50) -> list[dict]:
+        """Капчи с выученными ответами (свежие сначала)."""
+        try:
+            cursor = await self._connection.execute(
+                """SELECT * FROM captcha_memory
+                   WHERE answer IS NOT NULL
+                   ORDER BY updated_at DESC, id DESC
+                   LIMIT ?""",
+                (int(limit),),
+            )
+            rows = await cursor.fetchall()
+            return [self._row_to_dict(cursor, row) for row in rows]
+        except Exception as e:
+            logger.error(f"get_known_captchas: {e}")
+            return []
+
+    async def get_captcha_by_id(self, row_id: int) -> dict | None:
+        """Одна запись captcha_memory по id (для веб-ответа на капчу)."""
+        try:
+            cursor = await self._connection.execute(
+                "SELECT * FROM captcha_memory WHERE id = ?",
+                (int(row_id),),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_dict(cursor, row)
+        except Exception as e:
+            logger.error(f"get_captcha_by_id: {e}")
+            return None
+
+    async def set_captcha_answer(self, row_id: int, answer: str) -> bool:
+        """Сохраняет ответ владельца на капчу (в этот раз уже известна)."""
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cursor = await self._connection.execute(
+                """UPDATE captcha_memory
+                   SET answer = ?, answered_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (answer.strip(), now, now, int(row_id)),
+            )
+            await self._connection.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"set_captcha_answer: {e}")
+            return False
+
+    async def mark_captcha_used(self, signature: str) -> bool:
+        """Инкрементирует счётчик применений выученного ответа."""
+        try:
+            cursor = await self._connection.execute(
+                """UPDATE captcha_memory
+                   SET used_count = used_count + 1, updated_at = ?
+                   WHERE signature = ?""",
+                (datetime.now(timezone.utc).isoformat(), signature),
+            )
+            await self._connection.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"mark_captcha_used: {e}")
+            return False
+
+    async def delete_captcha(self, row_id: int) -> bool:
+        """Удаляет запись captcha_memory из памяти капч."""
+        try:
+            cursor = await self._connection.execute(
+                "DELETE FROM captcha_memory WHERE id = ?",
+                (int(row_id),),
+            )
+            await self._connection.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"delete_captcha: {e}")
+            return False
+
     async def clear_all_data(self) -> list[str]:
         """Полностью очищает таблицы (после экспорта/бэкапа).
 
@@ -1728,6 +1886,7 @@ class Database:
             "chat_context",
             "profiles",
             "raw_messages",
+            "captcha_memory",
         ]
         for table in tables:
             try:

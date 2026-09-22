@@ -1062,3 +1062,129 @@ class TestSyncDB:
         assert cfg["age_min"] == 18
         assert cfg["age_max"] == 25
         assert "Москва" in cfg["city_allowed"]
+
+
+# ── Captchas (Stage 7.6) ──────────────────────────────────────────
+
+class TestCaptchas:
+    """Страница /captchas: вывод неизвестных капч и запоминание ответов."""
+
+    def _make_client(self, sync_db):
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.record_pending_captcha(
+                "подтвердите, что вы человек", "Подтвердите, что вы человек",
+                '["Готово", "Возможно позже"]',
+            )
+        )
+        loop.run_until_complete(
+            db.record_pending_captcha(
+                "бармалей, предлагаю тебе сделку", "Бармалей, предлагаю тебе сделку",
+                '["Меню", "Готово"]',
+            )
+        )
+        app = create_app(make_config())
+        app.config["SYNC_DB"] = sync
+        app.config["TESTING"] = True
+        return app.test_client()
+
+    def test_captchas_page_lists_pending(self, sync_db) -> None:
+        client = self._make_client(sync_db)
+        _login(client)
+        resp = client.get("/captchas")
+        assert resp.status_code == 200
+        assert "Подтвердите, что вы человек".encode() in resp.data
+        assert "Бармалей, предлагаю тебе сделку".encode() in resp.data
+        # Кнопки-подсказки отображаются
+        assert "Готово".encode() in resp.data
+
+    def test_answer_captcha_learns_and_forwards(self, sync_db) -> None:
+        client = self._make_client(sync_db)
+        _login(client)
+        sync, _, _ = sync_db
+        token = _get_csrf(client)
+        pending_before = sync.get_pending_captchas()
+        captcha_id = pending_before[0]["id"]
+        captcha_sig = pending_before[0]["signature"]
+        other_sig = pending_before[1]["signature"]
+
+        # Ответ сохраняется и сразу отправляется Leo (мост мокаем).
+        with patch("web.actions.send_captcha_answer_sync", return_value="SENT"):
+            resp = client.post(
+                f"/captchas/{captcha_id}/answer",
+                data={"answer": "Пока без Premium", "csrf_token": token},
+            )
+        assert resp.status_code == 302
+        pending = sync.get_pending_captchas()
+        assert [c["signature"] for c in pending] == [other_sig]
+        known = sync.get_known_captchas()
+        assert len(known) == 1
+        assert known[0]["answer"] == "Пока без Premium"
+        assert known[0]["signature"] == captcha_sig
+
+    def test_answer_captcha_requires_csrf(self, sync_db) -> None:
+        client = self._make_client(sync_db)
+        _login(client)
+        sync, _, _ = sync_db
+        captcha_id = sync.get_pending_captchas()[0]["id"]
+        resp = client.post(
+            f"/captchas/{captcha_id}/answer",
+            data={"answer": "Пока без Premium", "csrf_token": "bad"},
+        )
+        assert resp.status_code == 403
+        assert sync.get_pending_captchas()  # ничего не выучено
+
+    def test_delete_captcha(self, sync_db) -> None:
+        client = self._make_client(sync_db)
+        _login(client)
+        sync, _, _ = sync_db
+        token = _get_csrf(client)
+        captcha_id = sync.get_pending_captchas()[0]["id"]
+        resp = client.post(
+            f"/captchas/{captcha_id}/delete", data={"csrf_token": token}
+        )
+        assert resp.status_code == 302
+        assert len(sync.get_pending_captchas()) == 1
+
+    def test_captchas_requires_login(self, sync_db) -> None:
+        client = self._make_client(sync_db)
+        resp = client.get("/captchas")
+        assert resp.status_code == 302
+
+
+def _get_csrf(client) -> str:
+    with client.session_transaction() as sess:
+        return sess.get("_csrf_token", "")
+
+
+class TestCaptchaMemorySync:
+    """SyncDB-методы «памяти капч»."""
+
+    def test_pending_and_known_roundtrip(self, sync_db) -> None:
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.record_pending_captcha("sig-1", "Капча один", "[]")
+        )
+        pending = sync.get_pending_captchas()
+        assert len(pending) == 1
+        assert pending[0]["answer"] is None
+
+        sync.set_captcha_answer(pending[0]["id"], "Ответ")
+        assert sync.get_pending_captchas() == []
+        known = sync.get_known_captchas()
+        assert len(known) == 1
+        assert known[0]["answer"] == "Ответ"
+
+    def test_get_captcha_and_delete(self, sync_db) -> None:
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.record_pending_captcha("sig-2", "Капча два", "[]")
+        )
+        captcha_id = sync.get_pending_captchas()[0]["id"]
+        assert sync.get_captcha(captcha_id)["signature"] == "sig-2"
+        assert sync.get_captcha(999999) is None
+        sync.delete_captcha(captcha_id)
+        assert sync.get_pending_captchas() == []

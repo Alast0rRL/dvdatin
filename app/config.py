@@ -163,6 +163,27 @@ class LikeMessageConfig(BaseModel):
         return list(v)
 
 
+class CaptchaConfig(BaseModel):
+    """Настройки «памяти капч» (Stage 7.6).
+
+    Капчу Leo, ответ на которую бот уже выучил (таблица ``captcha_memory``),
+    он пробивает автоматически. Неизвестную капчу — выводит на сайт
+    (``/captchas``): владелец пишет ответ, бот запоминает его и в следующий
+    раз отвечает сам.
+
+    ``fallback_press_last`` — старое поведение для НЕизвестной капчи: всё
+    равно нажимать последнюю обычную кнопку (сделка закрывается как раньше),
+    а не ждать ответа владельца.
+    """
+
+    #: Включить капча-память (поиск ответа в БД + вывод неизвестных на сайт).
+    enabled: bool = True
+    #: Автоматически отвечать на ИЗВЕСТНЫЕ капчи (из памяти).
+    auto_answer: bool = True
+    #: На НЕизвестную капчу всё равно нажимать последнюю обычную кнопку.
+    fallback_press_last: bool = False
+
+
 class AutoActionsConfig(BaseModel):
     """Настройки авто-действий (Stage 7, SEMI_AUTO).
 
@@ -186,6 +207,8 @@ class AutoActionsConfig(BaseModel):
     like: LikeActionConfig = LikeActionConfig()
     #: Отдельная настройка «LIKE + сообщение» (❤️ + «Берем)»).
     like_message: LikeMessageConfig = LikeMessageConfig()
+    #: Память капч: авто-ответ на известные, вывод неизвестных на сайт.
+    captcha: CaptchaConfig = CaptchaConfig()
 
     @field_validator("interval_sec")
     @classmethod

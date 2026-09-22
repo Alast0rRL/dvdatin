@@ -308,3 +308,51 @@ class SyncDB:
         with open(config_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         return raw.get("project", {}).get("mode", "OBSERVE")
+
+    # ── Captcha memory (Stage 7.6) ────────────────────────────────
+
+    def get_pending_captchas(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Неизвестные капчи, ждущие ответа владельца (свежие сначала)."""
+        return self._query(
+            """
+            SELECT * FROM captcha_memory
+            WHERE answer IS NULL
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+
+    def get_known_captchas(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Капчи с выученными ответами (свежие сначала)."""
+        return self._query(
+            """
+            SELECT * FROM captcha_memory
+            WHERE answer IS NOT NULL
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+
+    def get_captcha(self, captcha_id: int) -> dict[str, Any] | None:
+        return self._query_one(
+            "SELECT * FROM captcha_memory WHERE id = ?", (int(captcha_id),)
+        )
+
+    def set_captcha_answer(self, captcha_id: int, answer: str) -> int | None:
+        """Сохраняет выученный ответ владельца на капчу."""
+        now = datetime.now(timezone.utc).isoformat()
+        return self._execute(
+            """
+            UPDATE captcha_memory
+            SET answer = ?, answered_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (answer.strip(), now, now, int(captcha_id)),
+        )
+
+    def delete_captcha(self, captcha_id: int) -> int | None:
+        return self._execute(
+            "DELETE FROM captcha_memory WHERE id = ?", (int(captcha_id),)
+        )

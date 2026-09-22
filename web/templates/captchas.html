@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}DvAI — Капчи{% endblock %}
+
+{% block content %}
+<div class="settings-page">
+    <h1 class="page-title">Капчи и проверки</h1>
+
+    <div class="dashboard-header">
+        <div class="stats-card">
+            <div class="stat stat--pending">
+                <span class="stat-value">{{ pending|length }}</span>
+                <span class="stat-label">Ждут ответа</span>
+            </div>
+            <div class="stat">
+                <span class="stat-value">{{ known|length }}</span>
+                <span class="stat-label">Выучено</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="settings-card">
+        <h2>Неизвестные капчи — ждут твоего ответа</h2>
+        <p class="settings-hint">Бот не знает, что ответить Leo (капча/сделка/подписка). Напиши ответ — он отправится в чат сразу, а в следующий раз бот ответит сам.</p>
+
+        {% if not pending %}
+        <div class="empty-state">Сейчас нет капч, ждущих ответа 🎉</div>
+        {% endif %}
+
+        {% for c in pending %}
+        <div class="captcha-item">
+            <div class="captcha-text">{{ c.message_text }}</div>
+            <div class="card-meta captcha-meta">
+                <span title="{{ c.signature }}">Сигнатура: <code>{{ c.signature[:70] }}{% if c.signature|length > 70 %}…{% endif %}</code></span>
+                <span>Появилась: {{ c.updated_at[:16].replace('T', ' ') }}</span>
+                <span>{{ c.used_count }} повтор(а/ов)</span>
+            </div>
+            {% if c.buttons %}
+            <div class="captcha-buttons">
+                {% for b in c.buttons %}
+                <button type="button" class="btn btn-ghost btn-sm captcha-suggest"
+                        data-suggest="{{ b }}">{{ b }}</button>
+                {% endfor %}
+            </div>
+            {% endif %}
+            <form method="POST" action="{{ url_for('captchas.answer', captcha_id=c.id) }}" class="captcha-answer-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <div class="captcha-answer-row">
+                    <input type="text" name="answer" class="form-input" required
+                           placeholder="Твой ответ Leo (например: Пока без Premium)"
+                           autocomplete="off">
+                    <button type="submit" class="btn btn-primary">Ответить и запомнить</button>
+                </div>
+            </form>
+            <form method="POST" action="{{ url_for('captchas.delete', captcha_id=c.id) }}" class="inline-form captcha-delete">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-ghost btn-sm">Не отвечать — удалить</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="settings-card">
+        <h2>Выученные ответы</h2>
+        <p class="settings-hint">На эти капчи бот отвечает автоматически. Удали запись, чтобы «забыть» ответ.</p>
+
+        {% if not known %}
+        <div class="empty-state">Пока нет выученных ответов</div>
+        {% endif %}
+
+        {% for c in known %}
+        <div class="captcha-item captcha-item--known">
+            <div class="captcha-text">{{ c.answer }}</div>
+            <div class="card-meta captcha-meta">
+                <span title="{{ c.message_text }}">→ капча: <code>{{ c.signature[:70] }}{% if c.signature|length > 70 %}…{% endif %}</code></span>
+                <span>Применена: {{ c.used_count }} раз(а)</span>
+                <span>Выучена: {{ c.answered_at[:16].replace('T', ' ') }}</span>
+            </div>
+            <form method="POST" action="{{ url_for('captchas.delete', captcha_id=c.id) }}" class="inline-form captcha-delete">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-ghost btn-sm">Забыть</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    document.querySelectorAll('.captcha-suggest').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var form = btn.closest('.captcha-item').querySelector('.captcha-answer-form input[name="answer"]');
+            if (form) { form.value = btn.getAttribute('data-suggest'); form.focus(); }
+        });
+    });
+})();
+</script>
+{% endblock %}
