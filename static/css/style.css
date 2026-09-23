@@ -1018,3 +1018,38 @@ select.form-input {
   .detail-section { padding: 16px; }
   .settings-card { padding: 18px 16px; }
 }
+
+/* ── Чат (Stage 8.4): пузыри Leo как Telegram ── */
+.chat-shell { display: flex; flex-direction: column; gap: 8px; max-width: 900px; margin: 0 auto; padding: 4px 0 12px; }
+.chat-feed { display: flex; flex-direction: column; gap: 8px; }
+.chat-feed__new { text-align: center; padding: 12px 0 4px; }
+.chat-feed__new .btn { font-size: 0.9rem; }
+.chat-bubble { max-width: 78%; border-radius: 16px; padding: 9px 12px; font-size: 0.95rem; line-height: 1.45; position: relative; box-shadow: 0 1px 1px rgba(0,0,0,0.06); word-wrap: break-word; overflow-wrap: break-word; }
+.bubble-meta { display: flex; gap: 10px; align-items: baseline; font-size: 0.75rem; color: #8a94a6; margin-bottom: 3px; }
+.bubble-author { font-weight: 600; color: #3b8aff; }
+.bubble-ts { color: #b0b8c6; }
+.bubble-media { font-size: 0.8rem; }
+.chat-bubble--in { align-self: flex-start; background: #fff; border: 1px solid #e1e6ef; border-bottom-left-radius: 4px; }
+.chat-bubble--out { align-self: flex-end; background: #eef5ff; border: 1px solid #d3e4ff; border-bottom-right-radius: 4px; }
+.chat-bubble--action .bubble-text { font-weight: 500; color: #5b6b84; }
+.bubble-photos { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+.bubble-photo { max-width: 150px; max-height: 200px; border-radius: 12px; object-fit: cover; cursor: zoom-in; }
+.bubble-actions { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+.bubble-actions .btn { padding: 3px 11px; font-size: 0.85rem; border-radius: 8px; }
+.btn--like { background: #e6f4ea; color: #137a3a; }
+.btn--like:hover { background: #cfe9da; }
+.btn--dislike { background: #fdecec; color: #b33434; }
+.btn--dislike:hover { background: #f8d4d4; }
+.bubble-captcha { margin-top: 7px; padding: 8px 10px; background: #f7f9fc; border: 1px dashed #b9c6d9; border-radius: 10px; }
+.bubble-captcha .captcha-q { margin-top: 0; font-size: 0.9rem; }
+.bubble-captcha form { display: flex; gap: 6px; margin: 7px 0 0; }
+.bubble-captcha input[type=text] { flex: 1; min-width: 0; padding: 4px 9px; border: 1px solid #c9d2e0; border-radius: 7px; font-size: 0.9rem; }
+.bubble-captcha .btn { padding: 4px 12px; font-size: 0.85rem; }
+.bubble-captcha .captcha-buttons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.bubble-captcha .captcha-buttons .btn { background: #fff; border: 1px solid #c9d2e0; color: #43506b; }
+.chat-bubble--captcha { border: 2px solid #ffd28a; }
+.bubble--known { border-left: 3px solid #137a3a; }
+.bubble--pending { border-left: 3px solid #ff9f0a; }
+.chat-empty { text-align: center; color: #8a94a6; padding: 60px 20px; }
+.chat-empty .emoji { font-size: 2rem; display: block; margin-bottom: 8px; }
+.chat-pagination { text-align: center; padding: 10px 0 30px; }

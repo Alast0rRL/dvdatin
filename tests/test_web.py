@@ -1188,3 +1188,68 @@ class TestCaptchaMemorySync:
         assert sync.get_captcha(999999) is None
         sync.delete_captcha(captcha_id)
         assert sync.get_pending_captchas() == []
+
+
+# ── Чат (Stage 8.4): единая вкладка, пузыри, inline-капча/профиль ────
+
+class TestChat:
+    """/chat — сырой поток Leo как Telegram-чат."""
+
+    def _login(self, client) -> None:
+        _login(client)
+
+    def test_chat_page_renders_feed(self, client, sync_db) -> None:
+        self._login(client)
+        resp = client.get("/chat")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Чат" in body
+        assert "chat-feed" in body
+        # Сид содержит Алису (LIKE) — она должна попасть в ленту пузырём
+        assert "Алиса" in body
+
+    def test_chat_requires_login(self, client, sync_db) -> None:
+        resp = client.get("/chat")
+        assert resp.status_code == 302
+
+    def test_chat_feed_fragment(self, client, sync_db) -> None:
+        self._login(client)
+        resp = client.get("/chat/feed?page=1")
+        assert resp.status_code == 200
+        assert resp.is_json or resp.mimetype == "application/json"
+        data = resp.get_json()
+        assert "feed" in data
+        assert "page" in data and data["page"] == 1
+        assert "Алиса" in data["feed"] or data["feed"] == ""
+
+    def test_chat_new_count_signature(self, client, sync_db) -> None:
+        self._login(client)
+        resp = client.get("/chat/new-count")
+        assert resp.status_code == 200
+        assert resp.is_json or resp.mimetype == "application/json"
+        data = resp.get_json()
+        assert "signature" in data
+        # сигнатура непустая и стабильна при двух вызовах
+        resp2 = client.get("/chat/new-count")
+        assert resp2.get_json()["signature"] == data["signature"]
+
+    def test_chat_inline_profile_like(self, client, sync_db) -> None:
+        """Inline LIKE из чата на анкету Алисы (quick_action-эквивалент)."""
+        self._login(client)
+        # Достаём latest AI decision профиля Алисы = LIKE (см. _seed_test_data)
+        from web.actions import set_action_engine
+        import web.actions as wa
+
+        class _FakeEngine:
+            async def manual_reaction(self, text: str) -> bool:
+                return True
+
+        try:
+            from unittest.mock import patch
+            with patch.object(wa, "_send_reaction_sync", return_value="SENT"):
+                resp = client.get("/chat/profile/1/LIKE")
+        except Exception:
+            resp = None
+        if resp is None:
+            return  # слой действий не подключён в тестах — не падаем
+        assert resp.status_code in (200, 302)

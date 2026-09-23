@@ -1,0 +1,69 @@
+{% for item in items %}
+<div class="chat-bubble chat-bubble--{{ item.direction }}"
+     {% if item.direction == "in" and item.captcha %}id="captcha-{{ item.captcha.id }}"{% endif %}
+     data-kind="{{ item.kind }}">
+    <div class="bubble-meta">
+        <span class="bubble-author">{{ item.sender }}</span>
+        <span class="bubble-ts">{{ item.ts[:16].replace('T', ' ') if item.ts else '' }}</span>
+        {% if item.media_type %}<span class="bubble-media">
+            {% if item.media_type == 'photo' %}📷{% elif item.media_type == 'video' %}🎬{% elif item.media_type == 'voice' %}🎙{% else %}📄{% endif %}
+        </span>{% endif %}
+    </div>
+
+    {% if item.text %}
+    <div class="bubble-text">{{ item.text }}</div>
+    {% endif %}
+
+    {# ── Профиль inline (фото + решения + быстрые кнопки) ── #}
+    {% if item.profile %}
+    {% set p = item.profile %}
+    <div class="bubble-profile">
+        {% if p.photos %}
+        <div class="bubble-photos">
+            {% for ph in p.photos %}
+            <img src="{{ url_for('photos.serve_photo', profile_id=p.id, message_id=ph.telegram_message_id) }}"
+                 alt="{{ p.name }}" loading="lazy" class="bubble-photo">
+            {% endfor %}
+        </div>
+        {% endif %}
+        <div class="bubble-profile-info">
+            <span class="bubble-profile-name">{{ p.name }}{% if p.age %}, {{ p.age }}{% endif %}</span>
+            {% if p.normalized_city or p.raw_city %}<span class="bubble-profile-city">📍 {{ p.normalized_city or p.raw_city }}</span>{% endif %}
+            {% if p.ai_decision %}<span class="badge badge--{{ 'like' if p.ai_decision == 'LIKE' else ('review' if p.ai_decision == 'REVIEW' else 'dislike') }}">AI: {{ p.ai_decision }}</span>{% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    {# ── Капча inline (pending → форма ответа, known → выученный ответ) ── #}
+    {% if item.captcha %}
+    {% set c = item.captcha %}
+    <div class="bubble-captcha">
+        <div class="bubble-captcha-question">🔑 <code>Капча:</code> {{ c.message_text }}</div>
+        {% if c.answer %}
+        <div class="bubble-captcha-known">Выученный ответ: <code>{{ c.answer }}</code></div>
+        {% else %}
+        <form method="POST" action="{{ url_for('chat.captcha_answer', captcha_id=c.id) }}" class="chat-captcha-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="chat-captcha-row">
+                <input type="text" name="answer" class="form-input" required placeholder="Твой ответ Leo…" autocomplete="off">
+                <button type="submit" class="btn btn-primary btn-sm">Ответить</button>
+            </div>
+        </form>
+        {% if c.buttons %}
+        <div class="bubble-captcha-buttons">
+            {% for b in c.buttons %}
+            <button type="button" class="btn btn-ghost btn-sm captcha-suggest" data-suggest="{{ b }}">{{ b }}</button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% else %}
+<div class="empty-state">
+    <div class="empty-icon">💬</div>
+    <p>Чат пуст</p>
+    <small>Сообщения Leo появятся здесь, как только бот начнёт собирать ленту.</small>
+</div>
+{% endfor %}

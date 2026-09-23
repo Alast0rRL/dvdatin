@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Чат · DvAI{% endblock %}
+{% block content %}
+<h1 class="page-title">Чат</h1>
+
+<div class="chat-shell" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
+    <div id="chat-feed" class="chat-feed" data-sig="{{ signals.signature if signals else '' }}">
+        {% include "partials/chat_feed.html" %}
+    </div>
+    <div id="chat-pagination" class="pagination chat-pagination">
+        {% if total_pages > 1 %}
+        <button class="btn btn-ghost chat-load-more" data-page="{{ page + 1 if page < total_pages else page }}"
+                {% if page >= total_pages %}disabled{% endif %}>
+            Загрузить ещё
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+(function () {
+    const POLL_MS = {{ config.get('CHAT_POLL_MS', 3000) }};
+    const feed = document.getElementById('chat-feed');
+    const pagWrap = document.getElementById('chat-pagination');
+
+    async function poll() {
+        try {
+            const r = await fetch('/chat/new-count', {headers: {'X-Requested-With': 'fetch'}});
+            const sig = await r.json();
+            const oldSig = feed.dataset.sig;
+            if (oldSig && sig.signature && sig.signature !== oldSig) {
+                updateFeed(1);
+            }
+        } catch (e) { /* не сеть, не ругаемся — следующая итерация */ }
+    }
+
+    async function updateFeed(page) {
+        const r = await fetch('/chat/feed?page=' + page);
+        const data = await r.json();
+        feed.innerHTML = data.feed;
+        feed.dataset.sig = feed.dataset.sig;
+        // перерисовать сигнатуру брать из ответа не будем — только лента
+    }
+
+    async function loadMore() {
+        const next = parseInt(pagWrap.dataset.next || pagWrap.querySelector('button').dataset.page, 10);
+        if (!next || isNaN(next)) return;
+        const r = await fetch('/chat/feed?page=' + next);
+        const data = await r.json();
+        feed.insertAdjacentHTML('beforeend', data.feed);
+        const btn = pagWrap.querySelector('button');
+        if (btn) {
+            const np = next + 1 <= data.total_pages ? next + 1 : data.total_pages;
+            btn.dataset.page = np;
+            btn.disabled = np >= data.total_pages;
+        }
+    }
+
+    window.chatFeedHelpers = {updateFeed, loadMore};
+    setInterval(poll, POLL_MS郁amp;)
+})();
+</script>
+{% endblock %}

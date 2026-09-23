@@ -223,7 +223,7 @@ export DVAI_WEB_PORT="5000"                      # порт (по умолчан
 export DVAI_WEB_COOKIE_SECURE="0"                # 1 — только за HTTPS-реверс-прокси
 ```
 
-URL-ы: `/login` → `/dashboard` (лента анкет) → `/profiles/<id>` (детали) → `/settings` (фильтры/режим). Подробнее в `web/` и `AGENTS.md`.
+URL-ы: `/login` → **`/chat`** (единая вкладка «Чат» — сырой поток Leo как TG-чат: входящие пузыри слева, наши ❤️/👎/«Берем)» — справа; анкеты и капчи встроены inline в ленту, LIKE/DISLIKE и ответы на капчу шлются прямо из чата) → `/dashboard` (лента анкет) → `/profiles/<id>` (детали) → `/settings` (фильтры/режим). Чат авто-обновляется без перезагрузки: polling `/chat/new-count` (сигнатура raw∪sent∪auto∪captcha) → подмена фрагмента `/chat/feed`. Подробнее в `web/` и `AGENTS.md`.
 
 **Дизайн**: светлая чистая тема (статика без внешних зависимостей — `static/css/style.css` + `static/js/app.js`). Секции по решениям окрашены в LIKE/REVIEW/DISLIKE, статусы и решения — pill-бейджи, быстрые действия LIKE/DISLIKE — SVG-иконки, уведомления о результате — toast-snackbar (без перезагрузки страницы). Навигация/лого/favicon — inline SVG (data-URI), responsive-адаптация под мобильные (640px).
 
