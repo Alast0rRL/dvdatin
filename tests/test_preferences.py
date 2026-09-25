@@ -15,6 +15,7 @@ import pytest
 
 from app.config import AppConfig
 from app.preferences import (
+    LowInfoPrefs,
     PreferenceRule,
     PreferencesConfig,
     PreferencesEngine,
@@ -223,3 +224,86 @@ class TestDecisionIntegration:
             assert any("USER_LIKE" in r for r in res.reasons)
         finally:
             loop.run_until_complete(db.close())
+
+
+class TestLowInfoSkipRule:
+    """Правило «мало инфы в анкете»: review (по умолчанию) vs skip."""
+
+    def _svc(self, action: str):
+        from app.preferences import PreferencesEngine as _PE
+        prefs = PreferencesConfig(
+            low_info=LowInfoPrefs(action=action),
+        )
+        return make_service(_PE(prefs))
+
+    def test_low_info_default_is_review(self) -> None:
+        """По умолчанию пустая анкета → REVIEW, не DISLIKE."""
+        e = PreferencesEngine(PreferencesConfig())
+        assert e.low_info.action == "review"
+        assert e.low_info.skip is False
+
+    def test_low_info_skip_action_enabled(self) -> None:
+        e = PreferencesEngine(
+            PreferencesConfig(low_info=LowInfoPrefs(action="skip"))
+        )
+        assert e.low_info.action == "skip"
+        assert e.low_info.skip is True
+
+    def test_invalid_action_rejected(self) -> None:
+        import pytest as _pytest
+        with _pytest.raises(Exception):
+            LowInfoPrefs(action="бред")
+
+    def test_low_info_profile_is_review_by_default(self) -> None:
+        from models.filter import FilterDecision
+        svc = self._svc("review")
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS,
+            filter_reasons=[],
+            score=0.5,
+            informative=False,
+            meaningful_words=2,
+            skip_labels=[],
+            like_labels=[],
+        )
+        assert decision == AIDecision.REVIEW
+        assert "NO_FEATURES_FOUND" in reasons
+
+    def test_low_info_profile_is_dislike_when_skip(self) -> None:
+        """Правило из конфига: мало инфы → DISLIKE (скипаем)."""
+        from models.filter import FilterDecision
+        svc = self._svc("skip")
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS,
+            filter_reasons=[],
+            score=0.5,
+            informative=False,
+            meaningful_words=2,
+            skip_labels=[],
+            like_labels=[],
+        )
+        assert decision == AIDecision.DISLIKE
+        assert any(r.startswith("LOW_INFO_SKIP") for r in reasons)
+        assert "LOW_INFO_SKIP:words=2" in reasons
+
+    def test_informative_profile_still_likes_with_skip(self) -> None:
+        """Правило low_info НЕ трогает информативные анкеты → LIKE."""
+        from models.filter import FilterDecision
+        svc = self._svc("skip")
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS,
+            filter_reasons=[],
+            score=0.6,
+            informative=True,
+            meaningful_words=25,
+            skip_labels=[],
+            like_labels=[],
+        )
+        assert decision == AIDecision.LIKE
+        assert "INFORMATIVE_CLEAN" in reasons
+
+    def test_live_config_has_low_info(self) -> None:
+        """Живой config/preferences.yaml содержит секцию low_info."""
+        from app.preferences import load_preferences
+        e = load_preferences()
+        assert e.low_info.action in ("review", "skip")

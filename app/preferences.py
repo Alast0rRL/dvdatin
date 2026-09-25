@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 #: Живой файл предпочтений (не коммитится — .gitignore).
 PREFERENCES_PATH = Path("config/preferences.yaml")
@@ -36,12 +36,46 @@ class ScoringPrefs(BaseModel):
     clip_cannot_override_skip: bool = True
 
 
+class LowInfoPrefs(BaseModel):
+    """Что делать с «пустой» анкетой (мало значимых слов, нет признаков).
+
+    По умолчанию ``action: review`` — историческое поведение Stage 8: мало
+    информации → REVIEW (ждём ручного решения владельца).
+
+    Если владелец хочет «скипать» пустые анкеты — ставит
+    ``action: skip``: неинформативная анкета → DISLIKE (авто-👎), лента Leo
+    не замирает. Это ЕДИНСТВЕННОЕ место, где «мало информации» может стать
+    отрицательным решением (иначе работает инвариант
+    NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE).
+    """
+
+    #: ``review`` — мало инфы → REVIEW (по умолчанию), ``skip`` → DISLIKE.
+    action: str = "review"
+    #: Порог «мало инфы» в значимых словах (None → MIN_MEANINGFUL_WORDS).
+    min_words: int | None = None
+
+    @field_validator("action")
+    @classmethod
+    def _known_action(cls, v: str) -> str:
+        v = (v or "review").strip().lower()
+        if v not in ("review", "skip"):
+            msg = f"low_info.action должен быть 'review' или 'skip', получено {v!r}"
+            raise ValueError(msg)
+        return v
+
+    @property
+    def skip(self) -> bool:
+        """True, если неинформативные анкеты надо скипать (DISLIKE)."""
+        return self.action == "skip"
+
+
 class PreferencesConfig(BaseModel):
     """Корневая модель предпочтений."""
 
     skip: list[PreferenceRule] = []
     like: list[PreferenceRule] = []
     scoring: ScoringPrefs = ScoringPrefs()
+    low_info: LowInfoPrefs = LowInfoPrefs()
 
 
 class PreferencesEngine:
@@ -58,6 +92,11 @@ class PreferencesEngine:
     @property
     def scoring(self) -> ScoringPrefs:
         return self._prefs.scoring
+
+    @property
+    def low_info(self) -> LowInfoPrefs:
+        """Правило «мало информации в анкете» (review по умолчанию)."""
+        return self._prefs.low_info
 
     def evaluate(self, text: str) -> tuple[list[str], list[str]]:
         """Возвращает (skip_labels, like_labels), найденные в тексте.

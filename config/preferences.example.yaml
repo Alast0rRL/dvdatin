@@ -112,3 +112,11 @@ like:
 scoring:
   skip_is_hard: true            # SKIP → DISLIKE, CLIP не переворачивает
   clip_cannot_override_skip: true
+
+# Что делать с «пустой» анкетой (мало значимых слов + нет признаков)
+low_info:
+  # review — мало инфы → REVIEW (ждём ручного решения владельца; по умолчанию)
+  # skip   — мало инфы → DISLIKE (авто-👎, лента не замирает)
+  action: review
+  # Порог «мало инфы» в значимых словах (None → 10, как в score_engine).
+  # min_words: 10

@@ -132,6 +132,7 @@ class DecisionService:
             filter_reasons=filter_reason_codes,
             score=scoring.score,
             informative=scoring.informative,
+            meaningful_words=scoring.meaningful_words,
             skip_labels=skip_labels,
             like_labels=like_labels,
             hard_negatives=scoring.hard_negatives,
@@ -164,8 +165,9 @@ class DecisionService:
         filter_reasons: list[str],
         score: float,
         informative: bool,
-        skip_labels: list[str],
-        like_labels: list[str],
+        meaningful_words: int = 0,
+        skip_labels: list[str] | None = None,
+        like_labels: list[str] | None = None,
         hard_negatives: list | None = None,
         positive_factors: list | None = None,
     ) -> tuple[AIDecision, float, list[str]]:
@@ -177,9 +179,13 @@ class DecisionService:
         3. HARD FILTER REJECT (age/city) → DISLIKE.
         4. FILTER REVIEW → REVIEW.
         5. PASS: информативная И чистая анкета → LIKE.
-        6. Всё остальное (короткая/неинформативная, но чистая) → REVIEW.
+        6. Всё остальное (короткая/неинформативная, но чистая):
+           по умолчанию → REVIEW; если в preferences.yaml задано
+           ``low_info.action: skip`` → DISLIKE (скипаем пустые анкеты).
 
         КЛЮЧЕВОЙ ИНВАРИАНТ: без hard-negative/скипа/reject НИКОГДА не DISLIKE.
+        Единственное исключение — явно разрешённое владельцем правило
+        ``low_info.action: skip`` (мало информации → скип).
         Информативность — только объём информации, а не оценка личности.
         """
         hard_negatives = list(hard_negatives or [])
@@ -235,8 +241,17 @@ class DecisionService:
             reasons.append("INFORMATIVE_CLEAN")
             return AIDecision.LIKE, score, reasons
 
-        # 6. Короткая/неинформативная, но чистая анкета → REVIEW
-        # (НИКОГДА не DISLIKE без hard-negative).
+        # 6. Короткая/неинформативная, но чистая анкета.
+        # По умолчанию → REVIEW (ждём ручного решения владельца).
+        # Если владелец в preferences.yaml задал low_info.action: skip —
+        # скипаем (DISLIKE → авто-👎), чтобы лента Leo не замирала.
+        if self._prefs.low_info.skip:
+            reasons.append(
+                f"LOW_INFO_SKIP:words={meaningful_words}"
+            )
+            for pf in positive_factors:
+                reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
+            return AIDecision.DISLIKE, score, reasons
         reasons.append("NO_FEATURES_FOUND")
         return AIDecision.REVIEW, score, reasons
 
