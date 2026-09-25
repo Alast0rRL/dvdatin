@@ -3,15 +3,17 @@
 {% block content %}
 <h1 class="page-title">Чат</h1>
 
-<div class="chat-shell" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
-    <div id="chat-feed" class="chat-feed" data-sig="{{ signals.signature if signals else '' }}">
+<div class="chat-shell" id="chat-shell" data-page="{{ page }}" data-total-pages="{{ total_pages }}"
+     data-sig="{{ signature }}">
+    {% include "partials/chat_captchas_pending.html" %}
+    <div id="chat-feed" class="chat-feed" data-sig="{{ signature }}">
         {% include "partials/chat_feed.html" %}
     </div>
-    <div id="chat-pagination" class="pagination chat-pagination">
+    <div id="chat-pagination" class="pagination chat-pagination" data-next="{{ page + 1 }}">
         {% if total_pages > 1 %}
-        <button class="btn btn-ghost chat-load-more" data-page="{{ page + 1 if page < total_pages else page }}"
+        <button class="btn btn-ghost chat-load-more" data-page="{{ page + 1 }}"
                 {% if page >= total_pages %}disabled{% endif %}>
-            Загрузить ещё
+            Показать более ранние
         </button>
         {% endif %}
     </div>
@@ -20,44 +22,105 @@
 <script>
 (function () {
     const POLL_MS = {{ config.get('CHAT_POLL_MS', 3000) }};
+    const shell = document.getElementById('chat-shell');
     const feed = document.getElementById('chat-feed');
     const pagWrap = document.getElementById('chat-pagination');
+
+    function atBottom() {
+        const near = window.innerHeight + window.scrollY >= document.body.offsetHeight - 250;
+        return near;
+    }
+
+    function scrollToBottom() {
+        window.scrollTo({top: document.body.offsetHeight, behavior: 'smooth'});
+    }
+
+    function bindCaptchaButtons(root) {
+        (root || document).querySelectorAll('.captcha-suggest').forEach((btn) => {
+            if (btn.dataset.bound) return;
+            btn.dataset.bound = '1';
+            btn.addEventListener('click', () => {
+                const form = btn.closest('.chat-pending-item, .chat-bubble');
+                const input = form && form.querySelector('input[name="answer"]');
+                if (input) {
+                    input.value = btn.dataset.suggest || btn.textContent.trim();
+                    input.focus();
+                }
+            });
+        });
+    }
+
+    async function updateFeed(page, keepScroll) {
+        const stay = keepScroll === true;
+        const beforeH = document.body.offsetHeight;
+        const r = await fetch('/chat/feed?page=' + page);
+        const data = await r.json();
+
+        const oldPending = document.getElementById('chat-pending');
+        if (oldPending) oldPending.remove();
+        if (data.pending) {
+            feed.insertAdjacentHTML('beforebegin', data.pending);
+        }
+        feed.innerHTML = data.feed;
+        shell.dataset.page = page;
+        shell.dataset.totalPages = data.total_pages;
+        pagWrap.dataset.next = page + 1;
+        await refreshSignature();
+        bindCaptchaButtons(document);
+
+        const btn = pagWrap.querySelector('button');
+        if (btn) {
+            btn.disabled = page >= data.total_pages;
+        }
+        if (stay) {
+            window.scrollTo(0, window.scrollY + (document.body.offsetHeight - beforeH));
+        } else if (atBottom()) {
+            scrollToBottom();
+        }
+    }
+
+    async function loadMore() {
+        const next = parseInt(pagWrap.dataset.next || '2', 10);
+        if (!next || isNaN(next)) return;
+        const r = await fetch('/chat/feed?page=' + next);
+        const data = await r.json();
+        // Страница 1 = свежие, дальше — более ранние → вставляем сверху.
+        const beforeH = document.body.offsetHeight;
+        feed.insertAdjacentHTML('afterbegin', data.feed);
+        pagWrap.dataset.next = next + 1;
+        const btn = pagWrap.querySelector('button');
+        if (btn) {
+            btn.disabled = next + 1 > data.total_pages;
+        }
+        window.scrollTo(0, window.scrollY + (document.body.offsetHeight - beforeH));
+    }
+
+    async function refreshSignature() {
+        const r = await fetch('/chat/new-count', {headers: {'X-Requested-With': 'fetch'}});
+        const sig = await r.json();
+        if (sig && sig.signature) {
+            shell.dataset.sig = sig.signature;
+            feed.dataset.sig = sig.signature;
+        }
+        return sig;
+    }
 
     async function poll() {
         try {
             const r = await fetch('/chat/new-count', {headers: {'X-Requested-With': 'fetch'}});
             const sig = await r.json();
-            const oldSig = feed.dataset.sig;
+            const oldSig = shell.dataset.sig;
             if (oldSig && sig.signature && sig.signature !== oldSig) {
-                updateFeed(1);
+                await updateFeed(1, false);
             }
-        } catch (e) { /* не сеть, не ругаемся — следующая итерация */ }
+        } catch (e) { /* не сеть — ждём следующий тик */ }
     }
 
-    async function updateFeed(page) {
-        const r = await fetch('/chat/feed?page=' + page);
-        const data = await r.json();
-        feed.innerHTML = data.feed;
-        feed.dataset.sig = feed.dataset.sig;
-        // перерисовать сигнатуру брать из ответа не будем — только лента
-    }
-
-    async function loadMore() {
-        const next = parseInt(pagWrap.dataset.next || pagWrap.querySelector('button').dataset.page, 10);
-        if (!next || isNaN(next)) return;
-        const r = await fetch('/chat/feed?page=' + next);
-        const data = await r.json();
-        feed.insertAdjacentHTML('beforeend', data.feed);
-        const btn = pagWrap.querySelector('button');
-        if (btn) {
-            const np = next + 1 <= data.total_pages ? next + 1 : data.total_pages;
-            btn.dataset.page = np;
-            btn.disabled = np >= data.total_pages;
-        }
-    }
-
-    window.chatFeedHelpers = {updateFeed, loadMore};
-    setInterval(poll, POLL_MS郁amp;)
+    const moreBtn = pagWrap.querySelector('.chat-load-more');
+    if (moreBtn) moreBtn.addEventListener('click', loadMore);
+    bindCaptchaButtons(document);
+    window.chatFeedHelpers = {updateFeed, loadMore, refreshSignature};
+    setInterval(poll, POLL_MS);
 })();
 </script>
 {% endblock %}

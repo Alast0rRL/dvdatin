@@ -317,9 +317,9 @@ class SyncDB:
         per_page: int = 50,
         chat_id: int | None = None,
     ) -> dict[str, Any]:
-        """Собирает хронологическую ленту «Чат» — сырой поток Leo как TG-чат.
+        """Собирает хронологическую ленту «Чат» — сырой поток Leo как TG-chat.
 
-        Merge с трёх источников по времени (ASC):
+        Merge с трёх источников по времени:
           * raw_messages        — входящие (пузыри слева, Leo)
           * sent_messages       — ручные/веб исходящие (пузыри справа)
           * auto_actions_log    — авто-действия (LIKE/DISLIKE/MESSAGE, справа)
@@ -328,15 +328,23 @@ class SyncDB:
             с фото (media_type='photo'), AI-решением и человеческим решением;
           * капча    — если текст совпадает по сигнатуре с captcha_memory
             (pending → форма ответа inline, known → выученный ответ).
-        Возвращает {items, total, page, total_pages} — пагинация как у ленты.
+
+        ПАГИНАЦИЯ «С КОНЦА»: page=1 — самые свежие сообщения (как в Telegram),
+        page=2 — предыдущие и т.д. Внутри страницы хронологически ASC
+        (сверху старые, снизу новые). Свежие всегда на первой странице.
+
+        Возвращает {items, total, page, total_pages}.
         """
-        offset = (max(1, page) - 1) * per_page
+        page = max(1, page)
+        per_page = max(1, per_page)
+        # Сколько свежих сообщений нужно для этой страницы.
+        limit = page * per_page
 
         # ── Входящие: raw_messages ──
         raw_sql = """
             SELECT
                 'raw' AS kind, rm.id AS row_id, rm.chat_id, rm.telegram_message_id,
-                rm.sender_name, rm.sender_username, rm.media_type,
+                rm.sender_name, rm.sender_username,
                 rm.text AS text, rm.message_date AS ts, rm.media_type AS media_type
             FROM raw_messages rm
         """
@@ -344,7 +352,8 @@ class SyncDB:
         if chat_id is not None:
             raw_sql += " WHERE rm.chat_id = ?"
             raw_params.append(chat_id)
-        raw_sql += " ORDER BY rm.message_date ASC, rm.id ASC"
+        raw_sql += " ORDER BY rm.message_date DESC, rm.id DESC LIMIT ?"
+        raw_params.append(limit)
 
         # ── Исходящие: sent_messages (ручные/веб) ──
         sent_sql = """
@@ -352,14 +361,15 @@ class SyncDB:
                 'sent' AS kind, sm.id AS row_id, sm.chat_id,
                 sm.telegram_message_id, NULL AS sender_name, NULL AS sender_username,
                 NULL AS media_type, sm.text AS text, sm.sent_at AS ts,
-                sm.action, sm.source
+                sm.action AS action, sm.source AS source
             FROM sent_messages sm
         """
         sent_params: list[Any] = []
         if chat_id is not None:
             sent_sql += " WHERE sm.chat_id = ?"
             sent_params.append(chat_id)
-        sent_sql += " ORDER BY sm.sent_at ASC, sm.id ASC"
+        sent_sql += " ORDER BY sm.sent_at DESC, sm.id DESC LIMIT ?"
+        sent_params.append(limit)
 
         # ── Исходящие: auto_actions_log (авто-действия) ──
         auto_sql = """
@@ -368,14 +378,15 @@ class SyncDB:
                 a.telegram_message_id, NULL AS sender_name, NULL AS sender_username,
                 NULL AS media_type,
                 COALESCE(a.message_text, '') AS text, a.sent_at AS ts,
-                a.action, a.decision
+                a.action AS action, a.decision AS decision
             FROM auto_actions_log a
         """
         auto_params: list[Any] = []
         if chat_id is not None:
             auto_sql += " WHERE a.chat_id = ?"
             auto_params.append(chat_id)
-        auto_sql += " ORDER BY a.sent_at ASC, a.id ASC"
+        auto_sql += " ORDER BY a.sent_at DESC, a.id DESC LIMIT ?"
+        auto_params.append(limit)
 
         raws = self._query(raw_sql, tuple(raw_params))
         sents = self._query(sent_sql, tuple(sent_params))
@@ -400,16 +411,36 @@ class SyncDB:
         for a in autos:
             rows.append(self._enrich_outgoing(a, manual=False))
 
-        rows.sort(key=lambda r: (r["ts"] or "", r["kind"]))
+        # Хронология внутри окна: ASC (сверху старые, снизу новые).
+        rows.sort(key=lambda r: (r["ts"] or "", r.get("row_id") or 0))
 
-        total = len(rows)
-        items = rows[offset:offset + per_page]
+        # Полное число сообщений — отдельными COUNT (не тянем всю таблицу).
+        total = self._chat_total(chat_id)
+
+        # Страница 1 = свежие (последние per_page окна), page 2 = перед ними.
+        end = -((page - 1) * per_page) or None
+        items = rows[-limit:end] if per_page else rows
         return {
             "items": items,
             "total": total,
             "page": page,
             "total_pages": max(1, (total + per_page - 1) // per_page),
         }
+
+    def _chat_total(self, chat_id: int | None) -> int:
+        """Суммарное число сообщений чата (для пагинации «с конца»)."""
+        where = " WHERE chat_id = ?" if chat_id is not None else ""
+        params: tuple = (chat_id,) if chat_id is not None else ()
+        try:
+            total = 0
+            for table in ("raw_messages", "sent_messages", "auto_actions_log"):
+                row = self._query_one(
+                    f"SELECT COUNT(*) AS c FROM {table}{where}", params
+                )
+                total += int(row["c"] or 0)
+            return total
+        except Exception:
+            return 0
 
     @staticmethod
     def _captcha_signature(text: str) -> str:

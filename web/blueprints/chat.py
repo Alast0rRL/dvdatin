@@ -57,12 +57,25 @@ def _prepare_captcha(c: dict[str, Any]) -> dict[str, Any]:
     return c
 
 
+def _chat_signature(signals: dict[str, Any] | None) -> str:
+    """Подпись состояния чата (для polling: изменилась → обновить ленту)."""
+    signals = signals or {}
+    return "|".join([
+        str(signals.get("max_raw") or ""),
+        str(signals.get("max_sent") or ""),
+        str(signals.get("max_auto") or ""),
+        str(signals.get("max_captcha") or ""),
+        str(signals.get("pending_captchas") or 0),
+    ])
+
+
 @chat_bp.route("/chat")
 @login_required
 def index() -> str:
     db = _get_db()
     data = db.get_chat_feed(page=1, per_page=50)
     signals = db.get_chat_signals()
+    pending = [_prepare_captcha(c) for c in db.get_pending_captchas(limit=20)]
     return render_template(
         "chat.html",
         items=data.get("items", []),
@@ -70,6 +83,8 @@ def index() -> str:
         page=data.get("page", 1),
         total_pages=data.get("total_pages", 1),
         signals=signals,
+        signature=_chat_signature(signals),
+        pending=pending,
     )
 
 
@@ -84,9 +99,12 @@ def feed() -> tuple:
         "partials/chat_feed.html",
         items=data.get("items", []),
     )
+    pending = [_prepare_captcha(c) for c in db.get_pending_captchas(limit=20)]
+    pending_html = render_template("partials/chat_captchas_pending.html", pending=pending)
     return (
         json.dumps({
             "feed": fragment,
+            "pending": pending_html,
             "total": data.get("total", 0),
             "page": data.get("page", 1),
             "total_pages": data.get("total_pages", 1),
@@ -102,13 +120,7 @@ def new_count() -> tuple:
     """Сигнатура для polling — изменилась → /chat/feed подтягивается."""
     db = _get_db()
     signals = db.get_chat_signals() or {}
-    signature = "|".join([
-        str(signals.get("max_raw") or ""),
-        str(signals.get("max_sent") or ""),
-        str(signals.get("max_auto") or ""),
-        str(signals.get("max_captcha") or ""),
-        str(signals.get("pending_captchas") or 0),
-    ])
+    signature = _chat_signature(signals)
     return (
         json.dumps({
             "signature": signature,

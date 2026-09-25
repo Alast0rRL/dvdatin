@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1253,3 +1254,67 @@ class TestChat:
         if resp is None:
             return  # слой действий не подключён в тестах — не падаем
         assert resp.status_code in (200, 302)
+
+    def test_chat_page1_is_newest(self, sync_db) -> None:
+        """Страница 1 = самые свежие сообщения (пагинация «с конца»)."""
+        sync, db_path, db = sync_db
+        loop = asyncio.get_event_loop()
+
+        async def _seed() -> None:
+            for i in range(60):
+                await db.save_raw_message(
+                    telegram_message_id=9000 + i, chat_id=1234060895, sender_id=100,
+                    sender_username="", sender_name="Leo",
+                    message_date=f"2025-02-01T00:{i:02d}:00",
+                    text=f"MSG-{i}", raw_entities="[]", reply_markup="[]",
+                    media_type="", received_at=f"2025-02-01T00:{i:02d}:00",
+                )
+
+        loop.run_until_complete(_seed())
+
+        page1 = sync.get_chat_feed(page=1, per_page=10)
+        texts = [i["text"] for i in page1["items"]]
+        assert texts, "лента не пуста"
+        assert texts[-1] == "MSG-59", "на 1-й странице должно быть самое свежее"
+        assert "MSG-0" not in texts
+
+        page2 = sync.get_chat_feed(page=2, per_page=10)
+        texts2 = [i["text"] for i in page2["items"]]
+        assert texts2[-1] == "MSG-49", "2-я страница — предыдущие"
+        assert page1["total"] == page2["total"], "total не зависит от страницы"
+
+    def test_chat_pending_captcha_block(self, client, sync_db) -> None:
+        """Pending-капча выводится отдельным блоком на /chat и в /chat/feed."""
+        sync, db_path, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.record_pending_captcha(
+                signature="пришли свое расположение",
+                message_text="Пришли свое расположение и увидишь анкеты рядом",
+                buttons_json='["Продолжить смотреть анкеты"]',
+            )
+        )
+
+        self._login(client)
+        body = client.get("/chat").get_data(as_text=True)
+        assert "chat-pending" in body
+        assert "Пришли свое расположение" in body
+        # блок ждущих капч идёт ДО ленты сообщений
+        assert body.index("chat-pending") < body.index("chat-feed")
+
+        data = client.get("/chat/feed?page=1").get_json()
+        assert "pending" in data
+        assert "chat-pending" in data["pending"]
+        assert "Пришли свое расположение" in data["pending"]
+
+    def test_chat_page_has_valid_signature_and_js(self, client, sync_db) -> None:
+        """data-sig заполнен реальной сигнатурой, inline-JS без синтаксических битых мест."""
+        self._login(client)
+        body = client.get("/chat").get_data(as_text=True)
+        m = re.search(r'data-sig="([^"]*)"', body)
+        assert m and m.group(1).strip(), "data-sig должен содержать сигнатуру"
+        # все трофейные точки есть, кривых '&amp'/'郁amp' в скрипте нет
+        assert "setInterval(poll, POLL_MS);" in body
+        assert "amp;" not in body
+        assert "window.chatFeedHelpers" in body
+

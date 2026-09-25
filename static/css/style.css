@@ -1053,3 +1053,35 @@ select.form-input {
 .chat-empty { text-align: center; color: #8a94a6; padding: 60px 20px; }
 .chat-empty .emoji { font-size: 2rem; display: block; margin-bottom: 8px; }
 .chat-pagination { text-align: center; padding: 10px 0 30px; }
+
+/* ── Капчи, ждущие ответа (поверх ленты) ── */
+.chat-pending {
+    background: rgba(255, 159, 10, 0.10);
+    border: 1px solid #ff9f0a;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin: 0 0 18px;
+}
+.chat-pending-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.chat-pending-title { font-weight: 700; color: #ffb340; }
+.chat-pending-hint { font-size: 12px; color: #8a94a6; }
+.chat-pending-item {
+    background: var(--bg-card, #1c2230);
+    border: 1px solid rgba(255, 159, 10, 0.45);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+}
+.chat-pending-item:last-child { margin-bottom: 0; }
+.chat-pending-text { font-size: 13px; margin-bottom: 8px; white-space: pre-wrap; }
+.chat-pending-delete { margin-top: 6px; text-align: right; }
+.chat-captcha-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chat-captcha-row { display: flex; gap: 8px; align-items: center; }
+.chat-captcha-row .form-input { flex: 1 1 auto; }
+

@@ -1,0 +1,34 @@
+{# ── Капчи, ждущие ответа владельца (всегда сверху, независимо от пагинации) ── #}
+{% if pending %}
+<div class="chat-pending" id="chat-pending">
+    <div class="chat-pending-head">
+        <span class="chat-pending-title">⚠️ Капчи ждут ответа ({{ pending | length }})</span>
+        <span class="chat-pending-hint">Лента Leo заблокирована, пока не ответишь</span>
+    </div>
+    {% for c in pending %}
+    <div class="chat-pending-item" id="pending-captcha-{{ c.id }}" data-captcha-id="{{ c.id }}">
+        <div class="chat-pending-text">{{ c.message_text }}</div>
+        <form method="POST" action="{{ url_for('chat.captcha_answer', captcha_id=c.id) }}" class="chat-captcha-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="chat-captcha-row">
+                <input type="text" name="answer" class="form-input" required
+                       placeholder="Твой ответ Leo…" autocomplete="off">
+                <button type="submit" class="btn btn-primary btn-sm">Ответить</button>
+            </div>
+        </form>
+        {% if c.buttons %}
+        <div class="chat-captcha-buttons">
+            {% for b in c.buttons %}
+            <button type="button" class="btn btn-ghost btn-sm captcha-suggest"
+                    data-suggest="{{ b.text if b is mapping else b }}">{{ b.text if b is mapping else b }}</button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <form method="POST" action="{{ url_for('chat.captcha_delete', captcha_id=c.id) }}" class="chat-pending-delete">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-link btn-sm" title="Не отвечать, удалить из памяти">забыть</button>
+        </form>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
