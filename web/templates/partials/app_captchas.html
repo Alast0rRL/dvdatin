@@ -1,0 +1,34 @@
+{# ── Капчи, ждущие ответа владельца (всегда сверху ленты) ── #}
+{% if pending %}
+<div class="pending" id="pending">
+    <div class="pending__head">
+        <span class="pending__title">⚠️ Капчи ждут ответа ({{ pending | length }})</span>
+        <span class="pending__hint">лента Leo стоит, пока не ответишь</span>
+    </div>
+    {% for c in pending %}
+    <div class="pending__item" data-captcha-id="{{ c.id }}">
+        <div class="pending__text">{{ c.message_text }}</div>
+        <form method="POST" action="{{ url_for('chat.captcha_answer', captcha_id=c.id) }}" class="captcha-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+            <input type="text" name="answer" class="input" required placeholder="Ответ Leo…" autocomplete="off">
+            <button type="submit" class="btn btn--primary">Ответить</button>
+        </form>
+        {% if c.buttons %}
+        <div class="pending__suggest">
+            {% for b in c.buttons %}
+            <button type="button" class="chip" data-suggest="{{ b.text if b is mapping else b }}">
+                {{ b.text if b is mapping else b }}
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <form method="POST" action="{{ url_for('chat.captcha_delete', captcha_id=c.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+            <button type="submit" class="link-btn">забыть</button>
+        </form>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}

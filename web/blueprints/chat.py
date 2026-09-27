@@ -1,15 +1,22 @@
-# Chat blueprint — единая вкладка «Чат» (Stage 8.4).
+# App blueprint — единый экран DvAI (Stage 9 UI rewrite).
 #
-# Сырой поток Leo рисуется как Telegram-чат: входящие raw_messages —
-# пузыри слева (Leo/девушки), исходящие sent_messages ∪ auto_actions_log —
-# пузыри справа (наши действия). Профили и капчи встроены inline прямо в
-# ленту (см. partials/chat_feed.html): капча — inline-форма ответа, анкета —
-# inline карточка с фото и LIKE/DISLIKE. Авто-обновление — polling
-# /chat/new-count (сигнатура) → подмена /chat/feed без перезагрузки.
+# Один экран `/` вместо набора вкладок: лента чата + выбор режима +
+# кнопки настроек (выдвижная панель, без отдельной страницы).
+#
+# Что отдаёт:
+#   GET  /                       — весь UI (лента, капчи, настройки в drawer)
+#   GET  /chat                   — синоним / (старые закладки)
+#   GET  /chat/feed              — фрагмент ленты + капч (in-place polling)
+#   GET  /chat/new-count         — сигнатура состояния (polling)
+#   POST /chat/captcha/<id>/answer|delete — ответ на капчу
+#   POST /chat/profile/<id>/<action>     — ручное решение по REVIEW-анкете
+#
+# Web-слой Telegram-free: только SyncDB + config.yaml + services.
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from flask import (
@@ -24,91 +31,114 @@ from flask import (
 )
 
 from web.blueprints.auth import login_required
+from web.blueprints.settings import _get_accounts, _load_preferences
 from web.db import SyncDB
 
 chat_bp = Blueprint("chat", __name__)
+
+#: Режимы в тулбаре (порядок как в core.types.Mode).
+MODES = ("OBSERVE", "SEMI_AUTO", "AUTO")
+
+#: Ручные кнопки показываем ТОЛЬКО для анкет, которые AI не смог решить.
+ACTIONABLE_DECISION = "REVIEW"
+
+#: Сколько сообщений на страницу ленты.
+FEED_PER_PAGE = 40
 
 
 def _get_db() -> SyncDB:
     return current_app.config["SYNC_DB"]
 
 
-# ── Парсинг капчи (зеркало collectors.dvinchik_collector.captcha_signature) ──
-
-def _captcha_signature(text: str) -> str:
-    """Сигнатура текста для сопоставления с captcha_memory.
-
-    Web-слой не импортирует Telethon, поэтому лёгкая нормализация
-    (нижний регистр + схлопывание пробелов) продублирована локально —
-    она зеркалит ``collectors.dvinchik_collector.captcha_signature``.
-    """
-    import re
-    return " ".join(re.sub(r"\s+", " ", (text or "").lower()).strip().split())
+def _get_config_path() -> Path:
+    return current_app.config.get("CONFIG_PATH", Path("config/config.yaml"))
 
 
-def _prepare_captcha(c: dict[str, Any]) -> dict[str, Any]:
-    """Добавляет inline-поля капчи для шаблона (кнопки JSON → list)."""
-    raw = c.get("buttons_json") or "[]"
+def _with_buttons(captcha: dict[str, Any]) -> dict[str, Any]:
+    """buttons_json (строка) → list для шаблона."""
+    raw = captcha.get("buttons_json") or "[]"
     try:
         buttons = json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
         buttons = []
-    c["buttons"] = buttons if isinstance(buttons, list) else []
-    return c
+    captcha["buttons"] = buttons if isinstance(buttons, list) else []
+    return captcha
 
 
 def _chat_signature(signals: dict[str, Any] | None) -> str:
-    """Подпись состояния чата (для polling: изменилась → обновить ленту)."""
+    """Подпись состояния чата (изменилась → обновить ленту)."""
     signals = signals or {}
-    return "|".join([
-        str(signals.get("max_raw") or ""),
-        str(signals.get("max_sent") or ""),
-        str(signals.get("max_auto") or ""),
-        str(signals.get("max_captcha") or ""),
-        str(signals.get("pending_captchas") or 0),
-    ])
+    return "|".join(
+        [
+            str(signals.get("max_raw") or ""),
+            str(signals.get("max_sent") or ""),
+            str(signals.get("max_auto") or ""),
+            str(signals.get("max_captcha") or ""),
+            str(signals.get("pending_captchas") or 0),
+        ]
+    )
 
 
+def _safe_next(default: str | None = None) -> str:
+    """Безопасный redirect-target из формы (только локальные пути)."""
+    target = request.form.get("next", "") or default or ""
+    if not target.startswith("/") or target.startswith("//"):
+        return url_for("chat.index")
+    return target
+
+
+# ── Страница-приложение ────────────────────────────────────────────
+
+@chat_bp.route("/")
 @chat_bp.route("/chat")
 @login_required
 def index() -> str:
+    """Единый экран: лента чата + режим + настройки (drawer)."""
     db = _get_db()
-    data = db.get_chat_feed(page=1, per_page=50)
+    config_path = _get_config_path()
+
+    data = db.get_chat_feed(page=1, per_page=FEED_PER_PAGE)
     signals = db.get_chat_signals()
-    pending = [_prepare_captcha(c) for c in db.get_pending_captchas(limit=20)]
+    pending = [_with_buttons(c) for c in db.get_pending_captchas(limit=20)]
+    accounts, account_session = _get_accounts(config_path)
+
     return render_template(
-        "chat.html",
+        "app.html",
         items=data.get("items", []),
         total=data.get("total", 0),
         page=data.get("page", 1),
         total_pages=data.get("total_pages", 1),
-        signals=signals,
         signature=_chat_signature(signals),
         pending=pending,
+        modes=MODES,
+        mode=db.get_mode(config_path),
+        accounts=accounts,
+        account_session=account_session,
+        filter_cfg=db.get_filter_config(config_path),
+        preferences=_load_preferences(config_path.parent / "preferences.yaml"),
     )
 
 
 @chat_bp.route("/chat/feed")
 @login_required
 def feed() -> tuple:
-    """Фрагмент пузырей для in-place подмены (без перезагрузки)."""
+    """Фрагменты ленты и капч для in-place обновления (polling)."""
     db = _get_db()
     page = request.args.get("page", 1, type=int)
-    data = db.get_chat_feed(page=page, per_page=50)
-    fragment = render_template(
-        "partials/chat_feed.html",
-        items=data.get("items", []),
-    )
-    pending = [_prepare_captcha(c) for c in db.get_pending_captchas(limit=20)]
-    pending_html = render_template("partials/chat_captchas_pending.html", pending=pending)
+    data = db.get_chat_feed(page=page, per_page=FEED_PER_PAGE)
     return (
-        json.dumps({
-            "feed": fragment,
-            "pending": pending_html,
-            "total": data.get("total", 0),
-            "page": data.get("page", 1),
-            "total_pages": data.get("total_pages", 1),
-        }),
+        json.dumps(
+            {
+                "feed": render_template("partials/app_feed.html", items=data.get("items", [])),
+                "pending": render_template(
+                    "partials/app_captchas.html",
+                    pending=[_with_buttons(c) for c in db.get_pending_captchas(limit=20)],
+                ),
+                "total": data.get("total", 0),
+                "page": data.get("page", 1),
+                "total_pages": data.get("total_pages", 1),
+            }
+        ),
         200,
         {"Content-Type": "application/json; charset=utf-8"},
     )
@@ -117,46 +147,41 @@ def feed() -> tuple:
 @chat_bp.route("/chat/new-count")
 @login_required
 def new_count() -> tuple:
-    """Сигнатура для polling — изменилась → /chat/feed подтягивается."""
-    db = _get_db()
-    signals = db.get_chat_signals() or {}
-    signature = _chat_signature(signals)
+    """Сигнатура для polling: изменилась → обновить ленту."""
+    signals = _get_db().get_chat_signals() or {}
     return (
-        json.dumps({
-            "signature": signature,
-            **signals,
-        }),
+        json.dumps({"signature": _chat_signature(signals), **signals}),
         200,
         {"Content-Type": "application/json; charset=utf-8"},
     )
 
 
+# ── Капчи ──────────────────────────────────────────────────────────
+
 @chat_bp.route("/chat/captcha/<int:captcha_id>/answer", methods=["POST"])
 @login_required
 def captcha_answer(captcha_id: int) -> tuple:
-    """Inline-ответ на капчу из чата: учит капчу + сразу отправляет Leo."""
-    token = request.form.get("csrf_token", "")
-    if token != session.get("_csrf_token"):
+    """Ответ на капчу прямо из ленты: учит бота + сразу отправляет Leo."""
+    if request.form.get("csrf_token", "") != session.get("_csrf_token"):
         flash("Ошибка безопасности", "error")
         return ("CSRF token invalid", 403)
 
     answer = (request.form.get("answer", "") or "").strip()
     if not answer:
         flash("Пустой ответ", "error")
-        return redirect(url_for("chat.index"))
+        return redirect(_safe_next())
 
     db = _get_db()
-    captcha = db.get_captcha(captcha_id)
-    if captcha is None:
+    if db.get_captcha(captcha_id) is None:
         flash("Капча не найдена", "error")
-        return redirect(url_for("chat.index"))
+        return redirect(_safe_next())
 
-    saved = db.set_captcha_answer(captcha_id, answer)
-    if not saved:
+    if not db.set_captcha_answer(captcha_id, answer):
         flash("Ошибка сохранения ответа", "error")
-        return redirect(url_for("chat.index"))
+        return redirect(_safe_next())
 
     from web.actions import send_captcha_answer_sync
+
     try:
         status = send_captcha_answer_sync(answer)
     except Exception:
@@ -172,39 +197,56 @@ def captcha_answer(captcha_id: int) -> tuple:
         )
     else:
         flash(f"Ответ «{answer}» запомнен, но отправка в Leo не удалась", "warning")
-    return redirect(url_for("chat.index"))
+    return redirect(_safe_next())
 
 
 @chat_bp.route("/chat/captcha/<int:captcha_id>/delete", methods=["POST"])
 @login_required
 def captcha_delete(captcha_id: int) -> tuple:
-    """«Забыть» капчу прямо из чата."""
-    token = request.form.get("csrf_token", "")
-    if token != session.get("_csrf_token"):
+    """«Забыть» капчу (из ленты или из блока ждущих)."""
+    if request.form.get("csrf_token", "") != session.get("_csrf_token"):
         flash("Ошибка безопасности", "error")
         return ("CSRF token invalid", 403)
 
     _get_db().delete_captcha(captcha_id)
     flash("Капча удалена из памяти", "success")
-    return redirect(url_for("chat.index"))
+    return redirect(_safe_next())
 
+
+# ── Ручное решение по REVIEW-анкете ────────────────────────────────
 
 @chat_bp.route("/chat/profile/<int:profile_id>/<action>", methods=["POST"])
 @login_required
 def profile_action(profile_id: int, action: str) -> tuple:
-    """Inline LIKE/DISLIKE анкеты из чата (через DecisionService модель)."""
+    """❤️/👎 по анкете, которую AI не смог решить (AI=REVIEW).
+
+    Кнопки в UI показываются ТОЛЬКО для REVIEW: остальные анкеты бот уже
+    отработал сам (LIKE/DISLIKE), ручное вмешательство не нужно.
+    """
     if action not in ("LIKE", "DISLIKE"):
         return ("Invalid action", 400)
+
+    if request.form.get("csrf_token", "") != session.get("_csrf_token"):
+        flash("Ошибка безопасности", "error")
+        return ("CSRF token invalid", 403)
 
     db = _get_db()
     ai_decision = db.get_latest_ai_decision(profile_id)
     if not ai_decision:
         flash("AI-решение не найдено", "error")
-        return redirect(url_for("chat.index"))
+        return redirect(_safe_next())
+
+    if (ai_decision.get("decision") or "") != ACTIONABLE_DECISION:
+        flash(
+            f"Ручное решение доступно только для анкет на REVIEW "
+            f"(тут AI={ai_decision.get('decision')})",
+            "warning",
+        )
+        return redirect(_safe_next())
 
     if db.is_already_reviewed(ai_decision["id"]):
         flash("Анкета уже обработана", "warning")
-        return redirect(url_for("chat.index"))
+        return redirect(_safe_next())
 
     human_decision = "APPROVE" if action == "LIKE" else "REJECT"
 
@@ -218,6 +260,9 @@ def profile_action(profile_id: int, action: str) -> tuple:
         decision=human_decision,
         agreement=agreement.value,
     )
-    status = send_reaction_sync(action)
-    flash("❤️ LIKE отправлен" if action == "LIKE" else "👎 DISLIKE отправлен", "success")
-    return redirect(url_for("chat.index"))
+    send_reaction_sync(action)
+    flash(
+        "❤️ Лайк отправлен Leo" if action == "LIKE" else "👎 Дизлайк отправлен Leo",
+        "success",
+    )
+    return redirect(_safe_next())

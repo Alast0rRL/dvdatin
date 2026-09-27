@@ -1,0 +1,89 @@
+{# ── Лента чата: входящие (Leo) слева, наши действия справа ── #}
+{% for item in items %}
+<div class="msg msg--{{ item.direction }} msg--{{ item.kind }}"
+     {% if item.profile %}id="profile-{{ item.profile.id }}"{% endif %}>
+    {% if item.direction == 'out' %}
+    <div class="msg__author">{{ item.action_label or 'Я' }}</div>
+    {% endif %}
+
+    <div class="bubble{% if item.kind == 'captcha' %} bubble--captcha{% endif %}">
+        {% if item.text %}
+        <div class="bubble__text">{{ item.text }}</div>
+        {% endif %}
+
+        {# ── Анкета inline: фото, инфо и кнопки только для REVIEW ── #}
+        {% if item.profile %}
+        {% set p = item.profile %}
+        <div class="card">
+            {% if p.photos %}
+            <div class="card__photos">
+                {% for ph in p.photos[:3] %}
+                <img class="card__photo" loading="lazy"
+                     src="{{ url_for('photos.serve_photo', profile_id=p.id, message_id=ph.telegram_message_id) }}"
+                     alt="{{ p.name }}">
+                {% endfor %}
+            </div>
+            {% endif %}
+            <div class="card__head">
+                <span class="card__name">{{ p.name }}{% if p.age %}, {{ p.age }}{% endif %}</span>
+                {% if p.normalized_city or p.raw_city %}
+                <span class="card__city">📍 {{ p.normalized_city or p.raw_city }}</span>
+                {% endif %}
+            </div>
+            {% if p.ai_decision %}
+            <span class="badge badge--{{ 'like' if p.ai_decision == 'LIKE' else ('review' if p.ai_decision == 'REVIEW' else 'dislike') }}">
+                {{ '❤️' if p.ai_decision == 'LIKE' else ('🤔' if p.ai_decision == 'REVIEW' else '👎') }} {{ p.ai_decision }}
+            </span>
+            {% endif %}
+
+            {# Кнопки — только когда AI не смог решить (REVIEW) и ещё нет human-решения #}
+            {% if p.ai_decision == 'REVIEW' and not p.human_decision %}
+            <div class="card__actions">
+                <form method="POST" action="{{ url_for('chat.profile_action', profile_id=p.id, action='LIKE') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+                    <button type="submit" class="btn btn--like">❤️ Лайк</button>
+                </form>
+                <form method="POST" action="{{ url_for('chat.profile_action', profile_id=p.id, action='DISLIKE') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+                    <button type="submit" class="btn btn--dislike">👎 Дизлайк</button>
+                </form>
+            </div>
+            <div class="card__hint">AI не решил — нужен твой выбор</div>
+            {% elif p.human_decision %}
+            <div class="card__done card__done--{{ p.human_decision|lower }}">
+                {% if p.human_decision == 'APPROVE' %}✅ Одобрено{% else %}⛔ Отклонено{% endif %}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {# ── Капча inline внутри ленты ── #}
+        {% if item.captcha %}
+        {% set c = item.captcha %}
+        <div class="card card--captcha">
+            <div class="card__text">🔑 {{ c.message_text }}</div>
+            {% if c.answer %}
+            <div class="card__done">Выученный ответ: <code>{{ c.answer }}</code></div>
+            {% else %}
+            <form method="POST" action="{{ url_for('chat.captcha_answer', captcha_id=c.id) }}" class="captcha-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+                <input type="text" name="answer" class="input" required placeholder="Ответ Leo…" autocomplete="off">
+                <button type="submit" class="btn btn--primary">Ответить</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="msg__time">{{ item.ts[:16].replace('T', ' ') if item.ts else '' }}</div>
+</div>
+{% else %}
+<div class="empty">
+    <div class="empty__icon">💬</div>
+    <p>Пока пусто</p>
+    <small>Сообщения Leo появятся здесь, как только бот начнёт собирать ленту.</small>
+</div>
+{% endfor %}

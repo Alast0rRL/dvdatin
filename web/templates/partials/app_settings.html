@@ -1,0 +1,87 @@
+{# ── Настройки: выдвижная панель на том же экране (без отдельных вкладок) ── #}
+<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="drawer" aria-label="Настройки" hidden>
+    <div class="drawer__head">
+        <h2>Настройки</h2>
+        <button type="button" class="icon-btn" id="drawer-close" aria-label="Закрыть">✕</button>
+    </div>
+
+    <div class="drawer__body">
+        <section class="drawer__section">
+            <h3>Режим работы</h3>
+            <p class="drawer__hint">OBSERVE — только смотрим · SEMI_AUTO — авто-действия, REVIEW-анкеты ждут тебя · AUTO — полная автоматика.</p>
+            <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch mode-switch--block">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+                {% for m in modes %}
+                <button type="submit" name="mode" value="{{ m }}"
+                        class="mode-switch__btn mode-switch__btn--{{ m|lower }} {% if mode == m %}is-active{% endif %}">
+                    {{ m|replace('_', ' ') }}
+                </button>
+                {% endfor %}
+            </form>
+        </section>
+
+        <section class="drawer__section">
+            <h3>Аккаунт-исполнитель</h3>
+            <p class="drawer__hint">С него отправляются ❤️/👎 и «Берем)» в чат Leo.</p>
+            <form method="POST" action="{{ url_for('settings.update_account') }}" class="drawer__form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+                <select name="account_session" class="input">
+                    {% for acc in accounts %}
+                    <option value="{{ acc.session }}" {% if acc.session == account_session %}selected{% endif %}>
+                        {{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}
+                    </option>
+                    {% else %}
+                    <option value="" disabled>аккаунты не заданы</option>
+                    {% endfor %}
+                </select>
+                <button type="submit" class="btn btn--primary">Переключить</button>
+            </form>
+        </section>
+
+        <section class="drawer__section">
+            <h3>Фильтры</h3>
+            <p class="drawer__hint">Возраст и города, по которым отбираются анкеты.</p>
+            <form method="POST" action="{{ url_for('settings.update_filters') }}" class="drawer__form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+                <div class="drawer__row">
+                    <label class="drawer__label">Возраст
+                        <input type="number" name="age_min" class="input" min="14" max="99"
+                               value="{{ filter_cfg.age_min }}">
+                    </label>
+                    <label class="drawer__label">до
+                        <input type="number" name="age_max" class="input" min="14" max="99"
+                               value="{{ filter_cfg.age_max }}">
+                    </label>
+                </div>
+                <label class="drawer__label">Города (через запятую, пусто — все)
+                    <input type="text" name="city_allowed" class="input"
+                           value="{{ filter_cfg.city_allowed|join(', ') }}"
+                           placeholder="Санкт-Петербург, Москва">
+                </label>
+                <button type="submit" class="btn btn--primary">Сохранить фильтры</button>
+            </form>
+        </section>
+
+        <section class="drawer__section">
+            <h3>Предпочтения (SKIP / LIKE)</h3>
+            <p class="drawer__hint">Формат строки: <code>метка | подстрока1 | подстрока2</code>. SKIP жёстко отсекает анкету, LIKE поднимает DISLIKE до REVIEW.</p>
+            <form method="POST" action="{{ url_for('settings.update_preferences') }}" class="drawer__form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+                <label class="drawer__label">STOP-метки
+                    <textarea name="skip_rules" rows="6" class="input input--area">{% for rule in preferences.get('skip', []) %}{{ rule.label }} | {{ rule.match | join(' | ') }}
+{% endfor %}</textarea>
+                </label>
+                <label class="drawer__label">LIKE-метки
+                    <textarea name="like_rules" rows="6" class="input input--area">{% for rule in preferences.get('like', []) %}{{ rule.label }} | {{ rule.match | join(' | ') }}
+{% endfor %}</textarea>
+                </label>
+                <button type="submit" class="btn btn--primary">Сохранить предпочтения</button>
+            </form>
+        </section>
+    </div>
+</aside>

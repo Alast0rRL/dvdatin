@@ -1,11 +1,11 @@
-# Settings blueprint — filter config, preferences, mode control.
+﻿# Settings blueprint — filter config, preferences, mode control.
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import yaml
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, redirect, request, session, url_for
 
 from web.blueprints.auth import login_required
 from web.db import SyncDB
@@ -28,27 +28,9 @@ def _get_config_path() -> Path:
 
 @settings_bp.route("/settings", methods=["GET"])
 @login_required
-def settings() -> str:
-    db = _get_db()
-    config_path = _get_config_path()
-
-    # Filter config
-    filter_cfg = db.get_filter_config(config_path)
-    # Mode
-    mode = db.get_mode(config_path)
-    # Preferences
-    prefs = _load_preferences(config_path.parent / "preferences.yaml")
-    # Accounts (для выбора аккаунта-исполнителя авто-действий)
-    accounts, account_session = _get_accounts(config_path)
-
-    return render_template(
-        "settings.html",
-        filter_cfg=filter_cfg,
-        mode=mode,
-        preferences=prefs,
-        accounts=accounts,
-        account_session=account_session,
-    )
+def settings() -> tuple:
+    """Настроек больше нет отдельной страницей — они в панели на главном экране."""
+    return redirect(url_for("chat.index"))
 
 
 @settings_bp.route("/settings/filters", methods=["POST"])
@@ -72,7 +54,7 @@ def update_filters() -> tuple:
     except Exception as e:
         flash(f"Ошибка сохранения: {e}", "error")
 
-    return redirect(url_for("settings.settings"))
+    return redirect(url_for("chat.index"))
 
 
 @settings_bp.route("/settings/mode", methods=["POST"])
@@ -92,7 +74,7 @@ def update_mode() -> tuple:
     mode_str = request.form.get("mode", "OBSERVE")
     redirect_target = request.form.get("next", "")
     if not redirect_target or not redirect_target.startswith("/") or redirect_target.startswith("//"):
-        redirect_target = url_for("settings.settings")
+        redirect_target = url_for("chat.index")
 
     from core.types import Mode
     try:
@@ -143,7 +125,7 @@ def update_account() -> tuple:
     account_session = request.form.get("account_session", "")
     redirect_target = request.form.get("next", "")
     if not redirect_target or not redirect_target.startswith("/") or redirect_target.startswith("//"):
-        redirect_target = url_for("settings.settings")
+        redirect_target = url_for("chat.index")
 
     config_path = _get_config_path()
     accounts, _ = _get_accounts(config_path)
@@ -187,7 +169,7 @@ def update_preferences() -> tuple:
     token = request.form.get("csrf_token", "")
     if token != session.get("_csrf_token"):
         flash("Ошибка безопасности", "error")
-        return redirect(url_for("settings.settings"))
+        return redirect(url_for("chat.index"))
 
     config_path = _get_config_path()
     prefs_path = config_path.parent / "preferences.yaml"
@@ -203,7 +185,7 @@ def update_preferences() -> tuple:
     except Exception as e:
         flash(f"Ошибка: {e}", "error")
 
-    return redirect(url_for("settings.settings"))
+    return redirect(url_for("chat.index"))
 
 
 def _get_accounts(config_path: Path) -> tuple[list[dict], str]:

@@ -88,7 +88,7 @@ def send_reaction_sync(action: str) -> str:
 def send_captcha_answer_sync(answer: str) -> str:
     """Send the owner's captcha answer to Leo chat from the auto account.
 
-    Called from the Flask sync thread (web captchas page).  ``send_text`` is
+    Called from the Flask sync thread (captcha block in the app feed).  ``send_text`` is
     not rate-limited (same as pressing a reply button), so the stuck Leo
     stream resumes immediately and the next identical captcha is answered
     automatically from captcha_memory.  Returns "SENT"/"DISABLED"/"ERROR".

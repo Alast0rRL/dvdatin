@@ -127,17 +127,22 @@ async def _seed_test_data(db: Database) -> None:
         evaluated_at="2025-01-03T00:00:02",
     )
 
-    # Фото профиля 1: привязка message↔profile с аккаунтом-получателем.
-    await db.link_profile_message(
-        profile_id=pid1, telegram_message_id=111, chat_id=1234060895,
-        created_at="2025-01-01T00:00:04", account_session="dvai",
-    )
-    await db.save_raw_message(
-        telegram_message_id=111, chat_id=1234060895, sender_id=100,
-        sender_username="", sender_name="", message_date="2025-01-01T00:00:04",
-        text="", raw_entities="[]", reply_markup="[]",
-        media_type="photo", received_at="2025-01-01T00:00:04",
-    )
+    # Лента Leo: три анкеты в потоке (profile_messages + raw_messages).
+    for pid, tm_id, text, ts in (
+        (pid1, 111, "Алиса, 19, Санкт-Петербург - Люблю аниме", "2025-01-01T00:00:04"),
+        (pid2, 112, "Барби, 18, Москва", "2025-01-02T00:00:04"),
+        (pid3, 113, "Варвара, 20, Сургут", "2025-01-03T00:00:04"),
+    ):
+        await db.link_profile_message(
+            profile_id=pid, telegram_message_id=tm_id, chat_id=1234060895,
+            created_at=ts, account_session="dvai",
+        )
+        await db.save_raw_message(
+            telegram_message_id=tm_id, chat_id=1234060895, sender_id=100,
+            sender_username="", sender_name="Leo", message_date=ts,
+            text=text, raw_entities="[]", reply_markup="[]",
+            media_type="photo", received_at=ts,
+        )
 
 
 @pytest.fixture
@@ -236,139 +241,92 @@ class TestLogin:
 
 # ── Dashboard Tests ──────────────────────────────────────────────
 
-class TestDashboard:
-    """Тесты Dashboard."""
+# ── Единый экран (Stage 9) ──────────────────────────────────────
 
-    def test_dashboard_renders(self, client) -> None:
+class TestAppShell:
+    """`/` — один экран: лента чата + выбор режима + кнопка настроек."""
+
+    def test_root_renders_app(self, client) -> None:
         _login(client)
         resp = client.get("/")
         assert resp.status_code == 200
+        data = resp.get_data(as_text=True)
+        assert 'id="app"' in data
+        assert 'id="feed"' in data
+        assert 'id="settings-open"' in data
 
-    def test_dashboard_url_renders(self, client) -> None:
+    def test_chat_alias_renders_same_app(self, client) -> None:
         _login(client)
-        resp = client.get("/dashboard")
+        assert client.get("/chat").status_code == 200
+
+    def test_no_separate_tabs_or_pages(self, client) -> None:
+        """Отдельных вкладок нет: настройки — панель поверх, лента одна."""
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'id="drawer"' in data
+        assert "profile-feed" not in data          # старая лента анкет удалена
+        assert 'href="/dashboard"' not in data
+        assert 'href="/settings"' not in data
+        assert 'href="/profiles/' not in data
+
+    def test_mode_switcher_in_topbar(self, client) -> None:
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert "/settings/mode" in data
+        for m in ("OBSERVE", "SEMI_AUTO", "AUTO"):
+            assert f'name="mode" value="{m}"' in data
+        assert "is-active" in data  # текущий режим подсвечен
+
+    def test_settings_button_and_forms_in_drawer(self, client) -> None:
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'id="settings-open"' in data
+        assert 'id="drawer"' in data
+        assert 'id="drawer-close"' in data
+        for ep in ("/settings/mode", "/settings/account", "/settings/filters",
+                   "/settings/preferences"):
+            assert ep in data
+        for field in ('name="age_min"', 'name="age_max"', 'name="city_allowed"',
+                      'name="account_session"', 'name="skip_rules"', 'name="like_rules"'):
+            assert field in data
+
+    def test_settings_values_loaded_into_drawer(self, client) -> None:
+        """Значения фильтров/режима подставляются из config.yaml."""
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'value="18"' in data      # age_min
+        assert 'value="19"' in data      # age_max
+        assert "Санкт-Петербург" in data  # city_allowed
+        assert 'name="mode" value="OBSERVE"' in data
+
+    def test_legacy_pages_redirect_to_app(self, client) -> None:
+        """Старые страницы ведут на главный экран (без 404)."""
+        _login(client)
+        for path in ("/dashboard", "/settings", "/profiles/1", "/profiles/2/action"):
+            resp = client.get(path)
+            assert resp.status_code == 302, path
+            loc = resp.headers["Location"]
+            assert loc in ("/", "/chat"), f"{path} -> {loc}"
+
+    def test_poll_endpoints_available(self, client) -> None:
+        _login(client)
+        count = client.get("/chat/new-count")
+        assert count.status_code == 200
+        assert "signature" in count.get_json()
+        feed = client.get("/chat/feed?page=1")
+        assert feed.status_code == 200
+        payload = feed.get_json()
+        assert "feed" in payload and "pending" in payload
+
+    def test_app_js_poll_and_drawer(self, client) -> None:
+        """JS подключён: polling + открытие панели настроек."""
+        _login(client)
+        resp = client.get("/static/js/app.js")
         assert resp.status_code == 200
-
-    def test_dashboard_new_count(self, client) -> None:
-        _login(client)
-        resp = client.get("/dashboard/new-count")
-        assert resp.status_code == 200
-        data = json.loads(resp.data)
-        assert "total" in data
-        assert "pending" in data
-        assert isinstance(data["total"], int)
-
-    def test_profiles_displayed(self, client) -> None:
-        _login(client)
-        resp = client.get("/")
-        data = resp.data.decode()
-        # Все три профиля должны отображаться
-        assert "Алиса" in data
-        assert "Барби" in data
-        assert "Варвара" in data
-
-    def test_decision_badges(self, client) -> None:
-        _login(client)
-        resp = client.get("/")
-        data = resp.data.decode()
-        assert "LIKE" in data
-        assert "REVIEW" in data
-        assert "DISLIKE" in data
-
-    def test_reasons_displayed(self, client) -> None:
-        _login(client)
-        resp = client.get("/")
-        data = resp.data.decode()
-        # Алиса: информативная анкета — позитивный признак "Аниме"
-        assert "Аниме" in data or "anime" in data
-        # Варвара: причины фильтра — возраст не подходит
-        assert "Возраст" in data
-
-    def test_stats_bar(self, client) -> None:
-        _login(client)
-        resp = client.get("/")
-        data = resp.data.decode()
-        assert "Анкет" in data  # Заголовок блока статистики
-
-    def test_filter_by_decision(self, client) -> None:
-        _login(client)
-        resp = client.get("/?decision=LIKE")
-        data = resp.data.decode()
-        assert "Алиса" in data
-        assert "Барби" not in data
-
-    def test_review_action_buttons(self, client) -> None:
-        _login(client)
-        resp = client.get("/?decision=REVIEW")
-        data = resp.data.decode()
-        assert "LIKE" in data
-        assert "DISLIKE" in data
-
-    def test_ai_like_without_action_hides_buttons(self, client, sync_db) -> None:
-        """Баг: бот решил LIKE/DISLIKE, а действие не записалось (не-авто
-        аккаунт) → статус SEEN, но кнопки всё равно висели. Теперь решение
-        AI LIKE/DISLIKE скрывает кнопки и показывает бейдж."""
-        _login(client)
-        _, _, db = sync_db
-        loop = asyncio.get_event_loop()
-        pid = loop.run_until_complete(db.insert_profile(
-            name="Зоя", age=20, raw_city="Санкт-Петербург",
-            normalized_city="Санкт-Петербург",
-            description="Хочу гулять по городу",
-            fingerprint="fp_ai_like_no_act",
-            source_chat_id=1234060895, source_message_id=700001,
-            first_seen_at="2025-01-05T00:00:00",
-            last_seen_at="2025-01-05T00:00:00",
-            status="SEEN",
-        ))
-        loop.run_until_complete(db.save_ai_decision(
-            profile_id=pid, decision="LIKE",
-            combined_score=0.8, confidence=0.85,
-            reasons=json.dumps(["INFORMATIVE_CLEAN"]),
-            scoring_version="deterministic-v2",
-            evaluated_at="2025-01-05T00:00:01",
-        ))
-        resp = client.get("/")
-        data = resp.data.decode()
-        assert f"action-result-{pid}" not in data
-        assert "LIKE (решение AI)" in data
-
-    def test_action_buttons_on_all_profiles(self, client) -> None:
-        _login(client)
-        resp = client.get("/")
-        data = resp.data.decode()
-        # Кнопки есть только на REVIEW-карточках (Барби — ждёт ручного
-        # решения). Алиса уже отревьюена человеком (APPROVE), Варвара получила
-        # терминальное решение AI (DISLIKE) — для них вместо кнопок — бейдж.
-        assert "action-result-2" in data
-        assert "action-result-3" not in data
-        assert "action-result-1" not in data
-        assert "DISLIKE (решение AI)" in data
-
-    def test_mode_switcher_on_dashboard(self, client) -> None:
-        _login(client)
-        resp = client.get("/")
-        data = resp.data.decode()
-        # Переключатель режимов присутствует на ленте
-        assert "Режим:" in data
-        assert "OBSERVE" in data
-        assert "SEMI_AUTO" in data
-        assert "AUTO" in data
-        # Активная кнопка — текущий режим OBSERVE
-        assert 'class="btn mode-btn active mode-observe"' in data
-
-    def test_mode_switch_from_dashboard_redirects_back(self, client) -> None:
-        _login(client)
-        with client.session_transaction() as sess:
-            token = sess.get("_csrf_token", "")
-        resp = client.post(
-            "/settings/mode",
-            data={"mode": "SEMI_AUTO", "csrf_token": token, "next": "/dashboard"},
-            follow_redirects=False,
-        )
-        assert resp.status_code == 302
-        assert resp.headers["Location"].endswith("/dashboard") or "/dashboard" in resp.headers["Location"]
-
+        src = resp.get_data(as_text=True)
+        assert "/chat/new-count" in src
+        assert "openDrawer" in src
+        assert "amp;" not in src
 
 # ── Quick Action Tests ───────────────────────────────────────────
 
@@ -467,107 +425,97 @@ class TestQuickAction:
 
 # ── Profile Detail Tests ─────────────────────────────────────────
 
-class TestProfileDetail:
-    """Тесты страницы профиля."""
+# ── Анкета в ленте (отдельной страницы больше нет) ────────────────
 
-    def test_profile_renders(self, client) -> None:
+class TestProfileInFeed:
+    """Анкеты живут в ленте; /profiles/<id> — редирект на главный экран."""
+
+    def test_profile_page_redirects(self, client) -> None:
         _login(client)
         resp = client.get("/profiles/1")
-        assert resp.status_code == 200
-        data = resp.data.decode()
-        assert "Алиса" in data
+        assert resp.status_code == 302
 
-    def test_profile_not_found(self, client) -> None:
+    def test_review_buttons_only_for_review(self, client) -> None:
+        """❤️/👎 рисуются ТОЛЬКО для анкет, которые AI не решил (REVIEW)."""
         _login(client)
-        resp = client.get("/profiles/9999")
-        assert resp.status_code == 404
+        data = client.get("/").get_data(as_text=True)
+        # Барби (id=2) — AI REVIEW → кнопки есть
+        assert "/chat/profile/2/LIKE" in data
+        assert "/chat/profile/2/DISLIKE" in data
+        # Алиса (id=1) AI LIKE + APPROVE и Варвара (id=3) AI DISLIKE — без кнопок
+        assert "/chat/profile/1/LIKE" not in data
+        assert "/chat/profile/3/LIKE" not in data
 
-    def test_profile_shows_decision(self, client) -> None:
-        _login(client)
-        resp = client.get("/profiles/1")
-        data = resp.data.decode()
-        assert "LIKE" in data
-        assert "0.850" in data
-
-    def test_profile_shows_reasons(self, client) -> None:
-        _login(client)
-        resp = client.get("/profiles/1")
-        data = resp.data.decode()
-        assert "Аниме" in data or "anime" in data
-
-    def test_profile_shows_filter(self, client) -> None:
-        _login(client)
-        resp = client.get("/profiles/3")
-        data = resp.data.decode()
-        assert "REJECT" in data
-        assert "Возраст" in data
-
-    def test_profile_shows_human_decision(self, client) -> None:
-        _login(client)
-        resp = client.get("/profiles/1")
-        data = resp.data.decode()
-        assert "APPROVE" in data
-
-    def test_profile_review_buttons_for_pending(self, client) -> None:
-        _login(client)
-        resp = client.get("/profiles/2")
-        data = resp.data.decode()
-        assert "LIKE" in data
-        assert "DISLIKE" in data
-
-    def test_profile_action_like(self, client, sync_db) -> None:
+    def test_review_action_like_saves_human_decision(self, client, sync_db) -> None:
         sync, _, _ = sync_db
         _login(client)
         with client.session_transaction() as sess:
             token = sess.get("_csrf_token", "")
-        resp = client.post(
-            "/profiles/2/action",
-            data={"action": "LIKE", "csrf_token": token},
-            follow_redirects=True,
-        )
-        assert resp.status_code == 200
+        with patch("web.actions.send_reaction_sync", return_value="SENT"):
+            resp = client.post(
+                "/chat/profile/2/LIKE", data={"csrf_token": token, "next": "/"}
+            )
+        assert resp.status_code == 302
         hd = sync.get_human_decision(2)
         assert hd is not None
         assert hd["decision"] == "APPROVE"
 
-    def test_profile_action_dislike(self, client, sync_db) -> None:
+    def test_review_action_rejected_for_non_review(self, client, sync_db) -> None:
+        """Серверный гейт: не-REVIEW анкету вручную не решить."""
         sync, _, _ = sync_db
         _login(client)
         with client.session_transaction() as sess:
             token = sess.get("_csrf_token", "")
-        resp = client.post(
-            "/profiles/2/action",
-            data={"action": "DISLIKE", "csrf_token": token},
-            follow_redirects=True,
-        )
+        with patch("web.actions.send_reaction_sync", return_value="SENT"):
+            resp = client.post(
+                "/chat/profile/3/LIKE",
+                data={"csrf_token": token, "next": "/"},
+                follow_redirects=True,
+            )
         assert resp.status_code == 200
-        hd = sync.get_human_decision(2)
-        assert hd is not None
-        assert hd["decision"] == "REJECT"
+        assert sync.get_human_decision(3) is None
 
+    def test_review_action_requires_csrf(self, client, sync_db) -> None:
+        sync, _, _ = sync_db
+        _login(client)
+        resp = client.post("/chat/profile/2/LIKE", data={"csrf_token": "bad", "next": "/"})
+        assert resp.status_code == 403
+        assert sync.get_human_decision(2) is None
+
+    def test_review_action_invalid_action(self, client) -> None:
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        resp = client.post(
+            "/chat/profile/2/INVALID", data={"csrf_token": token, "next": "/"}
+        )
+        assert resp.status_code == 400
+
+    def test_already_reviewed_not_overwritten(self, client, sync_db) -> None:
+        sync, _, _ = sync_db
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        with patch("web.actions.send_reaction_sync", return_value="SENT"):
+            client.post("/chat/profile/2/LIKE", data={"csrf_token": token, "next": "/"})
+            resp = client.post(
+                "/chat/profile/2/DISLIKE",
+                data={"csrf_token": token, "next": "/"},
+                follow_redirects=True,
+            )
+        assert resp.status_code == 200
+        assert sync.get_human_decision(2)["decision"] == "APPROVE"
 
 # ── Settings Tests ───────────────────────────────────────────────
 
 class TestSettings:
     """Тесты страницы настроек."""
 
-    def test_settings_renders(self, client) -> None:
+    def test_settings_page_redirects_to_app(self, client) -> None:
+        """Отдельной страницы настроек нет — всё в панели на главном экране."""
         _login(client)
         resp = client.get("/settings")
-        assert resp.status_code == 200
-
-    def test_settings_shows_current_values(self, client) -> None:
-        _login(client)
-        resp = client.get("/settings")
-        data = resp.data.decode()
-        assert "18" in data  # age_min
-        assert "19" in data  # age_max
-
-    def test_settings_shows_mode(self, client) -> None:
-        _login(client)
-        resp = client.get("/settings")
-        data = resp.data.decode()
-        assert "OBSERVE" in data
+        assert resp.status_code == 302
 
     def test_update_filters(self, client, tmp_path) -> None:
         _login(client)
@@ -694,11 +642,10 @@ class TestAccountSettings:
         with open(cfg_path, "w", encoding="utf-8") as f:
             yaml.dump(cfg_data, f, allow_unicode=True)
 
-    def test_settings_shows_account_dropdown(self, client, tmp_path) -> None:
+    def test_account_dropdown_in_app_drawer(self, client, tmp_path) -> None:
         self._write_config(tmp_path)
         _login(client)
-        resp = client.get("/settings")
-        data = resp.data.decode()
+        data = client.get("/").get_data(as_text=True)
         assert 'name="account_session"' in data
         assert "dvai" in data
         assert "dvai_2" in data
@@ -1067,8 +1014,10 @@ class TestSyncDB:
 
 # ── Captchas (Stage 7.6) ──────────────────────────────────────────
 
+# ── Капчи: ответ прямо в ленте (Stage 7.6 + 9) ───────────────────
+
 class TestCaptchas:
-    """Страница /captchas: вывод неизвестных капч и запоминание ответов."""
+    """Капчи ждут ответа в блоке над лентой; ответ учит бота и уходит Leo."""
 
     def _make_client(self, sync_db):
         sync, _, db = sync_db
@@ -1090,15 +1039,14 @@ class TestCaptchas:
         app.config["TESTING"] = True
         return app.test_client()
 
-    def test_captchas_page_lists_pending(self, sync_db) -> None:
+    def test_pending_captchas_in_app(self, sync_db) -> None:
         client = self._make_client(sync_db)
         _login(client)
-        resp = client.get("/captchas")
-        assert resp.status_code == 200
-        assert "Подтвердите, что вы человек".encode() in resp.data
-        assert "Бармалей, предлагаю тебе сделку".encode() in resp.data
-        # Кнопки-подсказки отображаются
-        assert "Готово".encode() in resp.data
+        data = client.get("/").get_data(as_text=True)
+        assert 'id="pending"' in data
+        assert "Подтвердите, что вы человек" in data
+        assert "Бармалей, предлагаю тебе сделку" in data
+        assert "Готово" in data  # кнопки-подсказки
 
     def test_answer_captcha_learns_and_forwards(self, sync_db) -> None:
         client = self._make_client(sync_db)
@@ -1110,15 +1058,13 @@ class TestCaptchas:
         captcha_sig = pending_before[0]["signature"]
         other_sig = pending_before[1]["signature"]
 
-        # Ответ сохраняется и сразу отправляется Leo (мост мокаем).
         with patch("web.actions.send_captcha_answer_sync", return_value="SENT"):
             resp = client.post(
-                f"/captchas/{captcha_id}/answer",
-                data={"answer": "Пока без Premium", "csrf_token": token},
+                f"/chat/captcha/{captcha_id}/answer",
+                data={"answer": "Пока без Premium", "csrf_token": token, "next": "/"},
             )
         assert resp.status_code == 302
-        pending = sync.get_pending_captchas()
-        assert [c["signature"] for c in pending] == [other_sig]
+        assert [c["signature"] for c in sync.get_pending_captchas()] == [other_sig]
         known = sync.get_known_captchas()
         assert len(known) == 1
         assert known[0]["answer"] == "Пока без Premium"
@@ -1130,11 +1076,11 @@ class TestCaptchas:
         sync, _, _ = sync_db
         captcha_id = sync.get_pending_captchas()[0]["id"]
         resp = client.post(
-            f"/captchas/{captcha_id}/answer",
+            f"/chat/captcha/{captcha_id}/answer",
             data={"answer": "Пока без Premium", "csrf_token": "bad"},
         )
         assert resp.status_code == 403
-        assert sync.get_pending_captchas()  # ничего не выучено
+        assert sync.get_pending_captchas()
 
     def test_delete_captcha(self, sync_db) -> None:
         client = self._make_client(sync_db)
@@ -1143,16 +1089,17 @@ class TestCaptchas:
         token = _get_csrf(client)
         captcha_id = sync.get_pending_captchas()[0]["id"]
         resp = client.post(
-            f"/captchas/{captcha_id}/delete", data={"csrf_token": token}
+            f"/chat/captcha/{captcha_id}/delete",
+            data={"csrf_token": token, "next": "/"},
         )
         assert resp.status_code == 302
         assert len(sync.get_pending_captchas()) == 1
 
-    def test_captchas_requires_login(self, sync_db) -> None:
+    def test_app_requires_login(self, sync_db) -> None:
         client = self._make_client(sync_db)
-        resp = client.get("/captchas")
+        resp = client.get("/")
         assert resp.status_code == 302
-
+        assert "/login" in resp.headers.get("Location", "")
 
 def _get_csrf(client) -> str:
     with client.session_transaction() as sess:
@@ -1193,21 +1140,21 @@ class TestCaptchaMemorySync:
 
 # ── Чат (Stage 8.4): единая вкладка, пузыри, inline-капча/профиль ────
 
-class TestChat:
-    """/chat — сырой поток Leo как Telegram-чат."""
+# ── Лента чата: пагинация «с конца», polling, captcha-блок ──────────
+
+class TestChatFeed:
+    """Лента чата: свежие сверху, polling без перезагрузки."""
 
     def _login(self, client) -> None:
         _login(client)
 
-    def test_chat_page_renders_feed(self, client, sync_db) -> None:
+    def test_chat_page_is_app(self, client, sync_db) -> None:
         self._login(client)
         resp = client.get("/chat")
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
-        assert "Чат" in body
-        assert "chat-feed" in body
-        # Сид содержит Алису (LIKE) — она должна попасть в ленту пузырём
-        assert "Алиса" in body
+        assert "chat-pending" not in body  # старых id больше нет
+        assert 'id="feed"' in body
 
     def test_chat_requires_login(self, client, sync_db) -> None:
         resp = client.get("/chat")
@@ -1217,43 +1164,18 @@ class TestChat:
         self._login(client)
         resp = client.get("/chat/feed?page=1")
         assert resp.status_code == 200
-        assert resp.is_json or resp.mimetype == "application/json"
         data = resp.get_json()
         assert "feed" in data
-        assert "page" in data and data["page"] == 1
-        assert "Алиса" in data["feed"] or data["feed"] == ""
+        assert data["page"] == 1
 
     def test_chat_new_count_signature(self, client, sync_db) -> None:
         self._login(client)
         resp = client.get("/chat/new-count")
         assert resp.status_code == 200
-        assert resp.is_json or resp.mimetype == "application/json"
         data = resp.get_json()
         assert "signature" in data
-        # сигнатура непустая и стабильна при двух вызовах
         resp2 = client.get("/chat/new-count")
         assert resp2.get_json()["signature"] == data["signature"]
-
-    def test_chat_inline_profile_like(self, client, sync_db) -> None:
-        """Inline LIKE из чата на анкету Алисы (quick_action-эквивалент)."""
-        self._login(client)
-        # Достаём latest AI decision профиля Алисы = LIKE (см. _seed_test_data)
-        from web.actions import set_action_engine
-        import web.actions as wa
-
-        class _FakeEngine:
-            async def manual_reaction(self, text: str) -> bool:
-                return True
-
-        try:
-            from unittest.mock import patch
-            with patch.object(wa, "_send_reaction_sync", return_value="SENT"):
-                resp = client.get("/chat/profile/1/LIKE")
-        except Exception:
-            resp = None
-        if resp is None:
-            return  # слой действий не подключён в тестах — не падаем
-        assert resp.status_code in (200, 302)
 
     def test_chat_page1_is_newest(self, sync_db) -> None:
         """Страница 1 = самые свежие сообщения (пагинация «с конца»)."""
@@ -1281,10 +1203,10 @@ class TestChat:
         page2 = sync.get_chat_feed(page=2, per_page=10)
         texts2 = [i["text"] for i in page2["items"]]
         assert texts2[-1] == "MSG-49", "2-я страница — предыдущие"
-        assert page1["total"] == page2["total"], "total не зависит от страницы"
+        assert page1["total"] == page2["total"]
 
-    def test_chat_pending_captcha_block(self, client, sync_db) -> None:
-        """Pending-капча выводится отдельным блоком на /chat и в /chat/feed."""
+    def test_pending_captcha_in_app_and_feed(self, client, sync_db) -> None:
+        """Pending-капча выводится блоком и на главном экране, и в /chat/feed."""
         sync, db_path, db = sync_db
         loop = asyncio.get_event_loop()
         loop.run_until_complete(
@@ -1297,24 +1219,17 @@ class TestChat:
 
         self._login(client)
         body = client.get("/chat").get_data(as_text=True)
-        assert "chat-pending" in body
+        assert 'id="pending"' in body
         assert "Пришли свое расположение" in body
-        # блок ждущих капч идёт ДО ленты сообщений
-        assert body.index("chat-pending") < body.index("chat-feed")
+        assert body.index('id="pending"') < body.index('id="feed"')
 
         data = client.get("/chat/feed?page=1").get_json()
-        assert "pending" in data
-        assert "chat-pending" in data["pending"]
         assert "Пришли свое расположение" in data["pending"]
 
-    def test_chat_page_has_valid_signature_and_js(self, client, sync_db) -> None:
-        """data-sig заполнен реальной сигнатурой, inline-JS без синтаксических битых мест."""
+    def test_page_has_signature_and_clean_js(self, client, sync_db) -> None:
+        """data-sig заполнен, внешний JS подключён (без битых '&amp;')."""
         self._login(client)
-        body = client.get("/chat").get_data(as_text=True)
+        body = client.get("/").get_data(as_text=True)
         m = re.search(r'data-sig="([^"]*)"', body)
         assert m and m.group(1).strip(), "data-sig должен содержать сигнатуру"
-        # все трофейные точки есть, кривых '&amp'/'郁amp' в скрипте нет
-        assert "setInterval(poll, POLL_MS);" in body
-        assert "amp;" not in body
-        assert "window.chatFeedHelpers" in body
-
+        assert "/static/js/app.js" in body

@@ -22,7 +22,7 @@ def login_required(f):  # type: ignore[no-untyped-def]
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login() -> str | tuple:
     if session.get("authenticated"):
-        return redirect(url_for("dashboard.index"))
+        return redirect(url_for("chat.index"))
 
     if request.method == "POST":
         from flask import current_app
@@ -38,7 +38,7 @@ def login() -> str | tuple:
         if cfg.check_password(password):
             session["authenticated"] = True
             session.permanent = True
-            next_url = request.args.get("next", url_for("dashboard.index"))
+            next_url = request.args.get("next", url_for("chat.index"))
             return redirect(next_url)
         else:
             flash("Неверный пароль", "error")

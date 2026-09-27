@@ -1,164 +1,148 @@
-// DvAI Web UI — client-side interactions
-
+/* DvAI — единый экран: polling ленты, drawer настроек, подсказки капч. */
 (function () {
-    "use strict";
+    'use strict';
 
-    // ── Toasts ──
-    function toast(message, kind) {
-        const wrap = document.getElementById("toast-wrap");
-        if (!wrap) return;
-        const el = document.createElement("div");
-        el.className = "toast" + (kind ? " toast-" + kind : "");
-        el.textContent = message;
-        wrap.appendChild(el);
-        requestAnimationFrame(() => el.classList.add("show"));
-        setTimeout(() => {
-            el.classList.remove("show");
-            setTimeout(() => el.remove(), 300);
-        }, 2600);
+    var POLL_MS = 3000;
+    var app = document.getElementById('app');
+    var feed = document.getElementById('feed');
+    var feedMore = document.getElementById('feed-more');
+    var drawer = document.getElementById('drawer');
+    var backdrop = document.getElementById('drawer-backdrop');
+
+    /* ── Drawer настроек ─────────────────────────────────────────── */
+    function openDrawer() {
+        if (!drawer) return;
+        drawer.hidden = false;
+        if (backdrop) backdrop.hidden = false;
+        document.body.style.overflow = 'hidden';
     }
 
-    window.showToast = toast;
-
-    // ── Авто-обновление ленты (in-place, без перезагрузки страницы) ──
-    // Каждые ~8с спрашиваем лёгкую сигнатуру (/dashboard/new-count).
-    // Сигнатура учитывает не только total/pending, но и MAX(last_seen_at)
-    // и MAX(raw_messages.id) — поэтому подхватываются и повторы анкет.
-    // При изменении сигнатуры тянем HTML-фрагменты (/dashboard/feed)
-    // и подменяем DOM, минуя полную перезагрузку (F5 не нужен).
-    const header = document.querySelector(".dashboard-header");
-    const feedEl = document.getElementById("profile-feed");
-    const paginationEl = document.getElementById("pagination");
-
-    function currentParams() {
-        return new URLSearchParams(window.location.search);
+    function closeDrawer() {
+        if (!drawer) return;
+        drawer.hidden = true;
+        if (backdrop) backdrop.hidden = true;
+        document.body.style.overflow = '';
     }
 
-    function updateStats(data) {
-        if (!data || typeof data !== "object") return;
-        const map = {
-            total: "total",
-            pending: "pending",
-            like: "like",
-            review: "review",
-            dislike: "dislike",
-        };
-        for (const [key, stat] of Object.entries(map)) {
-            if (data[key] === undefined) continue;
-            const el = document.querySelector(`[data-stat="${stat}"]`);
-            if (el && String(el.textContent) !== String(data[key])) {
-                el.textContent = data[key];
-            }
-        }
-    }
+    var openBtn = document.getElementById('settings-open');
+    if (openBtn) openBtn.addEventListener('click', openDrawer);
+    var closeBtn = document.getElementById('drawer-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
+    if (backdrop) backdrop.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeDrawer();
+    });
 
-    if (header && feedEl) {
-        let lastSignature = "";
-        let lastFeedHtml = feedEl.innerHTML;
-        let lastPaginationHtml = paginationEl
-            ? paginationEl.innerHTML
-            : "";
+    /* ── Тосты живут 5 секунд ────────────────────────────────────── */
+    document.querySelectorAll('.toast').forEach(function (t) {
+        setTimeout(function () { t.remove(); }, 5000);
+    });
 
-        setInterval(() => {
-            if (Object.keys(busy).length > 0) return;
-            const params = currentParams();
-            const url = `/dashboard/new-count?decision=${encodeURIComponent(
-                params.get("decision") || ""
-            )}`;
-
-            fetch(url, { credentials: "same-origin" })
-                .then((resp) => (resp.ok ? resp.json() : null))
-                .then((data) => {
-                    if (!data || !data.signature) return;
-                    if (data.signature === lastSignature) return;
-
-                    const feedUrl =
-                        `/dashboard/feed` +
-                        (params.toString() ? `?${params.toString()}` : "");
-                    return fetch(feedUrl, { credentials: "same-origin" })
-                        .then((r) => (r.ok ? r.json() : null))
-                        .then((frag) => {
-                            if (!frag) return;
-
-                            updateStats(data);
-                            if (header) {
-                                header.dataset.total = data.total ?? "";
-                                header.dataset.pending = data.pending ?? "";
-                            }
-                            lastSignature = data.signature;
-
-                            if (
-                                frag.feed &&
-                                frag.feed !== lastFeedHtml
-                            ) {
-                                feedEl.innerHTML = frag.feed;
-                                lastFeedHtml = frag.feed;
-                            }
-                            if (
-                                paginationEl &&
-                                frag.pagination &&
-                                frag.pagination !== lastPaginationHtml
-                            ) {
-                                paginationEl.innerHTML = frag.pagination;
-                                lastPaginationHtml = frag.pagination;
-                            }
-                        });
-                })
-                .catch(() => {});
-        }, 8000);
-    }
-
-    // ── Быстрое действие (LIKE / DISLIKE) из ленты ──
-    const busy = {};
-
-    window.quickAction = function quickAction(profileId, action, btnEl) {
-        if (busy[profileId]) return;
-        busy[profileId] = true;
-
-        const buttonsEl = document.querySelector(
-            `[data-profile-id="${profileId}"]`
-        );
-        const resultEl = document.getElementById(
-            `action-result-${profileId}`
-        );
-        const buttons = buttonsEl
-            ? Array.from(buttonsEl.querySelectorAll("button"))
-            : btnEl
-            ? [btnEl]
-            : [];
-        buttons.forEach((b) => {
-            b.disabled = true;
-            b.classList.add("is-loading");
+    /* ── Подсказки капч подставляют текст в поле ответа ──────────── */
+    function bindSuggestions(root) {
+        (root || document).querySelectorAll('.chip[data-suggest]').forEach(function (chip) {
+            if (chip.dataset.bound) return;
+            chip.dataset.bound = '1';
+            chip.addEventListener('click', function () {
+                var box = chip.closest('.pending__item, .card--captcha, .bubble');
+                var input = box && box.querySelector('input[name="answer"]');
+                if (input) {
+                    input.value = chip.dataset.suggest || chip.textContent.trim();
+                    input.focus();
+                }
+            });
         });
+    }
+    bindSuggestions(document);
 
-        fetch(`/dashboard/action/${profileId}/${action}`, {
-            method: "GET",
-            credentials: "same-origin",
-        })
-            .then((resp) => {
-                if (resp.ok) {
-                    buttons.forEach((b) => (b.style.display = "none"));
-                    const msg =
-                        action === "LIKE"
-                            ? "LIKE отправлен"
-                            : "DISLIKE отправлен";
-                    if (resultEl) resultEl.textContent = "✅ " + msg;
-                    toast(msg, action === "LIKE" ? "like" : "dislike");
-                } else if (resp.status === 409) {
-                    if (resultEl) resultEl.textContent = "Уже обработано";
-                    toast("Анкета уже обработана", "error");
-                } else {
-                    if (resultEl) resultEl.textContent = "Ошибка";
-                    toast("Ошибка при отправке", "error");
+    /* ── Лента ───────────────────────────────────────────────────── */
+    function atBottom() {
+        return window.innerHeight + window.scrollY >= document.body.offsetHeight - 260;
+    }
+
+    function scrollToBottom() {
+        window.scrollTo({top: document.body.offsetHeight, behavior: 'smooth'});
+    }
+
+    function setLoadMoreState(page, totalPages) {
+        if (!feedMore) return;
+        var btn = feedMore.querySelector('#load-older');
+        if (!btn) {
+            if (page > 1 && totalPages > 1) {
+                feedMore.innerHTML = '<button type="button" class="btn btn--ghost" id="load-older" ' +
+                    'data-page="' + (page + 1) + '">Показать более ранние</button>';
+                bindLoadMore();
+            }
+            return;
+        }
+        btn.dataset.page = page + 1;
+        btn.hidden = page >= totalPages;
+    }
+
+    function bindLoadMore() {
+        var btn = feedMore && feedMore.querySelector('#load-older');
+        if (!btn || btn.dataset.bound) return;
+        btn.dataset.bound = '1';
+        btn.addEventListener('click', function () {
+            var next = parseInt(btn.dataset.page || '2', 10);
+            if (!next || isNaN(next)) return;
+            var before = document.body.offsetHeight;
+            fetch('/chat/feed?page=' + next)
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    // Страница 1 = свежие, дальше — более ранние → вставляем сверху.
+                    feed.insertAdjacentHTML('afterbegin', data.feed);
+                    setLoadMoreState(next, data.total_pages);
+                    bindSuggestions(feed);
+                    window.scrollTo(0, window.scrollY + (document.body.offsetHeight - before));
+                })
+                .catch(function () { /* следующая попытка */ });
+        });
+    }
+    bindLoadMore();
+
+    function refreshFeed(page, keepScroll) {
+        var stay = keepScroll === true;
+        var before = document.body.offsetHeight;
+        return fetch('/chat/feed?page=' + page)
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                var oldPending = document.getElementById('pending');
+                if (oldPending) oldPending.remove();
+                if (data.pending) {
+                    feed.insertAdjacentHTML('beforebegin', data.pending);
+                }
+                feed.innerHTML = data.feed;
+                if (app) {
+                    app.dataset.page = data.page;
+                    app.dataset.totalPages = data.total_pages;
+                }
+                setLoadMoreState(data.page, data.total_pages);
+                bindSuggestions(document);
+                if (stay) {
+                    window.scrollTo(0, window.scrollY + (document.body.offsetHeight - before));
+                } else if (atBottom()) {
+                    scrollToBottom();
                 }
             })
-            .catch(() => {
-                if (resultEl) resultEl.textContent = "Ошибка сети";
-                toast("Ошибка сети", "error");
+            .catch(function () { /* не сеть — ждём следующий тик */ });
+    }
+
+    function poll() {
+        if (!app) return;
+        fetch('/chat/new-count', {headers: {'X-Requested-With': 'fetch'}})
+            .then(function (r) { return r.json(); })
+            .then(function (sig) {
+                if (sig && sig.signature && sig.signature !== app.dataset.sig) {
+                    app.dataset.sig = sig.signature;
+                    return refreshFeed(1, false);
+                }
             })
-            .finally(() => {
-                delete busy[profileId];
-                buttons.forEach((b) => b.classList.remove("is-loading"));
-            });
-    };
+            .catch(function () { /* тихо */ });
+    }
+
+    if (app) {
+        setInterval(poll, POLL_MS);
+        window.dvai = {refreshFeed: refreshFeed, openDrawer: openDrawer, closeDrawer: closeDrawer};
+    }
 })();
