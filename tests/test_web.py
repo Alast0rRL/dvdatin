@@ -326,7 +326,18 @@ class TestAppShell:
         src = resp.get_data(as_text=True)
         assert "/chat/new-count" in src
         assert "openDrawer" in src
+        assert "closeDrawer" in src
         assert "amp;" not in src
+
+    def test_drawer_is_closed_by_default(self, client) -> None:
+        """Drawer приходит закрытым, а `hidden` реально прячет его (CSS-гейт)."""
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'id="drawer"' in data and "hidden" in data
+        # Регресс: `.drawer { display: flex }` перебивал [hidden] и крестик
+        # не закрывал панель — нужен явный guard в статике.
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        assert "[hidden]" in css and "display: none !important" in css
 
 # ── Quick Action Tests ───────────────────────────────────────────
 

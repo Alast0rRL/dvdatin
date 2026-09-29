@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; }
 
+/* Атрибут hidden должен побеждать любые display из классов (иначе drawer
+   с `display: flex` остаётся видимым и крестик не работает). */
+[hidden] { display: none !important; }
+
 html, body {
     margin: 0;
     padding: 0;
