@@ -27,6 +27,9 @@ html, body {
     background: var(--bg);
     color: var(--text);
     font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    /* Никакого горизонтального «уезда»: длинное слово/ссылка в анкете не должна
+       растягивать страницу и сдвигать всю вёрстку вбок. */
+    overflow-x: hidden;
 }
 
 a { color: var(--accent); text-decoration: none; }
@@ -41,14 +44,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    flex-wrap: wrap;           /* узкое окно — перенос строки, а не вылет за угол */
+    gap: 8px 12px;
     padding: 10px 16px;
     background: rgba(14, 17, 23, .92);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--line);
 }
-.topbar-side { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.topbar-side--right { gap: 6px; }
+.topbar-side {
+    display: flex; align-items: center; gap: 10px;
+    min-width: 0; flex: 0 1 auto; flex-wrap: wrap;
+}
+.topbar-side--right { gap: 6px; margin-left: auto; }
 
 .brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; letter-spacing: .2px; }
 .brand-mark {
@@ -102,10 +109,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .mode-pill--auto { color: #ffd2ce; border-color: rgba(224, 87, 76, .5); }
 
 /* ── Лента ───────────────────────────────────────────────────────── */
-.app { max-width: 860px; margin: 0 auto; padding: 16px 14px 60px; }
-.feed { display: flex; flex-direction: column; gap: 12px; }
+.app { width: 100%; max-width: 860px; margin: 0 auto; padding: 16px 14px 60px; }
+.feed { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
-.msg { display: flex; flex-direction: column; max-width: 82%; }
+.msg { display: flex; flex-direction: column; max-width: 82%; min-width: 0; }
 .msg--in { align-self: flex-start; align-items: flex-start; }
 .msg--out { align-self: flex-end; align-items: flex-end; }
 .msg__author { font-size: 11px; color: var(--muted); margin: 0 4px 3px; }
@@ -118,6 +125,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     padding: 10px 12px;
     white-space: pre-wrap;
     word-break: break-word;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+    min-width: 0;
 }
 .msg--out .bubble { background: #1d2a4a; border-color: #2b3a5f; }
 .bubble--captcha { border-color: rgba(240, 169, 43, .55); }
@@ -125,16 +135,16 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .bubble__text:empty { display: none; }
 
 /* ── Анкета в ленте ──────────────────────────────────────────────── */
-.card { min-width: 240px; }
-.card__photos { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.card { min-width: 0; max-width: 100%; }
+.card__photos { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; max-width: 100%; }
 .card__photo {
-    width: 128px; height: 172px; object-fit: cover;
+    width: 128px; max-width: 100%; height: 172px; object-fit: cover;
     border-radius: 10px; background: #0b0e14;
 }
 .card__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 6px; }
 .card__name { font-weight: 700; font-size: 15px; }
 .card__city { font-size: 12px; color: var(--muted); }
-.card__text { font-size: 13px; white-space: pre-wrap; margin-bottom: 8px; }
+.card__text { font-size: 13px; white-space: pre-wrap; margin-bottom: 8px; overflow-wrap: anywhere; }
 .card__hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
 .badge {
@@ -233,7 +243,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 }
 .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
-    width: min(420px, 100%);
+    width: min(420px, 100vw);
+    max-width: 100vw;
+    max-height: 100vh;
     background: var(--bg-soft);
     border-left: 1px solid var(--line);
     display: flex; flex-direction: column;
@@ -293,6 +305,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .flash-success { background: rgba(46, 168, 106, .15); border: 1px solid rgba(46, 168, 106, .5); }
 .flash-error { background: rgba(224, 87, 76, .15); border: 1px solid rgba(224, 87, 76, .5); }
 .flash-warning { background: rgba(240, 169, 43, .15); border: 1px solid rgba(240, 169, 43, .5); }
+
+/* Половинное окно на ноутбуке: топbar переносится, лента шире экрана. */
+@media (max-width: 900px) {
+    .msg { max-width: 92%; }
+    .topbar { padding: 8px 12px; }
+    .topbar-side { gap: 8px; }
+    .mode-pill { display: none; }
+}
 
 @media (max-width: 640px) {
     .msg { max-width: 94%; }

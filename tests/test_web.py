@@ -339,6 +339,23 @@ class TestAppShell:
         css = client.get("/static/css/app.css").get_data(as_text=True)
         assert "[hidden]" in css and "display: none !important" in css
 
+    def test_layout_cannot_shift_sideways(self, client) -> None:
+        """Вёрстка не «уезжает» вбок: горизонтального скролла нет, топбар переносится.
+
+        Регресс на жалобу «интерфейс поплыл, сверху в углу смещено, снизу съехало»:
+        длинное слово в анкете/промо растягивало flex-строку, топбар без wrap
+        выталкивал ⚙/выход за правый край.
+        """
+        _login(client)
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        assert "overflow-x: hidden" in css
+        topbar = css.split(".topbar {", 1)[1].split("}", 1)[0]
+        assert "flex-wrap: wrap" in topbar
+        assert "margin-left: auto" in css          # правая группа прижата в угол
+        assert ".msg { display: flex; flex-direction: column; max-width: 82%; min-width: 0; }" in css
+        assert "overflow-wrap: anywhere" in css
+        assert "width: min(420px, 100vw)" in css   # панель не шире экрана
+
 # ── Quick Action Tests ───────────────────────────────────────────
 
 class TestQuickAction:
