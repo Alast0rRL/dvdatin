@@ -602,6 +602,7 @@ tests/test_web.py::TestAppShell::test_legacy_pages_redirect_to_app
 tests/test_web.py::TestAppShell::test_poll_endpoints_available
 tests/test_web.py::TestAppShell::test_app_js_poll_and_drawer
 tests/test_web.py::TestAppShell::test_drawer_is_closed_by_default
+tests/test_web.py::TestAppShell::test_feed_is_single_vertical_column
 tests/test_web.py::TestAppShell::test_layout_cannot_shift_sideways
 tests/test_web.py::TestAppShell::test_static_assets_are_cache_busted
 tests/test_web.py::TestAppShell::test_login_uses_defined_css_classes

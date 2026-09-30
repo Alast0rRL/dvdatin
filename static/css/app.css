@@ -160,34 +160,48 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 /* ── Контент и лента ───────────────────────────────────────────── */
 /* Обёртка контента: min-width: 0 — чтобы лента могла сжиматься. */
 .app-main { min-width: 0; }
+
+/* Одна колонка по центру — лента читается как список событий сверху вниз. */
 .app {
     width: 100%;
-    max-width: 880px;
+    max-width: 800px;
     margin: 0 auto;
     padding: 16px 14px 64px;
 }
 .feed {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    align-items: stretch;     /* все карточки одной ширины — никаких «плашек у края» */
+    gap: 16px;
+    width: 100%;
     min-width: 0;
 }
 
-/* Сообщение: колонка, ограниченная по ширине; min-width: 0 — чтобы длинный
-   текст/фото сжимали пузырь, а не растягивали ленту. */
+/* Сообщение — полноширинная строка ленты: мета сверху, содержимое под ним.
+   Никаких align-self/fit-content: карточки всегда друг за другом. */
 .msg {
     display: flex;
     flex-direction: column;
-    max-width: 82%;
+    gap: 4px;
+    width: 100%;
+    max-width: 100%;
     min-width: 0;
-    width: fit-content;
 }
-.msg--in { align-self: flex-start; align-items: flex-start; }
-.msg--out { align-self: flex-end; align-items: flex-end; }
-.msg__author, .msg__time { font-size: 11px; color: var(--muted); padding: 0 4px; }
-.msg__time { font-size: 10px; color: #6b7488; }
+.msg__meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    padding: 0 2px;
+    font-size: 11px;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+.msg__author { font-weight: 600; }
+.msg__time { font-size: 11px; color: #6b7488; margin-left: auto; }
 
 .bubble {
+    width: 100%;
     max-width: 100%;
     min-width: 0;
     padding: 10px 13px;
@@ -453,7 +467,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 /* ── Узкие экраны ──────────────────────────────────────────────── */
 @media (max-width: 860px) {
     .app { padding: 14px 12px 56px; }
-    .msg { max-width: 92%; }
 }
 
 /* Топбар в две строки: бренд+режим сверху, статус+⚙+выход под ними.
@@ -463,7 +476,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     .topbar-side--right { justify-content: flex-start; }
     .mode-pill { display: none; }
     .brand-name { display: none; }
-    .msg { max-width: 94%; }
     .card__photos { gap: 4px; }
     .drawer { border-left: 0; }
 }

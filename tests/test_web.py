@@ -339,6 +339,33 @@ class TestAppShell:
         css = client.get("/static/css/app.css").get_data(as_text=True)
         assert "[hidden]" in css and "display: none !important" in css
 
+    def test_feed_is_single_vertical_column(self, client) -> None:
+        """Лента — одна колонка: все строки одной ширины, друг за другом.
+
+        Регресс на жалобу «карточки разбросаны по краям, посередине пусто»:
+        `width: fit-content` + чередование `align-self: flex-start/end` (как в
+        чатах) превращали короткие сообщения («👎 DISLIKE» + таймстамп) в узкие
+        вертикальные плашки то у правого, то у левого края, а центр пустовал.
+        """
+        _login(client)
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        feed = css.split(".feed {", 1)[1].split("}", 1)[0]
+        assert "flex-direction: column" in feed
+        assert "align-items: stretch" in feed      # не center по краям
+        assert "gap: 16px" in feed
+        # Контейнер ленты — одна колонка шириной до 800px по центру.
+        app = css.split(".app {", 1)[1].split("}", 1)[0]
+        assert "max-width: 800px" in app and "margin: 0 auto" in app
+        # У строки ленты нет позиционирования и подгонки под содержимое.
+        msg = css.split(".msg {", 1)[1].split("}", 1)[0]
+        assert "align-self" not in msg and "fit-content" not in msg
+        assert "width: 100%" in msg
+        assert "align-self: flex-end" not in css
+        assert "align-self: flex-start" not in css
+        # Мета (автор + время) — одна строка, а не столбик под пузырём.
+        assert ".msg__meta" in css
+        assert "flex-direction: column" in msg
+
     def test_layout_cannot_shift_sideways(self, client) -> None:
         """Вёрстка не «уезжает» вбок: горизонтального скролла нет, топбар на grid.
 
@@ -355,8 +382,8 @@ class TestAppShell:
         topbar = css.split(".topbar {", 1)[1].split("}", 1)[0]
         assert "grid-template-columns: minmax(0, 1fr) auto" in topbar
         assert "margin-left: auto" not in topbar
-        # Ничего не растягивает ленту шире экрана.
-        assert "max-width: 82%" in css
+        # Ничего не растягивает ленту шире экрана: строка = 100% контейнера.
+        assert "max-width: 100%" in css
         assert "min-width: 0" in css
         assert "overflow-wrap: anywhere" in css
         # Фото не задают высоту до загрузки → вёрстка не прыгает.

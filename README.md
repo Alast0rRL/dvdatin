@@ -226,7 +226,7 @@ export DVAI_WEB_COOKIE_SECURE="0"                # 1 — только за HTTPS
 
 URL-ы: `/login` → **`/`** — единственный экран приложения (`web/blueprints/chat.py`, шаблон `web/templates/app.html`). Отдельных вкладок и страниц больше нет:
 
-- **лента чата** — сырой поток Leo как TG-чат: входящие пузыри слева, наши ❤️/👎/«Берем)» справа, анкеты (фото + имя + город + бейдж решения) встроены inline;
+- **лента — одна вертикальная колонка**: контейнер `.app` (`max-width: 800px; margin: 0 auto`) → `.feed` (`display: flex; flex-direction: column; align-items: stretch; gap: 16px`) → строки `.msg` (`width: 100%`). Все события одной ширины и идут друг за другом сверху вниз; **никаких** `align-self`/`fit-content`/`position: absolute` — из-за них короткие сообщения («👎 DISLIKE» + таймстамп) раньше вырождались в узкие плашки то у правого, то у левого края с пустым центром. Над каждой строкой — мета одной строкой (`.msg__meta`: кто + когда), внутри — анкета с фото и кнопками;
 - **выбор режима** в топбаре — `OBSERVE` / `SEMI_AUTO` / `AUTO`, текущий подсвечен, POST на `/settings/mode` (переключение на лету);
 - **кнопки ❤️/👎** у анкеты — **только если AI-решение `REVIEW`** и человек ещё не решил; POST на `/chat/profile/<id>/<LIKE|DISLIKE>` (CSRF + серверный гейт по `get_latest_ai_decision`, `is_already_reviewed` → `save_human_decision` + реакция в чат Leo);
 - **⚙ настройки** — одна кнопка открывает drawer поверх ленты (режим, аккоунт-исполнитель, фильтры, `SKIP/LIKE`-предпочтения);
@@ -241,12 +241,13 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 Жёсткие правила вёрстки (проверяются тестами и числовым аудитом в headless-браузере, `_audit.py`):
 
 - **топбар — CSS-grid** `minmax(0, 1fr) auto` (левая группа тянется, правая прижата к краю и не может выехать за экран); на узких экранах (<620px) переносится на две строки;
+- **лента — одна колонка** `.feed { display: flex; flex-direction: column; align-items: stretch; gap: 16px }` внутри `.app { max-width: 800px; margin: 0 auto }`, строки `.msg { width: 100% }` — без `align-self` и `fit-content`; аудит проверяет, что все строки одной ширины и с одним `x`;
 - **`min-width: 0` во всей flex/grid-цепочке** + `minmax(0, 1fr)` в колонках + `overflow-wrap: anywhere` — длинное слово, имя или ссылка в анкете не растягивают ленту (плюс `overflow-x: hidden` как страховка);
 - **фото анкеты — grid из 3 колонок с `aspect-ratio: 3/4`** и `max-width: 480px`: высота не зависит от загрузки файла и от его исходного разрешения, вёрстка не «прыгает»; битые/удалённые фото убирает `app.js` (сетка схлопывается через `:empty`);
 - **кликабельные элементы ≥ 40px** (`.btn`, `.icon-btn`, `.input`), кнопки REVIEW — 86×40;
 - **панель настроек** `position: fixed; width: min(420px, 100vw)` — не шире экрана, `[hidden] { display: none !important }` перебивает `display: flex`.
 
-Регресс-тесты: `test_layout_cannot_shift_sideways` (структурные гарантии), `test_login_uses_defined_css_classes` и `test_every_component_class_is_styled` (каждый класс из шаблонов определён в `app.css` — ловит рассинхрон разметки и стилей, из-за которого `/login` рендерился без оформленной кнопки).
+Регресс-тесты: `test_feed_is_single_vertical_column` (одна колонка, строки одной ширины, без позиционирования), `test_layout_cannot_shift_sideways` (структурные гарантии), `test_login_uses_defined_css_classes` и `test_every_component_class_is_styled` (каждый класс из шаблонов определён в `app.css` — ловит рассинхрон разметки и стилей, из-за которого `/login` рендерился без оформленной кнопки).
 
 **Режим на сайте меняется на лету** (`web/actions.py` → `set_mode_sync`): POST на `/settings/mode` не только пишет `project.mode` в `config.yaml`, но и вызывает `collector.set_mode()` — живой `AutoActionEngine` переключается сразу, а для SEMI_AUTO/AUTO запускается `start_auto_stream()` (обработка активной анкеты / продолжение ленты Leo). Перезапуск не нужен. Без привязанного коллектора (например в тестах) режим просто сохраняется в YAML.
 

@@ -1,10 +1,15 @@
-{# ── Лента чата: входящие (Leo) слева, наши действия справа ── #}
+{# ── Лента: одна вертикальная колонка событий сверху вниз ── #}
 {% for item in items %}
 <div class="msg msg--{{ item.direction }} msg--{{ item.kind }}"
      {% if item.profile %}id="profile-{{ item.profile.id }}"{% endif %}>
-    {% if item.direction == 'out' %}
-    <div class="msg__author">{{ item.action_label or 'Я' }}</div>
-    {% endif %}
+    {# Мета одной строкой: кто + когда. Не столбиком — иначе строка читается
+       как узкая «плашка» у края экрана. #}
+    <div class="msg__meta">
+        {% if item.direction == 'out' %}
+        <span class="msg__author">{{ item.action_label or 'Я' }}</span>
+        {% endif %}
+        <span class="msg__time">{{ item.ts[:16].replace('T', ' ') if item.ts else '' }}</span>
+    </div>
 
     <div class="bubble{% if item.kind == 'captcha' %} bubble--captcha{% endif %}">
         {% if item.text %}
@@ -77,8 +82,6 @@
         </div>
         {% endif %}
     </div>
-
-    <div class="msg__time">{{ item.ts[:16].replace('T', ' ') if item.ts else '' }}</div>
 </div>
 {% else %}
 <div class="empty">
