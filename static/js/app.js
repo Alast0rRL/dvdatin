@@ -46,9 +46,9 @@
         setTimeout(function () { t.remove(); }, 5000);
     });
 
-    /* ── Битые фото не оставляют дыру в анкете ───────────────────── */
+    /* ── Битые фото не оставляют дыру в строке ───────────────────── */
     /* Ошибка загрузки не всплывает (error не bubble), поэтому ловим
-       в фазе захвата. Сетка .card__photos при этом схлопывается :empty. */
+       в фазе захвата. Пустая .thumbs при этом схлопывается (нет детей). */
     function dropBrokenImage(img) {
         if (img.dataset.broken) return;
         img.dataset.broken = '1';
@@ -57,9 +57,12 @@
     document.addEventListener('error', function (e) {
         if (e.target && e.target.tagName === 'IMG') dropBrokenImage(e.target);
     }, true);
-    document.querySelectorAll('img.card__photo').forEach(function (img) {
-        if (img.complete && img.naturalWidth === 0) dropBrokenImage(img);
-    });
+    function sweepBrokenImages(root) {
+        (root || document).querySelectorAll('img.thumbs__img').forEach(function (img) {
+            if (img.complete && img.naturalWidth === 0) dropBrokenImage(img);
+        });
+    }
+    sweepBrokenImages(document);
 
     /* ── Подсказки капч подставляют текст в поле ответа ──────────── */
     function bindSuggestions(root) {
@@ -67,7 +70,7 @@
             if (chip.dataset.bound) return;
             chip.dataset.bound = '1';
             chip.addEventListener('click', function () {
-                var box = chip.closest('.pending__item, .card--captcha, .bubble');
+                var box = chip.closest('.pending__item, .row--captcha');
                 var input = box && box.querySelector('input[name="answer"]');
                 if (input) {
                     input.value = chip.dataset.suggest || chip.textContent.trim();
@@ -77,6 +80,60 @@
         });
     }
     bindSuggestions(document);
+
+    /* ── Фильтр по решению + поиск по имени/городу ───────────────── */
+    /* Работают по data-атрибутам строк (проставлены в app_feed.html),
+       поэтому перерисовка ленты не сбрасывает выбранный фильтр. */
+    var filter = 'ALL';
+    var query = '';
+
+    function rowMatches(row) {
+        if (filter !== 'ALL' && row.dataset.decision !== filter) return false;
+        if (query) {
+            var name = (row.dataset.name || '').toLowerCase();
+            if (name.indexOf(query) === -1) return false;
+        }
+        return true;
+    }
+
+    function applyFilter() {
+        if (!feed) return;
+        var shown = 0;
+        var total = 0;
+        feed.querySelectorAll('.row').forEach(function (row) {
+            total += 1;
+            var ok = rowMatches(row);
+            row.hidden = !ok;
+            if (ok) shown += 1;
+        });
+        var counter = document.getElementById('feed-count');
+        if (counter) counter.textContent = (query || filter !== 'ALL')
+            ? shown + ' из ' + total
+            : total + ' событий';
+    }
+
+    var seg = document.getElementById('filter-seg');
+    if (seg) {
+        seg.addEventListener('click', function (e) {
+            var btn = e.target.closest('.seg__btn');
+            if (!btn) return;
+            filter = btn.dataset.filter || 'ALL';
+            seg.querySelectorAll('.seg__btn').forEach(function (b) {
+                var on = b === btn;
+                b.classList.toggle('is-active', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            applyFilter();
+        });
+    }
+
+    var search = document.getElementById('feed-search');
+    if (search) {
+        search.addEventListener('input', function () {
+            query = search.value.trim().toLowerCase();
+            applyFilter();
+        });
+    }
 
     /* ── Лента ───────────────────────────────────────────────────── */
     function atBottom() {
@@ -117,6 +174,8 @@
                     feed.insertAdjacentHTML('afterbegin', data.feed);
                     setLoadMoreState(next, data.total_pages);
                     bindSuggestions(feed);
+                    sweepBrokenImages(feed);
+                    applyFilter();
                     window.scrollTo(0, window.scrollY + (document.body.offsetHeight - before));
                 })
                 .catch(function () { /* следующая попытка */ });
@@ -142,6 +201,8 @@
                 }
                 setLoadMoreState(data.page, data.total_pages);
                 bindSuggestions(document);
+                sweepBrokenImages(feed);
+                applyFilter();
                 if (stay) {
                     window.scrollTo(0, window.scrollY + (document.body.offsetHeight - before));
                 } else if (atBottom()) {
@@ -166,6 +227,7 @@
 
     if (app) {
         setInterval(poll, POLL_MS);
+        applyFilter();
         window.dvai = {refreshFeed: refreshFeed, openDrawer: openDrawer, closeDrawer: closeDrawer};
     }
 })();

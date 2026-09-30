@@ -343,29 +343,47 @@ class TestAppShell:
         """Лента — одна колонка: все строки одной ширины, друг за другом.
 
         Регресс на жалобу «карточки разбросаны по краям, посередине пусто»:
-        `width: fit-content` + чередование `align-self: flex-start/end` (как в
-        чатах) превращали короткие сообщения («👎 DISLIKE» + таймстамп) в узкие
-        вертикальные плашки то у правого, то у левого края, а центр пустовал.
+        чат-вёрстка с `width: fit-content` и чередованием `align-self`
+        превращала короткие события («👎 DISLIKE» + время) в узкие плашки
+        то у правого, то у левого края. Теперь это плоский лог-список.
         """
         _login(client)
         css = client.get("/static/css/app.css").get_data(as_text=True)
         feed = css.split(".feed {", 1)[1].split("}", 1)[0]
         assert "flex-direction: column" in feed
         assert "align-items: stretch" in feed      # не center по краям
-        assert "gap: 16px" in feed
-        # Контейнер ленты — одна колонка шириной до 800px по центру.
+        assert "width: 100%" in feed
+        # Контейнер ленты — одна колонка по центру, ширина ограничена.
         app = css.split(".app {", 1)[1].split("}", 1)[0]
-        assert "max-width: 800px" in app and "margin: 0 auto" in app
-        # У строки ленты нет позиционирования и подгонки под содержимое.
-        msg = css.split(".msg {", 1)[1].split("}", 1)[0]
-        assert "width: 100%" in msg
+        assert "margin: 0 auto" in app
+        assert "max-width:" in app
+        # Строка события — grid (время + содержимое), а не пузырь.
+        row = css.split(".row {", 1)[1].split("}", 1)[0]
+        assert "display: grid" in row
+        assert "minmax(0, 1fr)" in row             # вторая колонка тянется
+        assert "width: 100%" in row
         # Нигде в стилях не осталось подгонки/прижатия строк ленты.
         assert "align-self" not in css
         assert "fit-content" not in css
         assert "position: absolute" not in css
-        # Мета (автор + время) — одна строка, а не столбик под пузырём.
-        assert ".msg__meta" in css
-        assert "flex-direction: column" in msg
+
+    def test_feed_rows_carry_filter_attributes(self, client) -> None:
+        """Строки ленты помечены решением и именем — для фильтра/поиска."""
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'data-decision="' in data
+        assert 'data-name="' in data
+        # Барби (id=2) — AI REVIEW → строка помечена REVIEW и ищется по имени.
+        assert 'data-decision="REVIEW"' in data
+        assert 'id="profile-2"' in data
+        # Панель управления списком на том же экране.
+        assert 'id="filter-seg"' in data
+        assert 'id="feed-search"' in data
+        assert 'id="feed-count"' in data
+        # JS умеет фильтровать и искать по этим атрибутам.
+        src = client.get("/static/js/app.js").get_data(as_text=True)
+        assert "applyFilter" in src and "dataset.decision" in src
+        assert "dataset.name" in src
 
     def test_layout_cannot_shift_sideways(self, client) -> None:
         """Вёрстка не «уезжает» вбок: горизонтального скролла нет, топбар на grid.
@@ -373,8 +391,8 @@ class TestAppShell:
         Регресс на жалобу «интерфейс поплыл, сверху в углу смещено»:
         flex + `margin-left: auto` в топбаре и растягивающиеся фото/текст
         выталкивали ⚙/выход за правый край. Теперь топбар — grid из
-        `minmax(0, 1fr) auto`, у пузырей `min-width: 0`, текст переносится
-        внутри себя, фото — grid с `aspect-ratio`.
+        `minmax(0, 1fr) auto`, у строк `min-width: 0`, текст переносится
+        внутри себя, фото — фиксированные миниатюры с `object-fit`.
         """
         _login(client)
         css = client.get("/static/css/app.css").get_data(as_text=True)
@@ -387,9 +405,9 @@ class TestAppShell:
         assert "max-width: 100%" in css
         assert "min-width: 0" in css
         assert "overflow-wrap: anywhere" in css
-        # Фото не задают высоту до загрузки → вёрстка не прыгает.
-        photos = css.split(".card__photo {", 1)[1].split("}", 1)[0]
-        assert "aspect-ratio" in photos and "object-fit" in photos
+        # Миниатюра фото не задаёт высоту до загрузки → вёрстка не прыгает.
+        thumbs = css.split(".thumbs__img {", 1)[1].split("}", 1)[0]
+        assert "object-fit" in thumbs
         # Панель настроек не шире экрана.
         assert "width: min(420px, 100vw)" in css
 
@@ -427,9 +445,10 @@ class TestAppShell:
         css = (root / "static" / "css" / "app.css").read_text(encoding="utf-8")
         defined = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
         # Префиксы наших компонентов; служебные/сторонние классы не проверяем.
-        prefixes = ("topbar", "brand", "icon-btn", "mode", "app", "feed", "msg", "bubble",
-                    "card", "badge", "btn", "input", "link-btn", "chip", "pending", "drawer",
-                    "empty", "toast", "login", "form", "flash", "inline-form")
+        prefixes = ("topbar", "brand", "icon-btn", "mode", "app", "feed", "row", "thumbs",
+                    "badge", "btn", "input", "link-btn", "chip", "pending", "drawer",
+                    "seg", "toolbar", "empty", "toast", "login", "form", "flash",
+                    "inline-form")
 
         missing: dict[str, set[str]] = {}
         for template in (root / "web" / "templates").rglob("*.html"):
@@ -442,9 +461,9 @@ class TestAppShell:
                         classes.add(name)
             local = {c for c in classes
                      if c.startswith(prefixes) and not c.startswith(("is-", "mode-pill--",
-                                                                    "mode-switch__btn--",
-                                                                    "badge--", "card--", "card__done--",
-                                                                    "drawer__section", "toast--", "flash-"))}
+                                                                     "mode-switch__btn--",
+                                                                     "badge--", "row--",
+                                                                     "drawer__section", "toast--", "flash-"))}
             gap = local - defined
             if gap:
                 missing[template.name] = gap

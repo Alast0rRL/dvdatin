@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}DvAI{% endblock %}
+{% block title %}DvAI — события{% endblock %}
 
-{# ── Режим работы — прямо в топбаре, без отдельной страницы ── #}
+{# ── Режим работы — в шапке, без отдельных страниц ── #}
 {% block mode_switch %}
 <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch" id="mode-switch">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -9,7 +9,7 @@
     {% for m in modes %}
     <button type="submit" name="mode" value="{{ m }}"
             class="mode-switch__btn mode-switch__btn--{{ m|lower }} {% if mode == m %}is-active{% endif %}"
-            title="{{ m }} — {{ {'OBSERVE': 'только смотрим', 'SEMI_AUTO': 'авто-действия + ручные кнопки на REVIEW', 'AUTO': 'полная автоматика'}[m] }}">
+            title="{{ {'OBSERVE': 'только смотрим', 'SEMI_AUTO': 'авто-действия + ручные кнопки на REVIEW', 'AUTO': 'полная автоматика'}[m] }}">
         {{ m|replace('_', ' ') }}
     </button>
     {% endfor %}
@@ -37,6 +37,20 @@
 
     {% include "partials/app_captchas.html" %}
 
+    {# ── Панель управления списком: фильтр по решению, поиск, счётчик ── #}
+    <div class="toolbar">
+        <div class="seg" id="filter-seg" role="group" aria-label="Фильтр по решению">
+            <button type="button" class="seg__btn is-active" data-filter="ALL" aria-pressed="true">Все</button>
+            <button type="button" class="seg__btn" data-filter="LIKE" aria-pressed="false">❤️</button>
+            <button type="button" class="seg__btn" data-filter="REVIEW" aria-pressed="false">🤔</button>
+            <button type="button" class="seg__btn" data-filter="DISLIKE" aria-pressed="false">👎</button>
+        </div>
+        <input type="search" id="feed-search" class="input input--search"
+               placeholder="Имя или город" autocomplete="off" aria-label="Поиск по анкетам">
+        <span class="toolbar__count" id="feed-count"></span>
+    </div>
+
+    {# ── Список событий: одна колонка, каждая строка — отдельное событие ── #}
     <div class="feed" id="feed">
         {% include "partials/app_feed.html" %}
     </div>

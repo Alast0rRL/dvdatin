@@ -1,35 +1,35 @@
 /* ══════════════════════════════════════════════════════════════════
-   DvAI — единый экран: лента чата + режим + панель настроек.
+   DvAI — один экран: шапка + список событий + панель настроек.
 
-   Правила вёрстки, которые нельзя нарушать:
-   1) Ни один контейнер не тянется шире родителя → везде min-width: 0
-      в flex/grid-цепочке и minmax(0, 1fr) в grid-колонках.
-   2) Длинное слово/ссылка/имя не растягивает страницу → overflow-wrap.
-   3) Топбар — grid из двух колонок, а не flex c margin-left: auto,
-      поэтому правая группа не может выехать за правый край.
-   4) Фото — grid + aspect-ratio: до загрузки и после неё высота одна,
-      битая картинка удаляется скриптом, пустая сетка скрывается.
+   Инварианты вёрстки (проверяются тестами и аудитом в браузере):
+   1) Список — одна колонка фиксированной ширины по центру. У строк нет
+      выравнивания по краям, подгонки под содержимое и абсолютного
+      позиционирования: из-за них строки разъезжались, а центр пустовал.
+   2) min-width: 0 + minmax(0, 1fr) + overflow-wrap: anywhere —
+      длинный текст/имя не растягивает страницу (нет горизонтального скролла).
+   3) Фото — фиксированные миниатюры с aspect-ratio: геометрия не зависит
+      от загрузки файла и его исходного разрешения.
+   4) Кликабельные элементы >= 36px по высоте.
    ══════════════════════════════════════════════════════════════════ */
 
 :root {
-    --bg: #0e1117;
-    --bg-soft: #161b25;
-    --bg-card: #1c2230;
-    --bg-input: #12161f;
-    --line: #2a3242;
-    --text: #e8ebf1;
-    --muted: #939db0;
+    --bg: #0d1117;
+    --bg-soft: #151b24;
+    --bg-row: #161d28;
+    --bg-input: #0f141c;
+    --line: #26303d;
+    --text: #e7ebf2;
+    --muted: #8f99ab;
     --accent: #6352f8;
     --like: #2ea86a;
     --dislike: #e0574c;
     --review: #f0a92b;
-    --radius: 14px;
-    --tap: 40px;              /* минимальная высота кликабельного элемента */
+    --tap: 36px;
 }
 
 * { box-sizing: border-box; }
 
-/* Атрибут hidden обязан побеждать display из классов (.drawer, .toast). */
+/* hidden обязан побеждать display из классов (.drawer, .toast). */
 [hidden] { display: none !important; }
 
 html, body {
@@ -37,57 +37,35 @@ html, body {
     padding: 0;
     background: var(--bg);
     color: var(--text);
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-    /* Страховка от горизонтальной прокрутки; основную работу делает
-       min-width: 0 / minmax(0, 1fr) / overflow-wrap ниже. */
-    overflow-x: hidden;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    overflow-x: hidden;   /* страховка; основную работу делает min-width: 0 */
 }
 
 img { max-width: 100%; }
-a { color: var(--accent); }
+a { color: var(--accent); text-decoration: none; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
 .inline-form { display: inline-flex; margin: 0; }
+.app-main { min-width: 0; }
 
-/* ── Топбар ────────────────────────────────────────────────────── */
+/* ── Шапка ─────────────────────────────────────────────────────── */
 .topbar {
     position: sticky;
     top: 0;
     z-index: 30;
     display: grid;
-    /* Левая группа тянется, правая — по содержимому и всегда у правого края. */
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;   /* правая группа по содержимому */
     align-items: center;
     gap: 10px 12px;
-    padding: 10px 16px;
+    padding: 9px 16px;
     background: var(--bg);
     border-bottom: 1px solid var(--line);
 }
-
-.topbar-side {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;              /* позволяет сжиматься и переносить содержимое */
-    flex-wrap: wrap;
-}
+.topbar-side { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
 .topbar-side--right { justify-content: flex-end; }
 
-.brand {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-weight: 700;
-    flex: 0 0 auto;
-}
-.brand-mark {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    background: var(--accent);
-}
-.brand-name { font-size: 16px; }
+.brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; flex: 0 0 auto; }
+.brand-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--accent); }
+.brand-name { font-size: 15px; }
 
 .icon-btn {
     display: grid;
@@ -95,23 +73,23 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     width: var(--tap);
     height: var(--tap);
     flex: 0 0 auto;
+    padding: 0;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 9px;
     background: var(--bg-soft);
     color: var(--text);
     cursor: pointer;
-    font-size: 15px;
+    font-size: 14px;
     line-height: 1;
-    padding: 0;
 }
-.icon-btn:hover { background: #232b3b; border-color: #3a4459; }
+.icon-btn:hover { background: #212a37; border-color: #3a4557; }
 .icon-btn:focus-visible, .btn:focus-visible, .input:focus-visible,
-.chip:focus-visible, .mode-switch__btn:focus-visible {
+.chip:focus-visible, .mode-switch__btn:focus-visible, .seg__btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
 
-/* ── Переключатель режима ──────────────────────────────────────── */
+/* ── Режим работы ───────────────────────────────────────────────── */
 .mode-switch {
     display: inline-flex;
     gap: 2px;
@@ -119,20 +97,20 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     padding: 2px;
     background: var(--bg-soft);
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 9px;
 }
 .mode-switch--block { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
 .mode-switch__btn {
-    min-height: 30px;
+    min-height: 28px;
+    padding: 4px 10px;
     border: 0;
-    border-radius: 8px;
+    border-radius: 7px;
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 700;
     letter-spacing: .3px;
-    padding: 5px 10px;
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
@@ -145,136 +123,158 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 
 .mode-pill {
     flex: 0 0 auto;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: .4px;
-    padding: 4px 10px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--bg-soft);
-    color: var(--muted);
-}
-.mode-pill--semi_auto { color: #bdf3d4; border-color: rgba(46, 168, 106, .5); }
-.mode-pill--auto { color: #ffd6d2; border-color: rgba(224, 87, 76, .5); }
-
-/* ── Контент и лента ───────────────────────────────────────────── */
-/* Обёртка контента: min-width: 0 — чтобы лента могла сжиматься. */
-.app-main { min-width: 0; }
-
-/* Одна колонка по центру — лента читается как список событий сверху вниз. */
-.app {
-    width: 100%;
-    max-width: 800px;
-    margin: 0 auto;
-    padding: 16px 14px 64px;
-}
-.feed {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;     /* все карточки одной ширины — никаких «плашек у края» */
-    gap: 16px;
-    width: 100%;
-    min-width: 0;
-}
-
-/* Сообщение — полноширинная строка ленты: мета сверху, содержимое под ним.
-   Никакой подгонки под содержимое и прижатия к краям: карточки всегда идут
-   друг за другом, поэтому короткое «👎» не вырождается в узкую плашку. */
-.msg {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-}
-.msg__meta {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-    padding: 0 2px;
-    font-size: 11px;
-    color: var(--muted);
-    overflow-wrap: anywhere;
-}
-.msg__author { font-weight: 600; }
-.msg__time { font-size: 11px; color: #6b7488; margin-left: auto; }
-
-.bubble {
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    padding: 10px 13px;
-    background: var(--bg-card);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: anywhere;   /* длинные слова/ссылки не выталкивают вёрстку */
-}
-.msg--out .bubble { background: #1e2b4c; border-color: #2e3d63; }
-.bubble--captcha { border-color: rgba(240, 169, 43, .55); }
-.bubble__text { font-size: 14px; }
-.bubble__text:empty { display: none; }
-
-/* ── Анкета в ленте ────────────────────────────────────────────── */
-.card { min-width: 0; max-width: 100%; }
-
-/* Три равные колонки + aspect-ratio: одинаковая геометрия до/после загрузки.
-   max-width отсекает влияние исходного размера файла (панорама не растянет пузырь). */
-.card__photos {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    max-width: 480px;
-    margin-bottom: 10px;
-}
-.card__photos:empty { display: none; }   /* все фото битые — не оставляем дыру */
-.card__photo {
-    width: 100%;
-    aspect-ratio: 3 / 4;
-    object-fit: cover;
-    border-radius: 10px;
-    background: #0b0e14;
-}
-
-.card__head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 4px 10px;
-    margin-bottom: 6px;
-}
-.card__name { font-weight: 700; font-size: 15px; }
-.card__city { font-size: 12px; color: var(--muted); }
-.card__text { font-size: 13px; white-space: pre-wrap; margin-bottom: 8px; overflow-wrap: anywhere; }
-.card__hint { font-size: 11px; color: var(--muted); margin-top: 8px; }
-
-.badge {
-    display: inline-block;
-    font-size: 11px;
-    font-weight: 700;
     padding: 3px 9px;
     border: 1px solid var(--line);
     border-radius: 999px;
     background: var(--bg-soft);
     color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .3px;
+}
+.mode-pill--semi_auto { color: #bdf3d4; border-color: rgba(46, 168, 106, .5); }
+.mode-pill--auto { color: #ffd6d2; border-color: rgba(224, 87, 76, .5); }
+
+/* ── Список событий ────────────────────────────────────────────── */
+.app {
+    width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 14px 12px 56px;
+}
+.feed {
+    display: flex;
+    flex-direction: column;      /* одна колонка */
+    align-items: stretch;        /* строки одной ширины */
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+}
+
+/* Строка события: колонка времени + содержимое. */
+.row {
+    display: grid;
+    grid-template-columns: 46px minmax(0, 1fr);
+    gap: 12px;
+    width: 100%;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--bg-row);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+}
+.row:hover { border-color: #35404f; }
+.row--action { background: #131b28; }
+.row--captcha { border-color: rgba(240, 169, 43, .45); }
+
+.row__time {
+    color: #66718a;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    padding-top: 1px;
+}
+.row__body { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.row__head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.row__name { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+.row__city { color: var(--muted); font-size: 12px; }
+.row__meta { color: #6b7488; font-size: 11px; }
+.row__hint { color: var(--review); font-size: 11px; }
+
+.row__text {
+    color: #cfd6e2;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;   /* длинные слова/ссылки не ломают вёрстку */
+}
+
+/* Миниатюры фото: фиксированный размер + aspect-ratio. */
+.thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+.thumbs:empty { display: none; }
+.thumbs__item {
+    display: block;
+    width: 58px;
+    height: 76px;
+    border-radius: 7px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: #0a0e14;
+}
+.thumbs__img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.row__actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row__actions form { margin: 0; }
+.row__actions .input--inline { flex: 0 1 240px; min-width: 160px; }
+
+/* ── Бейджи ────────────────────────────────────────────────────── */
+.badge {
+    display: inline-block;
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
 }
 .badge--like { color: #bdf3d4; border-color: rgba(46, 168, 106, .5); }
 .badge--dislike { color: #ffd6d2; border-color: rgba(224, 87, 76, .5); }
-.badge--review { color: #ffe4b5; border-color: rgba(240, 169, 43, .6); }
+.badge--review { color: #ffe4b5; border-color: rgba(240, 169, 43, .55); }
+.badge--approve { color: #bdf3d4; border-color: rgba(46, 168, 106, .35); }
+.badge--reject { color: #ffd6d2; border-color: rgba(224, 87, 76, .35); }
+.badge--neutral { color: #c4cbdb; }
 
-.card__actions {
+/* ── Панель управления списком ─────────────────────────────────── */
+.toolbar {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
-    margin-top: 12px;
+    margin-bottom: 12px;
 }
-.card__actions form { margin: 0; }
-.card__done { margin-top: 8px; font-size: 12px; color: var(--muted); }
-.card__done--approve { color: #bdf3d4; }
-.card__done--reject { color: #ffd6d2; }
+.seg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-soft);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+}
+.seg__btn {
+    min-width: 38px;
+    min-height: 30px;
+    padding: 4px 10px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.seg__btn:hover { color: var(--text); }
+.seg__btn.is-active { background: var(--accent); color: #fff; }
+
+.toolbar__count { margin-left: auto; color: #6b7488; font-size: 12px; }
+
+.input {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    min-height: var(--tap);
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--bg-input);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+}
+.input:focus { outline: none; border-color: var(--accent); }
+.input--area { font-size: 12px; resize: vertical; }
+.input--search { flex: 1 1 160px; max-width: 240px; }
 
 /* ── Кнопки ────────────────────────────────────────────────────── */
 .btn {
@@ -283,9 +283,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     justify-content: center;
     gap: 6px;
     min-height: var(--tap);
-    padding: 8px 16px;
+    padding: 6px 14px;
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: 9px;
     background: var(--bg-soft);
     color: var(--text);
     font: inherit;
@@ -295,6 +295,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     text-decoration: none;
 }
 .btn:hover { filter: brightness(1.14); }
+.btn--sm { min-height: 30px; padding: 4px 12px; font-size: 12px; }
 .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn--like { background: rgba(46, 168, 106, .18); border-color: rgba(46, 168, 106, .6); color: #bdf3d4; }
 .btn--dislike { background: rgba(224, 87, 76, .18); border-color: rgba(224, 87, 76, .6); color: #ffd6d2; }
@@ -302,40 +303,20 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .btn--full { width: 100%; }
 
 .link-btn {
-    margin-top: 8px;
     padding: 0;
     border: 0;
     background: none;
     color: var(--muted);
     font: inherit;
-    font-size: 12px;
+    font-size: 11px;
     cursor: pointer;
     text-decoration: underline;
 }
 .link-btn:hover { color: var(--text); }
 
-.input {
-    display: block;
-    width: 100%;
-    min-width: 0;
-    min-height: var(--tap);
-    padding: 8px 11px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--bg-input);
-    color: var(--text);
-    font: inherit;
-    font-size: 14px;
-}
-.input:focus { outline: none; border-color: var(--accent); }
-.input--area { font-size: 13px; resize: vertical; }
-
-.captcha-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-.captcha-form .input { flex: 1 1 160px; }
-
 .chip {
-    min-height: 32px;
-    padding: 5px 11px;
+    min-height: 28px;
+    padding: 3px 10px;
     border: 1px solid var(--line);
     border-radius: 999px;
     background: var(--bg-soft);
@@ -346,28 +327,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 }
 .chip:hover { border-color: var(--accent); }
 
-.feed-more { display: flex; justify-content: center; padding: 20px 0 0; }
+.feed-more { display: flex; justify-content: center; padding: 16px 0 0; }
 
 /* ── Капчи, ждущие ответа ──────────────────────────────────────── */
 .pending {
-    padding: 14px;
-    margin-bottom: 18px;
+    padding: 12px;
+    margin-bottom: 12px;
     background: rgba(240, 169, 43, .08);
     border: 1px solid rgba(240, 169, 43, .45);
-    border-radius: var(--radius);
-}
-.pending__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 10px; }
-.pending__title { font-weight: 700; color: #ffd48a; font-size: 14px; }
-.pending__hint { font-size: 11px; color: var(--muted); }
-.pending__item {
-    padding: 12px;
-    margin-top: 10px;
-    background: var(--bg-card);
-    border: 1px solid var(--line);
     border-radius: 10px;
 }
+.pending__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
+.pending__title { color: #ffd48a; font-weight: 700; font-size: 13px; }
+.pending__hint { color: var(--muted); font-size: 11px; }
+.pending__item { padding: 10px; margin-top: 8px; background: var(--bg-row); border: 1px solid var(--line); border-radius: 9px; }
 .pending__text { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.pending__suggest { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.pending__suggest { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.captcha-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.captcha-form .input { flex: 1 1 160px; max-width: 280px; }
 
 /* ── Панель настроек ───────────────────────────────────────────── */
 .drawer-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .6); }
@@ -392,30 +369,30 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     padding: 12px 16px;
     border-bottom: 1px solid var(--line);
 }
-.drawer__head h2 { margin: 0; font-size: 16px; }
+.drawer__head h2 { margin: 0; font-size: 15px; }
 .drawer__body {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 22px;
     padding: 16px;
     overflow-y: auto;
     overscroll-behavior: contain;
 }
 .drawer__section h3 {
     margin: 0 0 5px;
-    font-size: 12px;
+    color: var(--muted);
+    font-size: 11px;
     text-transform: uppercase;
     letter-spacing: .6px;
-    color: var(--muted);
 }
-.drawer__hint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.drawer__hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
 .drawer__form { display: flex; flex-direction: column; gap: 10px; }
 .drawer__row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.drawer__label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.drawer__label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 
 /* ── Пусто / тосты ─────────────────────────────────────────────── */
-.empty { padding: 60px 20px; text-align: center; color: var(--muted); }
-.empty__icon { font-size: 34px; margin-bottom: 8px; }
+.empty { padding: 48px 16px; text-align: center; color: var(--muted); }
+.empty__icon { margin-bottom: 8px; font-size: 30px; }
 .empty p { margin: 0 0 6px; }
 .empty small { font-size: 12px; }
 
@@ -434,8 +411,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .toast {
     padding: 10px 15px;
     border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--bg-card);
+    border-radius: 9px;
+    background: #1a222e;
     box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
     font-size: 13px;
     animation: toast-in .2s ease-out;
@@ -448,35 +425,23 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 /* ── Вход ──────────────────────────────────────────────────────── */
 .login-body { display: grid; place-items: center; min-height: 100vh; }
 .login-container { width: 100%; max-width: 360px; padding: 20px; }
-.login-card {
-    padding: 28px 24px;
-    background: var(--bg-soft);
-    border: 1px solid var(--line);
-    border-radius: 18px;
-}
+.login-card { padding: 26px 22px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 16px; }
 .login-logo { display: grid; place-items: center; margin-bottom: 10px; }
-.login-title { margin: 0; text-align: center; font-size: 20px; }
-.login-subtitle { margin: 5px 0 20px; text-align: center; color: var(--muted); font-size: 13px; }
+.login-title { margin: 0; text-align: center; font-size: 19px; }
+.login-subtitle { margin: 5px 0 18px; text-align: center; color: var(--muted); font-size: 13px; }
 .login-card form { display: flex; flex-direction: column; gap: 12px; }
 .form-group { display: flex; flex-direction: column; gap: 6px; }
-.form-label { font-size: 12px; color: var(--muted); }
-.flash { margin-bottom: 10px; padding: 9px 11px; border-radius: 10px; font-size: 13px; }
+.form-label { color: var(--muted); font-size: 12px; }
+.flash { margin-bottom: 10px; padding: 9px 11px; border-radius: 9px; font-size: 13px; }
 .flash-success { background: rgba(46, 168, 106, .15); border: 1px solid rgba(46, 168, 106, .5); }
 .flash-error { background: rgba(224, 87, 76, .15); border: 1px solid rgba(224, 87, 76, .5); }
 .flash-warning { background: rgba(240, 169, 43, .15); border: 1px solid rgba(240, 169, 43, .5); }
 
 /* ── Узкие экраны ──────────────────────────────────────────────── */
-@media (max-width: 860px) {
-    .app { padding: 14px 12px 56px; }
-}
-
-/* Топбар в две строки: бренд+режим сверху, статус+⚙+выход под ними.
-   Именно grid, поэтому ничего не «уезжает» в угол. */
 @media (max-width: 620px) {
-    .topbar { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 9px 12px; }
+    .topbar { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px 12px; }
     .topbar-side--right { justify-content: flex-start; }
-    .mode-pill { display: none; }
-    .brand-name { display: none; }
-    .card__photos { gap: 4px; }
+    .mode-pill, .brand-name { display: none; }
+    .row { grid-template-columns: 38px minmax(0, 1fr); gap: 8px; padding: 9px 10px; }
     .drawer { border-left: 0; }
 }
