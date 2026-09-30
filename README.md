@@ -40,6 +40,7 @@ Telegram (RAW)
         (informative+clean → LIKE; короткая чистая → REVIEW; хард-негатив → DISLIKE)
    → ActionPolicyResolver(decision, informative) → LIKE_ONLY / LIKE_AND_MESSAGE / DISLIKE_ONLY
    → AutoActionEngine.maybe_act(policy)  # только SEMI_AUTO/AUTO (❤️/👎/«Берем)»/REVIEW-уведомление)
+   → AutoActionEngine.step_pending(text)  # цепочка «Берем)»: 💌 📹 🎤 → «Отправь текст…» → «Берем)»
    → ReviewBot                            # человеческая рецензия (APPROVE/REJECT/SKIP)
 ```
 
@@ -160,6 +161,21 @@ logging:
   level: INFO
 ```
 
+#### Цепочка «Берем)» (LIKE_AND_MESSAGE)
+
+Для **информативных** анкет с решением LIKE бот шлёт не только сердечко, а полную цепочку:
+
+```text
+❤️  →  «💌 📹 🎤»  →  (Leo: «Отправь текст, видео или голосовое(до 15сек).»)  →  «Берем)» / «беру)»
+```
+
+- `💌 📹 🎤` отправляется **сразу после `❤️`** (`collectors/auto_action.py`, ветка `LIKE_AND_MESSAGE`). Раньше цепочка ждала подтверждение Leo «Лайк отправлен, ждем ответа.», но на аккаунте `dvai_2` Leo его больше не присылает — после `❤️` он сразу шлёт следующую карточку, поэтому цепочка стояла только на сердечке. Ack оставлен как ретрай: если проактивная отправка кнопки не удалась, стадия остаётся `AWAIT_LIKE_ACK` и кнопка отправляется по ack.
+- Строка кнопок отправляется целиком: одиночный `💌` Leo не распознаёт (проверено по прод-логам, tm=722860/722895).
+- Стадии: `AWAIT_LIKE_ACK` → `AWAIT_PROMPT` → цепочка завершена и удаляется из `_pending_chains`. Продвигает `AutoActionEngine.step_pending(text, chat_id)`, который коллектор зовёт на входящих НЕ-`PROFILE` сообщениях Leo на авто-аккаунте.
+- Маркеры композера (`MESSAGE_PROMPT_MARKERS`, сравнение регистронезависимое): `отправь текст`, `отправьте текст`, `видео или голосовое`.
+- Финальный текст берётся рандомно из `auto_actions.like_message.text`, записывается в `auto_actions_log` как действие `MESSAGE` с `message_text` и попадает в аналитику `like_outcomes`.
+- Rate-limit `interval_sec` сам разносит `❤️` и `💌 📹 🎤` по времени; строка `💌 📹 🎤` входит в `MANUAL_MESSAGE_EXCLUDE`, поэтому авто-кнопка не попадает в `sent_messages` как ручное действие.
+
 ### Запуск и тесты
 
 ```bash
@@ -172,7 +188,7 @@ cp config/preferences.example.yaml config/preferences.yaml   # по желани
 
 python main.py                 # или run.bat на Windows
 python main.py --export-review # CSV-экспорт рецензий
-python -m pytest tests/ -v     # 631 тест
+python -m pytest tests/ -v     # 678 тестов
 ```
 
 ### Экспорт анализа и очистка БД (Stage 11)

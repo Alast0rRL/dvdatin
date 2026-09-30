@@ -32,17 +32,25 @@ console = Console(force_terminal=True)
 # Текст команд Дайвинчика (реверс механики):
 LIKE_TEXT: str = "\u2764\ufe0f"      # ❤️ — лайк
 DISLIKE_TEXT: str = "\U0001F44E"     # 👎 — дизлайк
-# Кнопка «отправить сообщение» у карточки Дайвинчика (reply-кнопка 💌).
-MESSAGE_BUTTON_TEXT: str = "\U0001F48C"
-# Маркеры ответов Leo для цепочки «Берем)» (LIKE_AND_MESSAGE, §30):
-LIKE_ACK_MARKERS: tuple[str, ...] = ("Лайк отправлен", "ждем ответа")
+# Открытие композера у карточки Дайвинчика — текстом ВСЕЙ строки кнопок
+# «💌 📹 🎤»: по прод-логам (tm=722860, 722895) именно такая отправка
+# открывала композер, на который Leo отвечал «Отправь текст, видео или
+# голосовое(до 15сек)». Одиночный «💌» Leo не распознаёт.
+MESSAGE_BUTTON_TEXT: str = "\U0001F48C \U0001F4F9 \U0001F3A4"
+# Маркеры ответов Leo для цепочки «Берем)» (LIKE_AND_MESSAGE, §30).
+# Сравнение регистронезависимое. Ack Leo на текущем аккаунте НЕ приходит
+# (после ❤️ он сразу шлёт следующую карточку) — он оставлен лишь как
+# запасной ретрай кнопки, если проактивная отправка не удалась.
+LIKE_ACK_MARKERS: tuple[str, ...] = ("лайк отправлен", "ждем ответа")
 MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
-    "Отправь текст", "отправь текст", "отправьте текст",
+    "отправь текст",
+    "отправьте текст",
+    "видео или голосовое",
 )
 
 # Стадии цепочки LIKE_AND_MESSAGE.
-_STAGE_AWAIT_LIKE_ACK = "AWAIT_LIKE_ACK"
-_STAGE_AWAIT_PROMPT = "AWAIT_PROMPT"
+_STAGE_AWAIT_LIKE_ACK = "AWAIT_LIKE_ACK"   # кнопка ещё не отправлена
+_STAGE_AWAIT_PROMPT = "AWAIT_PROMPT"       # ждём композер от Leo
 
 
 class AutoActionError(Exception):
@@ -241,8 +249,7 @@ class AutoActionEngine:
             return "LIKE"
 
         if policy == ActionPolicy.LIKE_AND_MESSAGE:
-            # Шаг 1/2 цепочки «Берем)»: ❤️. Сообщение отправляется позже,
-            # по ответам Leo (step_pending). Если карточка не привязана к
+            # Шаг 1/3 цепочки «Берем)»: ❤️. Если карточка не привязана к
             # message_id — цепочку завести нельзя, отправляем только LIKE.
             await self._send_locked(LIKE_TEXT)
             logger.info(
@@ -258,12 +265,33 @@ class AutoActionEngine:
                 card_text=card_text,
             )
             if message_id is not None:
-                self._pending_chains[message_id] = {
+                chain = {
                     "profile_id": profile_id,
                     "chat_id": self._chat_id,
                     "decision": decision.value,
                     "stage": _STAGE_AWAIT_LIKE_ACK,
                 }
+                self._pending_chains[message_id] = chain
+                # Шаг 2/3: сразу открываем композер строкой кнопок «💌 📹 🎤».
+                # Ждать ack Leo нельзя — он его больше не присылает (после ❤️
+                # сразу идёт следующая карточка), из-за чего цепочка стояла
+                # только на сердечке. rate-limiter сам разнесёт отправки на
+                # interval_sec. Не удалось — стадия остаётся AWAIT_LIKE_ACK,
+                # и тогда кнопку отправим по ack Leo (ретрай в step_pending).
+                try:
+                    await self._send_locked(MESSAGE_BUTTON_TEXT)
+                except Exception as e:
+                    logger.error(
+                        f"AutoAction: «Берем)» шаг 2/3 — не удалось отправить "
+                        f"{MESSAGE_BUTTON_TEXT!r}: {e}"
+                    )
+                else:
+                    chain["stage"] = _STAGE_AWAIT_PROMPT
+                    logger.info(
+                        f"AutoAction: «Берем)» шаг 2/3 — отправлено "
+                        f"{MESSAGE_BUTTON_TEXT!r} (chat={self._chat_id}, "
+                        f"карточка={message_id})"
+                    )
             return "LIKE"
 
         # NO_ACTION (напр. OBSERVE/выключенные like) — ничего не шлём.
@@ -274,8 +302,12 @@ class AutoActionEngine:
 
         Вызывается коллектором на входящих сообщениях чата Дайвинчика
         (НЕ PROFILE). Цепочка LIKE_AND_MESSAGE:
-          ❤️ → (Leo: «Лайк отправлен, ждем ответа.») → 💌 →
+          ❤️ → «💌 📹 🎤» (открытие композера, сразу после лайка) →
           (Leo: «Отправь текст, видео или голосовое…») → «Берем)».
+        Кнопка композера отправляется проактивно в ``maybe_act``: Leo на
+        текущем аккаунте НЕ шлёт «Лайк отправлен, ждем ответа.», поэтому
+        ждать ack бессмысленно — цепочка на нём и вставала. Ack остался
+        только как ретрай на случай неудачной отправки кнопки.
         Идемпотентность: каждый шаг выполняется ровно один раз, потому что
         стадия переводится вперёд сразу после отправки.
         """
@@ -283,22 +315,24 @@ class AutoActionEngine:
             return
         if not self._pending_chains:
             return
+        low = (text or "").lower()
         for card_id, chain in list(self._pending_chains.items()):
             if chain.get("chat_id") != chat_id:
                 continue
             stage = chain.get("stage")
             if stage == _STAGE_AWAIT_LIKE_ACK and any(
-                m in (text or "") for m in LIKE_ACK_MARKERS
+                m in low for m in LIKE_ACK_MARKERS
             ):
-                # Leo подтвердил лайк → жмём кнопку отправки сообщения (💌).
+                # Ретрай кнопки композера по ack Leo (проактивная отправка
+                # в maybe_act не удалась — Leo подтвердил лайк, пробуем снова).
                 await self._send_locked(MESSAGE_BUTTON_TEXT)
                 logger.info(
-                    f"AutoAction: «Берем)» шаг 2/3 — нажата {MESSAGE_BUTTON_TEXT!r} "
-                    f"(chat={chat_id}, карточка={card_id})"
+                    f"AutoAction: «Берем)» шаг 2/3 — отправлено {MESSAGE_BUTTON_TEXT!r} "
+                    f"по ack Leo (chat={chat_id}, карточка={card_id})"
                 )
                 chain["stage"] = _STAGE_AWAIT_PROMPT
             elif stage == _STAGE_AWAIT_PROMPT and any(
-                m in (text or "") for m in MESSAGE_PROMPT_MARKERS
+                m in low for m in MESSAGE_PROMPT_MARKERS
             ):
                 # Leo открыл композер → отправляем текст «Берем)» и завершаем.
                 msg_text = self._pick_message_text()

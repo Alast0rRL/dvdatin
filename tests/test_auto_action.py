@@ -833,27 +833,40 @@ class TestLikeAndMessageChain:
             db=db,
         )
 
-    def test_informative_like_starts_chain_sends_heart(self) -> None:
+    def test_informative_like_sends_heart_and_composer_button(self) -> None:
+        """LIKE_AND_MESSAGE: сразу ❤️ + «💌 📹 🎤» (Leo не шлёт ack)."""
         client = make_client()
         e = self._engine_with_msg(client=client)
         result = asyncio.get_event_loop().run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
         assert result == "LIKE"
-        # Отправлен только ❤️ (шаг 1), сообщение ждёт ответов Leo.
-        args, _ = client.send_message.call_args
-        assert args[1] == LIKE_TEXT
+        sent = [c.args[1] for c in client.send_message.call_args_list]
+        assert sent == [LIKE_TEXT, MESSAGE_BUTTON_TEXT]
         assert len(e._pending_chains) == 1
         chain = e._pending_chains[100]
         assert chain["profile_id"] == 5
+        # Ждём композер от Leo, а не подтверждение лайка.
+        assert chain["stage"] == "AWAIT_PROMPT"
 
-    def test_like_ack_presses_message_button(self) -> None:
+    def test_button_text_is_full_button_row(self) -> None:
+        """Кнопка композера = вся строка «💌 📹 🎤» (прод tm=722860)."""
+        assert MESSAGE_BUTTON_TEXT == "💌 \U0001F4F9 \U0001F3A4"
+
+    def test_composer_button_send_failure_keeps_ack_retry(self) -> None:
+        """Кнопка не ушла → стадия AWAIT_LIKE_ACK, ретрай по ack Leo."""
         client = make_client()
         e = self._engine_with_msg(client=client)
+        client.send_message.side_effect = [
+            None,
+            RuntimeError("telegram"),
+        ]
         loop = asyncio.get_event_loop()
         loop.run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
+        assert e._pending_chains[100]["stage"] == "AWAIT_LIKE_ACK"
+        client.send_message.side_effect = None
         client.send_message.reset_mock()
         loop.run_until_complete(
             e.step_pending("Лайк отправлен, ждем ответа.", 1234060895)
@@ -871,7 +884,6 @@ class TestLikeAndMessageChain:
         loop.run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
-        loop.run_until_complete(e.step_pending("Лайк отправлен.", 1234060895))
         client.send_message.reset_mock()
         loop.run_until_complete(
             e.step_pending("Отправь текст, видео или голосовое(до 15сек).", 1234060895)
@@ -890,15 +902,29 @@ class TestLikeAndMessageChain:
         db.record_auto_action = AsyncMock()
         e = self._engine_with_msg(client=client, db=db)
         loop = asyncio.get_event_loop()
+        sent: list[str] = []
+        client.send_message.side_effect = lambda c, t: sent.append(t)
         loop.run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
-        sent: list[str] = []
-        client.send_message.side_effect = lambda c, t: sent.append(t)
-        loop.run_until_complete(e.step_pending("Лайк отправлен, ждем ответа.", 1234060895))
         loop.run_until_complete(e.step_pending("Отправь текст, видео или голосовое.", 1234060895))
-        assert sent == [MESSAGE_BUTTON_TEXT, "Берем)"]
+        assert sent == [LIKE_TEXT, MESSAGE_BUTTON_TEXT, "Берем)"]
         assert e._pending_chains == {}
+
+    def test_prompt_marker_is_case_insensitive(self) -> None:
+        """Leo может написать «отправь текст» с другим регистром."""
+        client = make_client()
+        db = MagicMock()
+        db.record_auto_action = AsyncMock()
+        e = self._engine_with_msg(client=client, db=db)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        client.send_message.reset_mock()
+        loop.run_until_complete(e.step_pending("отправьте текст, видео", 1234060895))
+        args, _ = client.send_message.call_args
+        assert args[1] == "Берем)"
 
     def test_unrelated_text_does_not_advance(self) -> None:
         client = make_client()
@@ -910,7 +936,7 @@ class TestLikeAndMessageChain:
         client.send_message.reset_mock()
         loop.run_until_complete(e.step_pending("Совсем другой текст", 1234060895))
         client.send_message.assert_not_called()
-        assert e._pending_chains[100]["stage"] == "AWAIT_LIKE_ACK"
+        assert e._pending_chains[100]["stage"] == "AWAIT_PROMPT"
 
     def test_message_wrong_chat_does_not_advance(self) -> None:
         client = make_client()
@@ -920,7 +946,7 @@ class TestLikeAndMessageChain:
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
         client.send_message.reset_mock()
-        loop.run_until_complete(e.step_pending("Лайк отправлен.", 999999))
+        loop.run_until_complete(e.step_pending("Отправь текст.", 999999))
         client.send_message.assert_not_called()
 
     def test_like_message_disabled_sends_only_like(self) -> None:
@@ -934,8 +960,8 @@ class TestLikeAndMessageChain:
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
         assert result == "LIKE"
-        args, _ = client.send_message.call_args
-        assert args[1] == LIKE_TEXT
+        sent = [c.args[1] for c in client.send_message.call_args_list]
+        assert sent == [LIKE_TEXT]
         assert e._pending_chains == {}
 
     def test_non_informative_like_is_like_only(self) -> None:
@@ -946,8 +972,8 @@ class TestLikeAndMessageChain:
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=False)
         )
         assert result == "LIKE"
-        args, _ = client.send_message.call_args
-        assert args[1] == LIKE_TEXT
+        sent = [c.args[1] for c in client.send_message.call_args_list]
+        assert sent == [LIKE_TEXT]
         assert e._pending_chains == {}
 
     def test_message_db_error_does_not_break(self) -> None:
@@ -960,9 +986,6 @@ class TestLikeAndMessageChain:
         loop.run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
-        loop.run_until_complete(e.step_pending("Лайк отправлен.", 1234060895))
-        loop.run_until_complete(
-            e.step_pending("Отправь текст.", 1234060895)
-        )
+        loop.run_until_complete(e.step_pending("Отправь текст.", 1234060895))
         # «Берем)» всё равно ушло, цепочка завершена.
         assert e._pending_chains == {}

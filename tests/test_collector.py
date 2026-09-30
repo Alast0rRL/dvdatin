@@ -16,6 +16,7 @@ from collectors.dvinchik_collector import (
     _detect_media_type,
     is_manual_message_excluded,
 )
+from collectors.auto_action import MESSAGE_BUTTON_TEXT
 from collectors.dedup import Dedup
 from collectors.raw_queue import RawQueue
 from collectors.raw_worker import DvinchikRawWorker, RawTask
@@ -2184,8 +2185,9 @@ class TestCollectorAutoActions:
     def test_informative_like_starts_message_chain_on_auto_account(self) -> None:
         """LIKE + informative + like_message → цепочка «Берем)» стартует.
 
-        Коллектор передаёт informative из решения в maybe_act; движок шлёт ❤️,
-        записывает LIKE и заводит pending-цепочку (сообщение ждёт ответов Leo).
+        Коллектор передаёт informative из решения в maybe_act; движок шлёт ❤️
+        и сразу открывает композер строкой кнопок «💌 📹 🎤» (Leo ack не шлёт),
+        записывает LIKE и заводит pending-цепочку в стадии AWAIT_PROMPT.
         """
         from models.decision import AIDecision
 
@@ -2207,17 +2209,19 @@ class TestCollectorAutoActions:
         )
         asyncio.get_event_loop().run_until_complete(collector._process_message(task))
 
-        # Отправлен только ❤️ (шаг 1), сообщение «Берем)» ещё НЕ отправлено.
-        args, _ = auto_client.send_message.call_args_list[0]
-        assert args[1] == "\u2764\ufe0f"
+        # Шаг 1 — ❤️, шаг 2 — «💌 📹 🎤» (открытие композера).
+        sent = [c.args[1] for c in auto_client.send_message.call_args_list]
+        assert sent[0] == "\u2764\ufe0f"
+        assert MESSAGE_BUTTON_TEXT in sent
+        assert sent.index(MESSAGE_BUTTON_TEXT) > sent.index("\u2764\ufe0f")
         collector._db.record_auto_action.assert_awaited_once_with(
             1, "LIKE", "LIKE", 1234060895, 910
         )
-        # Память "Берем)" зафиксирована, но акк не звал Leo → pending ждёт.
+        # Память "Берем)" зафиксирована; ждём композер от Leo.
         engine = collector.auto_engine()
         assert engine is not None
         assert 910 in engine._pending_chains
-        assert engine._pending_chains[910]["stage"] == "AWAIT_LIKE_ACK"
+        assert engine._pending_chains[910]["stage"] == "AWAIT_PROMPT"
 
     def test_non_informative_like_no_message_chain(self) -> None:
         """LIKE, но неинформативная анкета → только ❤️, цепочки нет."""

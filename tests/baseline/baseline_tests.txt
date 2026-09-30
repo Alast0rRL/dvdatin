@@ -139,13 +139,15 @@ tests/test_auto_action.py::TestForwardAllPhotos::test_forwards_all_photos_for_li
 tests/test_auto_action.py::TestForwardAllPhotos::test_forwards_all_photos_for_review
 tests/test_auto_action.py::TestForwardAllPhotos::test_no_db_falls_back_to_single_message
 tests/test_auto_action.py::TestForwardAllPhotos::test_single_message_stays_single
+tests/test_auto_action.py::TestLikeAndMessageChain::test_button_text_is_full_button_row
+tests/test_auto_action.py::TestLikeAndMessageChain::test_composer_button_send_failure_keeps_ack_retry
 tests/test_auto_action.py::TestLikeAndMessageChain::test_full_chain_end_to_end
-tests/test_auto_action.py::TestLikeAndMessageChain::test_informative_like_starts_chain_sends_heart
-tests/test_auto_action.py::TestLikeAndMessageChain::test_like_ack_presses_message_button
+tests/test_auto_action.py::TestLikeAndMessageChain::test_informative_like_sends_heart_and_composer_button
 tests/test_auto_action.py::TestLikeAndMessageChain::test_like_message_disabled_sends_only_like
 tests/test_auto_action.py::TestLikeAndMessageChain::test_message_db_error_does_not_break
 tests/test_auto_action.py::TestLikeAndMessageChain::test_message_wrong_chat_does_not_advance
 tests/test_auto_action.py::TestLikeAndMessageChain::test_non_informative_like_is_like_only
+tests/test_auto_action.py::TestLikeAndMessageChain::test_prompt_marker_is_case_insensitive
 tests/test_auto_action.py::TestLikeAndMessageChain::test_prompt_sends_text_and_records_message
 tests/test_auto_action.py::TestLikeAndMessageChain::test_unrelated_text_does_not_advance
 tests/test_auto_action.py::TestNoDuplicateNotify::test_db_error_falls_back_to_notify
@@ -489,8 +491,8 @@ tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2013\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2014\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
-tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
+tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_unknown_city
 tests/test_parser.py::TestCityNormalization::test_unknown_district_not_mapped_to_city
 tests/test_parser.py::TestCityNormalization::test_whitespace
@@ -618,8 +620,8 @@ tests/test_web.py::TestCaptchas::test_delete_captcha
 tests/test_web.py::TestCaptchas::test_pending_captchas_in_app
 tests/test_web.py::TestChatFeed::test_chat_feed_fragment
 tests/test_web.py::TestChatFeed::test_chat_new_count_signature
-tests/test_web.py::TestChatFeed::test_chat_page_is_app
 tests/test_web.py::TestChatFeed::test_chat_page1_is_newest
+tests/test_web.py::TestChatFeed::test_chat_page_is_app
 tests/test_web.py::TestChatFeed::test_chat_requires_login
 tests/test_web.py::TestChatFeed::test_page_has_signature_and_clean_js
 tests/test_web.py::TestChatFeed::test_pending_captcha_in_app_and_feed
