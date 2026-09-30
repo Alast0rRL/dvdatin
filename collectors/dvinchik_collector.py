@@ -64,6 +64,16 @@ VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 #: Нажимаем ТОЛЬКО кнопку с этим фрагментом («Активировать» — никогда).
 PREMIUM_DECLINE_FRAGMENT: str = "без premium"
 
+#: Карточка взаимного лайка Leo: «Ты понравился 3 девушке, показать её?» с
+#: кнопками [«1. Показать.», «2. Не хочу больше никого смотреть.»]. Без нажатия
+#: бот ждёт выбора и ЛЕНТА ОСТАНАВЛИВАЕТСЯ (анкеты больше не приходят), пока
+#: владелец вручную не нажмёт «Показать». Поэтому авто-аккаунт жмёт «Показать»
+#: сам — как и view-кнопку, идемпотентно (по карточке + виду действия).
+#: Отказную кнопку («Не хочу больше никого смотреть») НИКОГДА не жмём.
+MATCH_CARD_FRAGMENT: str = "понравил"
+MATCH_SHOW_FRAGMENT: str = "показать"
+MATCH_SHOW_SKIP_FRAGMENT: str = "не хочу"
+
 #: Stage 8.5: тексты, которые НЕ считаются ручным «сообщением при лайке»
 #: (кнопки Leo/эмодзи-реакции/навигация). Они не попадают в sent_messages,
 #: чтобы навигация и реакции не засоряли аналитику текстов.
@@ -428,6 +438,8 @@ class DvinchikCollector:
                 return True
             if await self._press_view_button_if_needed():
                 return True
+            if await self._press_match_show_if_needed():
+                return True
             if await self._press_premium_decline_if_needed():
                 return True
             return await self._handle_captcha()
@@ -639,6 +651,74 @@ class DvinchikCollector:
             return True
         except Exception as e:
             logger.error(f"AutoAction: ошибка нажатия кнопки Premium-промо: {e}")
+            return False
+
+    async def _press_match_show_if_needed(self) -> bool:
+        """Жмёт «Показать» на карточке «Ты понравился N девушке, показать её?».
+
+        Leo после накопления взаимных лайков присылает карточку с кнопками
+        [«1. Показать.», «2. Не хочу больше никого смотреть.»] и ждёт выбора.
+        Без нажатия лента встаёт — анкеты не приходят, пока владелец не
+        нажмёт кнопку вручную. Поэтому авто-аккаунт продолжает поток сам.
+
+        Ищем самую свежую карточку с фрагментом MATCH_CARD_FRAGMENT и жмём
+        кнопку с MATCH_SHOW_FRAGMENT (отказную пропускаем). Идемпотентно:
+        если после карточки текст этой кнопки уже отправляли — не жмём снова.
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            card_msg = None
+            button_text = ""
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                if MATCH_CARD_FRAGMENT not in (getattr(msg, "text", "") or "").lower():
+                    continue
+                texts = self._extract_button_texts(msg)
+                hit = next(
+                    (
+                        t
+                        for t in texts
+                        if MATCH_SHOW_FRAGMENT in t.lower()
+                        and MATCH_SHOW_SKIP_FRAGMENT not in t.lower()
+                    ),
+                    None,
+                )
+                if hit:
+                    card_msg = msg
+                    button_text = hit
+                    break
+
+            if card_msg is None or not button_text:
+                return False
+
+            # Идемпотентность: текст кнопки после карточки уже отправляли.
+            sent_at = card_msg.id
+            already_sent = False
+            async for msg in client.iter_messages(
+                self._dvinchik_chat_id, limit=15
+            ):
+                if msg.id <= sent_at:
+                    break
+                if (
+                    getattr(msg, "out", False)
+                    and (msg.text or "").strip() == button_text
+                ):
+                    already_sent = True
+                    break
+
+            if already_sent:
+                logger.info("AutoAction: кнопка «Показать» уже нажата")
+                return False
+
+            logger.info(
+                f"AutoAction: карточка «{MATCH_CARD_FRAGMENT}…» (msg={card_msg.id}) — "
+                f"нажимаю «{button_text}», продолжаю ленту"
+            )
+            await self._auto_engine.send_text(button_text)
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия «Показать» (карточка лайка): {e}")
             return False
 
     async def _handle_captcha(self, msg: object | None = None) -> bool:
@@ -1568,6 +1648,14 @@ class DvinchikCollector:
                         texts = self._extract_button_texts(msg)
                         if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
+                        elif any(
+                            MATCH_SHOW_FRAGMENT in t.lower()
+                            and MATCH_SHOW_SKIP_FRAGMENT not in t.lower()
+                            for t in texts
+                        ):
+                            # Карточка «Ты понравился N девушке, показать её?»
+                            # — без нажатия лента стоит, жмём «Показать».
+                            await self._press_match_show_if_needed()
                         elif (
                             len(texts) >= CAPTCHA_MIN_BUTTONS
                             and any(m in (text or "").lower() for m in CAPTCHA_MARKERS)
@@ -1585,6 +1673,7 @@ class DvinchikCollector:
                             # без Premium» (после ❤️/👎) — нажимаем отказ, чтобы
                             # лента не встала.
                             await self._press_view_button_if_needed()
+                            await self._press_match_show_if_needed()
                             await self._press_premium_decline_if_needed()
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
@@ -1607,6 +1696,7 @@ class DvinchikCollector:
                         if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
                         else:
+                            await self._press_match_show_if_needed()
                             await self._press_premium_decline_if_needed()
                     except Exception as e:
                         logger.error(

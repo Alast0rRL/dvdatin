@@ -195,9 +195,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .thumbs:empty { display: none; }
 .thumbs__item {
     display: block;
-    width: 96px;
-    height: 128px;
-    border-radius: 9px;
+    width: 192px;
+    height: 256px;
+    border-radius: 10px;
     overflow: hidden;
     border: 1px solid var(--line);
     background: #0a0e14;

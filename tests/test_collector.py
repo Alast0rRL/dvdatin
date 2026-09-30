@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from collectors.dvinchik_collector import DvinchikCollector, _detect_media_type
+from collectors.dvinchik_collector import (
+    DvinchikCollector,
+    _detect_media_type,
+    is_manual_message_excluded,
+)
 from collectors.dedup import Dedup
 from collectors.raw_queue import RawQueue
 from collectors.raw_worker import DvinchikRawWorker, RawTask
@@ -2726,6 +2730,124 @@ class TestCollectorAutoActions:
         collector._db.record_pending_captcha.assert_awaited_once()
         sig = collector._db.record_pending_captcha.call_args[0][0]
         assert sig == "бармалей, предлагаю тебе сделку"
+
+    def test_start_stream_match_card_presses_show(self) -> None:
+        """Карточка «Ты понравился N девушке, показать её?» → жмём «Показать».
+
+        Регресс: бот останавливал работу и лента не продолжалась, пока
+        владелец вручную не нажмёт «Показать».
+        """
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        show = "1. Показать."
+        decline = "2. Не хочу больше никого смотреть."
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: карточка взаимного лайка → исходящий ❤️.
+            yield self._iter_msg(
+                auto_client, 801,
+                "Ты понравился 3 девушке, показать её?",
+                buttons=[show, decline],
+            )
+            yield self._iter_msg(auto_client, 800, "❤️", out=True)
+            yield self._iter_msg(auto_client, 799, "Катьк, 18, Сургут")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        # Жмём именно «Показать», отказную кнопку — никогда.
+        auto_client.send_message.assert_called_once_with(1234060895, show)
+
+    def test_start_stream_match_card_already_shown(self) -> None:
+        """«Показать» уже отправлен после карточки — повторно не жмём."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        show = "1. Показать."
+
+        async def iter_messages(*args, **kwargs):
+            # Новые→старые: уже отправленный «Показать» → сама карточка.
+            yield self._iter_msg(auto_client, 803, show, out=True)
+            yield self._iter_msg(
+                auto_client, 802,
+                "Ты понравился 5 девушке, показать её?",
+                buttons=[show, "2. Не хочу больше никого смотреть."],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_match_card_never_presses_decline(self) -> None:
+        """Только отказная кнопка («Не хочу…») — не жмём ничего."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 805,
+                "Ты понравился 2 девушке, показать её?",
+                buttons=["2. Не хочу больше никого смотреть."],
+            )
+            yield self._iter_msg(auto_client, 804, "❤️", out=True)
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_unrelated_card_does_not_press_show(self) -> None:
+        """Обычная кнопка «Показать девушку» без карточки лайка — не жмём.
+
+        Иначе бот начнёт кликать по кнопкам меню в чужих сообщениях.
+        """
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 807, "Показать девушку",
+                buttons=["1. Показать."],
+            )
+            yield self._iter_msg(auto_client, 806, "❤️", out=True)
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_match_show_button_text_not_counted_as_manual_message(self) -> None:
+        """«1. Показать.» — это кнопка Leo, а не ручное сообщение при лайке."""
+        assert is_manual_message_excluded("1. Показать.") is True
+        assert is_manual_message_excluded("2. Не хочу больше никого смотреть.") is True
 
     def test_start_stream_known_captcha_sends_stored_answer(self) -> None:
         """Выученная капча — бот сам отправляет запомненный ответ."""
