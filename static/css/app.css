@@ -178,7 +178,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 }
 
 /* Сообщение — полноширинная строка ленты: мета сверху, содержимое под ним.
-   Никаких align-self/fit-content: карточки всегда друг за другом. */
+   Никакой подгонки под содержимое и прижатия к краям: карточки всегда идут
+   друг за другом, поэтому короткое «👎» не вырождается в узкую плашку. */
 .msg {
     display: flex;
     flex-direction: column;

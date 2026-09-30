@@ -358,10 +358,11 @@ class TestAppShell:
         assert "max-width: 800px" in app and "margin: 0 auto" in app
         # У строки ленты нет позиционирования и подгонки под содержимое.
         msg = css.split(".msg {", 1)[1].split("}", 1)[0]
-        assert "align-self" not in msg and "fit-content" not in msg
         assert "width: 100%" in msg
-        assert "align-self: flex-end" not in css
-        assert "align-self: flex-start" not in css
+        # Нигде в стилях не осталось подгонки/прижатия строк ленты.
+        assert "align-self" not in css
+        assert "fit-content" not in css
+        assert "position: absolute" not in css
         # Мета (автор + время) — одна строка, а не столбик под пузырём.
         assert ".msg__meta" in css
         assert "flex-direction: column" in msg
