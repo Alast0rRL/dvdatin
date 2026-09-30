@@ -58,7 +58,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (33), test_audit (27), test_auto_action (63), test_auto_action_audit (5), test_collector (116), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (12), test_profile (21), test_review_ui (5), test_web (78) → **662 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (33), test_audit (27), test_auto_action (63), test_auto_action_audit (5), test_captcha_memory (11), test_collector (123), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (21), test_profile (21), test_review_ui (5), test_web (83) → **669 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 

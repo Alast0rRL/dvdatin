@@ -236,10 +236,17 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 
 Старые адреса сохранены как **редиректы** на главный экран (чтобы старые закладки не отдавали 404): `/chat` (синоним `/`), `/dashboard`, `/settings`, `/profiles/<id>`, `/profiles/<id>/action`; legacy API-роут быстрых действий `/dashboard/action/<id>/<action>` остался для обратной совместимости. Шаблоны `chat.html` / `dashboard.html` / `settings.html` / `profile.html` / `captchas.html`, blueprint `web/blueprints/captchas.py` и `static/css/style.css` удалены (Stage 9). Подробнее в `web/` и `AGENTS.md`.
 
-**Дизайн**: тёмная тема, статика без внешних зависимостей — `static/css/app.css` + `static/js/app.js`. Карточки анкет с inline-действиями, pill-бейджи решений/статусов, SVG-иконки ❤️/👎, toast-уведомления (без перезагрузки страницы), drawer настроек, responsive под мобильные (640px).
+**Дизайн** (Stage 9.1, переписан с нуля): тёмная тема, статика без внешних зависимостей — `static/css/app.css` + `static/js/app.js`. Карточки анкет с inline-действиями, pill-бейджи решений, SVG-иконки ⚙/выход, toast-уведомления, drawer настроек.
 
+Жёсткие правила вёрстки (проверяются тестами и числовым аудитом в headless-браузере, `_audit.py`):
 
-**Дизайн**: светлая чистая тема (статика без внешних зависимостей — `static/css/style.css` + `static/js/app.js`). Секции по решениям окрашены в LIKE/REVIEW/DISLIKE, статусы и решения — pill-бейджи, быстрые действия LIKE/DISLIKE — SVG-иконки, уведомления о результате — toast-snackbar (без перезагрузки страницы). Навигация/лого/favicon — inline SVG (data-URI), responsive-адаптация под мобильные (640px).
+- **топбар — CSS-grid** `minmax(0, 1fr) auto` (левая группа тянется, правая прижата к краю и не может выехать за экран); на узких экранах (<620px) переносится на две строки;
+- **`min-width: 0` во всей flex/grid-цепочке** + `minmax(0, 1fr)` в колонках + `overflow-wrap: anywhere` — длинное слово, имя или ссылка в анкете не растягивают ленту (плюс `overflow-x: hidden` как страховка);
+- **фото анкеты — grid из 3 колонок с `aspect-ratio: 3/4`** и `max-width: 480px`: высота не зависит от загрузки файла и от его исходного разрешения, вёрстка не «прыгает»; битые/удалённые фото убирает `app.js` (сетка схлопывается через `:empty`);
+- **кликабельные элементы ≥ 40px** (`.btn`, `.icon-btn`, `.input`), кнопки REVIEW — 86×40;
+- **панель настроек** `position: fixed; width: min(420px, 100vw)` — не шире экрана, `[hidden] { display: none !important }` перебивает `display: flex`.
+
+Регресс-тесты: `test_layout_cannot_shift_sideways` (структурные гарантии), `test_login_uses_defined_css_classes` и `test_every_component_class_is_styled` (каждый класс из шаблонов определён в `app.css` — ловит рассинхрон разметки и стилей, из-за которого `/login` рендерился без оформленной кнопки).
 
 **Режим на сайте меняется на лету** (`web/actions.py` → `set_mode_sync`): POST на `/settings/mode` не только пишет `project.mode` в `config.yaml`, но и вызывает `collector.set_mode()` — живой `AutoActionEngine` переключается сразу, а для SEMI_AUTO/AUTO запускается `start_auto_stream()` (обработка активной анкеты / продолжение ленты Leo). Перезапуск не нужен. Без привязанного коллектора (например в тестах) режим просто сохраняется в YAML.
 

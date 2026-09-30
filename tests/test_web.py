@@ -340,21 +340,30 @@ class TestAppShell:
         assert "[hidden]" in css and "display: none !important" in css
 
     def test_layout_cannot_shift_sideways(self, client) -> None:
-        """Вёрстка не «уезжает» вбок: горизонтального скролла нет, топбар переносится.
+        """Вёрстка не «уезжает» вбок: горизонтального скролла нет, топбар на grid.
 
-        Регресс на жалобу «интерфейс поплыл, сверху в углу смещено, снизу съехало»:
-        длинное слово в анкете/промо растягивало flex-строку, топбар без wrap
-        выталкивал ⚙/выход за правый край.
+        Регресс на жалобу «интерфейс поплыл, сверху в углу смещено»:
+        flex + `margin-left: auto` в топбаре и растягивающиеся фото/текст
+        выталкивали ⚙/выход за правый край. Теперь топбар — grid из
+        `minmax(0, 1fr) auto`, у пузырей `min-width: 0`, текст переносится
+        внутри себя, фото — grid с `aspect-ratio`.
         """
         _login(client)
         css = client.get("/static/css/app.css").get_data(as_text=True)
         assert "overflow-x: hidden" in css
+        # Топбар: две колонки, левая тянется, правая по содержимому.
         topbar = css.split(".topbar {", 1)[1].split("}", 1)[0]
-        assert "flex-wrap: wrap" in topbar
-        assert "margin-left: auto" in css          # правая группа прижата в угол
-        assert ".msg { display: flex; flex-direction: column; max-width: 82%; min-width: 0; }" in css
+        assert "grid-template-columns: minmax(0, 1fr) auto" in topbar
+        assert "margin-left: auto" not in topbar
+        # Ничего не растягивает ленту шире экрана.
+        assert "max-width: 82%" in css
+        assert "min-width: 0" in css
         assert "overflow-wrap: anywhere" in css
-        assert "width: min(420px, 100vw)" in css   # панель не шире экрана
+        # Фото не задают высоту до загрузки → вёрстка не прыгает.
+        photos = css.split(".card__photo {", 1)[1].split("}", 1)[0]
+        assert "aspect-ratio" in photos and "object-fit" in photos
+        # Панель настроек не шире экрана.
+        assert "width: min(420px, 100vw)" in css
 
     def test_static_assets_are_cache_busted(self, client) -> None:
         """CSS/JS подключены с ?v=<mtime static/> — браузер тянет свежую вёрстку."""
@@ -364,6 +373,55 @@ class TestAppShell:
         data = client.get("/").get_data(as_text=True)
         assert "css/app.css?v=" in data
         assert "js/app.js?v=" in data
+
+    def test_login_uses_defined_css_classes(self, client) -> None:
+        """Страница входа использует те же классы, что есть в app.css.
+
+        Регресс: после переписывания стилей login.html остался с классами
+        `.form-input` / `.btn-primary` / `.btn-full`, которых в CSS уже не
+        было — вход рендерился серым без оформленной кнопки.
+        """
+        html = client.get("/login").get_data(as_text=True)
+        assert 'class="input"' in html
+        assert "btn--primary" in html and "btn--full" in html
+        assert "form-input" not in html and "btn-primary" not in html
+
+    def test_every_component_class_is_styled(self) -> None:
+        """Каждый компонентный класс из шаблонов определён в app.css.
+
+        Ловит рассинхрон разметки и стилей (как `.form-input` выше) до деплоя:
+        класс, которого нет в CSS, = элемент без оформления.
+        """
+        from pathlib import Path
+        import re
+
+        root = Path(__file__).resolve().parents[1]
+        css = (root / "static" / "css" / "app.css").read_text(encoding="utf-8")
+        defined = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
+        # Префиксы наших компонентов; служебные/сторонние классы не проверяем.
+        prefixes = ("topbar", "brand", "icon-btn", "mode", "app", "feed", "msg", "bubble",
+                    "card", "badge", "btn", "input", "link-btn", "chip", "pending", "drawer",
+                    "empty", "toast", "login", "form", "flash", "inline-form")
+
+        missing: dict[str, set[str]] = {}
+        for template in (root / "web" / "templates").rglob("*.html"):
+            body = template.read_text(encoding="utf-8")
+            classes: set[str] = set()
+            for raw in re.findall(r'class="([^"{}]+)"', body):
+                # Jinja-вставки в class (режим, тип тоста) пропускаем.
+                for name in re.split(r"\s+", raw):
+                    if name and "{{" not in name and "{%" not in name:
+                        classes.add(name)
+            local = {c for c in classes
+                     if c.startswith(prefixes) and not c.startswith(("is-", "mode-pill--",
+                                                                    "mode-switch__btn--",
+                                                                    "badge--", "card--", "card__done--",
+                                                                    "drawer__section", "toast--", "flash-"))}
+            gap = local - defined
+            if gap:
+                missing[template.name] = gap
+
+        assert not missing, f"классы без стилей: {missing}"
 
 # ── Quick Action Tests ───────────────────────────────────────────
 

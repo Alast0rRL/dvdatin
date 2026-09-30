@@ -10,11 +10,17 @@
     var backdrop = document.getElementById('drawer-backdrop');
 
     /* ── Drawer настроек ─────────────────────────────────────────── */
+    var lastFocused = null;
+
     function openDrawer() {
         if (!drawer) return;
+        lastFocused = document.activeElement;
         drawer.hidden = false;
         if (backdrop) backdrop.hidden = false;
         document.body.style.overflow = 'hidden';
+        if (openBtn) openBtn.setAttribute('aria-expanded', 'true');
+        var close = document.getElementById('drawer-close');
+        if (close) close.focus();
     }
 
     function closeDrawer() {
@@ -22,6 +28,8 @@
         drawer.hidden = true;
         if (backdrop) backdrop.hidden = true;
         document.body.style.overflow = '';
+        if (openBtn) openBtn.setAttribute('aria-expanded', 'false');
+        if (lastFocused && lastFocused.focus) lastFocused.focus();
     }
 
     var openBtn = document.getElementById('settings-open');
@@ -36,6 +44,21 @@
     /* ── Тосты живут 5 секунд ────────────────────────────────────── */
     document.querySelectorAll('.toast').forEach(function (t) {
         setTimeout(function () { t.remove(); }, 5000);
+    });
+
+    /* ── Битые фото не оставляют дыру в анкете ───────────────────── */
+    /* Ошибка загрузки не всплывает (error не bubble), поэтому ловим
+       в фазе захвата. Сетка .card__photos при этом схлопывается :empty. */
+    function dropBrokenImage(img) {
+        if (img.dataset.broken) return;
+        img.dataset.broken = '1';
+        img.remove();
+    }
+    document.addEventListener('error', function (e) {
+        if (e.target && e.target.tagName === 'IMG') dropBrokenImage(e.target);
+    }, true);
+    document.querySelectorAll('img.card__photo').forEach(function (img) {
+        if (img.complete && img.naturalWidth === 0) dropBrokenImage(img);
     });
 
     /* ── Подсказки капч подставляют текст в поле ответа ──────────── */

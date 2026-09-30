@@ -15,12 +15,12 @@
         {% if item.profile %}
         {% set p = item.profile %}
         <div class="card">
+            {# Битые фото удаляет app.js (grid схлопывается через :empty) #}
             {% if p.photos %}
             <div class="card__photos">
                 {% for ph in p.photos[:3] %}
-                <img class="card__photo" loading="lazy"
-                     src="{{ url_for('photos.serve_photo', profile_id=p.id, message_id=ph.telegram_message_id) }}"
-                     alt="{{ p.name }}">
+                <img class="card__photo" loading="lazy" alt="{{ p.name }}"
+                     src="{{ url_for('photos.serve_photo', profile_id=p.id, message_id=ph.telegram_message_id) }}">
                 {% endfor %}
             </div>
             {% endif %}
