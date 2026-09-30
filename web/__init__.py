@@ -20,6 +20,21 @@ from web.config import WebConfig
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def asset_version() -> str:
+    """Версия статики = максимальный mtime файлов в ``static/``.
+
+    Подставляется в ``?v=`` у CSS/JS, поэтому после деплоя браузер тянет
+    свежую вёрстку, а не закэшированную (иначе пользователь видит «поплывший»
+    старый интерфейс и не может открыть/закрыть панель).
+    """
+    static_dir = PROJECT_ROOT / "static"
+    newest = 0.0
+    for path in static_dir.rglob("*"):
+        if path.is_file():
+            newest = max(newest, path.stat().st_mtime)
+    return str(int(newest))
+
+
 def create_app(web_config: WebConfig | None = None) -> Flask:
     """Фабрика Flask-приложения.
 
@@ -62,7 +77,7 @@ def create_app(web_config: WebConfig | None = None) -> Flask:
     @app.context_processor
     def _inject_csrf_token():  # type: ignore[no-untyped-def]
         from flask import session
-        return dict(csrf_token=session.get("_csrf_token", ""))
+        return dict(csrf_token=session.get("_csrf_token", ""), asset_v=asset_version())
 
     # Register blueprints
     from web.blueprints.auth import auth_bp

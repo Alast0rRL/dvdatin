@@ -356,6 +356,15 @@ class TestAppShell:
         assert "overflow-wrap: anywhere" in css
         assert "width: min(420px, 100vw)" in css   # панель не шире экрана
 
+    def test_static_assets_are_cache_busted(self, client) -> None:
+        """CSS/JS подключены с ?v=<mtime static/> — браузер тянет свежую вёрстку."""
+        # /login проверяем до логина: после логина он редиректит на /chat.
+        assert "css/app.css?v=" in client.get("/login").get_data(as_text=True)
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert "css/app.css?v=" in data
+        assert "js/app.js?v=" in data
+
 # ── Quick Action Tests ───────────────────────────────────────────
 
 class TestQuickAction:
