@@ -408,6 +408,9 @@ class TestAppShell:
         # Миниатюра фото не задаёт высоту до загрузки → вёрстка не прыгает.
         thumbs = css.split(".thumbs__img {", 1)[1].split("}", 1)[0]
         assert "object-fit" in thumbs
+        # Размер миниатюры фиксированный (фото видно, но лента остаётся плотной).
+        item = css.split(".thumbs__item {", 1)[1].split("}", 1)[0]
+        assert "width: 96px" in item and "height: 128px" in item
         # Панель настроек не шире экрана.
         assert "width: min(420px, 100vw)" in css
 
