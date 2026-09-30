@@ -52,6 +52,15 @@ MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
 _STAGE_AWAIT_LIKE_ACK = "AWAIT_LIKE_ACK"   # кнопка ещё не отправлена
 _STAGE_AWAIT_PROMPT = "AWAIT_PROMPT"       # ждём композер от Leo
 
+#: Сообщение в композер («Берем)») уходит вне общего rate-limit: окно, пока
+#: Leo ждёт текст, короткое — задержка в interval_sec (10 с) приводила к тому,
+#: что «Берем)» уходило уже после «👎» (реакция на следующую карточку) и
+#: Leo отвечал «Сообщение слишком короткое».
+_COMPOSER_SEND_GAP_SEC: float = 1.5
+#: Сколько ждём композер, прежде чем отпустить отложенную реакцию на карточку
+#: (Leo мог не ответить — тогда не блокируем ленту).
+_COMPOSER_WAIT_SEC: float = 20.0
+
 
 class AutoActionError(Exception):
     """Ошибка выполнения авто-действия."""
@@ -98,12 +107,21 @@ class AutoActionEngine:
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
+        # Отдельный лок+таймер для сообщения в композер: общий rate-limit
+        # (interval_sec) не должен задерживать его на десятки секунд.
+        self._composer_lock = asyncio.Lock()
+        self._last_composer_send_at: float = 0.0
+        # Пока композер открыт, реакция на НОВУЮ карточку откладывается
+        # (см. _defer_reaction): иначе «👎» уходит в композер вместо текста.
+        self._deferred: dict | None = None
+        self._flush_task: asyncio.Task | None = None
         # Decision != Action (§30): резолвер сопоставляет Decision (LIKE/REVIEW/
         # DISLIKE) с ActionPolicy (LIKE_ONLY / LIKE_AND_MESSAGE / DISLIKE_ONLY /
         # NO_ACTION), затем применяет конфиг-гейты (like / like_message отдельно).
         self._resolver = ActionPolicyResolver()
         # Незавершённые цепочки LIKE_AND_MESSAGE: карточка → {stage, profile_id,
-        # chat_id, decision}. Прогрессирует из step_pending() по ответам Leo.
+        # chat_id, decision, opened_at}. Прогрессирует из step_pending() по
+        # ответам Leo.
         self._pending_chains: dict[int, dict] = {}
         # Кэш сущности ЛЕО-чата (PeerUser) на авто-клиенте: каждый аккаунт
         # имеет свой access_hash, без кэша Telethon не находит entity.
@@ -149,6 +167,7 @@ class AutoActionEngine:
         self._peer = None
         self._notify_user_id = None
         self._last_action_at = 0.0
+        self._last_composer_send_at = 0.0
         self._actions.clear()
         if notify_client is not None:
             self._notify_client = notify_client
@@ -218,6 +237,20 @@ class AutoActionEngine:
 
         notify_action = "LIKE" if decision == AIDecision.LIKE else "DISLIKE"
 
+        # Композер открыт (ждём «Отправь текст…» от Leo) — реакцию на новую
+        # карточку откладываем, иначе «👎»/«❤️» уйдут в композер вместо текста.
+        if policy != ActionPolicy.NO_ACTION and self._has_open_composer():
+            self._defer_reaction(
+                decision=decision,
+                profile_id=profile_id,
+                message_id=message_id,
+                reasons=reasons,
+                card_text=card_text,
+                informative=bool(informative),
+                chat_id=self._chat_id,
+            )
+            return "DEFERRED"
+
         if policy == ActionPolicy.DISLIKE_ONLY:
             await self._send_locked(DISLIKE_TEXT)
             logger.info(
@@ -270,6 +303,7 @@ class AutoActionEngine:
                     "chat_id": self._chat_id,
                     "decision": decision.value,
                     "stage": _STAGE_AWAIT_LIKE_ACK,
+                    "opened_at": time.time(),
                 }
                 self._pending_chains[message_id] = chain
                 # Шаг 2/3: сразу открываем композер строкой кнопок «💌 📹 🎤».
@@ -331,12 +365,16 @@ class AutoActionEngine:
                     f"по ack Leo (chat={chat_id}, карточка={card_id})"
                 )
                 chain["stage"] = _STAGE_AWAIT_PROMPT
+                chain["opened_at"] = time.time()
             elif stage == _STAGE_AWAIT_PROMPT and any(
                 m in low for m in MESSAGE_PROMPT_MARKERS
             ):
                 # Leo открыл композер → отправляем текст «Берем)» и завершаем.
+                # Отправка вне общего rate-limit: окно, пока Leo ждёт текст,
+                # короткое (иначе «👎» на следующую карточку успевал уйти
+                # раньше и Leo ругался «Сообщение слишком короткое»).
                 msg_text = self._pick_message_text()
-                await self._send_locked(msg_text)
+                await self._send_composer_text(msg_text)
                 logger.info(
                     f"AutoAction: «Берем)» шаг 3/3 — отправлено {msg_text!r} "
                     f"(chat={chat_id}, карточка={card_id})"
@@ -354,6 +392,133 @@ class AutoActionEngine:
                     except Exception as e:
                         logger.error(f"AutoAction: сообщение отправлено, но не записано: {e}")
                 self._pending_chains.pop(card_id, None)
+                # Композер закрыт — отпускаем отложенную реакцию на карточку.
+                await self._flush_deferred()
+
+    def _has_open_composer(self) -> bool:
+        """Открыт ли композер: есть цепочка, ждущая «Отправь текст…» от Leo."""
+        return any(
+            chain.get("stage") == _STAGE_AWAIT_PROMPT
+            for chain in self._pending_chains.values()
+        )
+
+    async def _send_composer_text(self, text: str) -> None:
+        """Отправка текста в открытый композер — вне общего rate-limit.
+
+        Leo ждёт текст недолго: общий ``interval_sec`` (10 с) успевал вставить
+        между лайком и сообщением реакцию «👎» на следующую карточку, и Leo
+        отвечал «Сообщение слишком короткое». Поэтому у композера свой
+        минимальный интервал (``_COMPOSER_SEND_GAP_SEC``) и свой лок.
+        """
+        async with self._composer_lock:
+            now = time.time()
+            elapsed = now - self._last_composer_send_at
+            if self._last_composer_send_at and elapsed < _COMPOSER_SEND_GAP_SEC:
+                await asyncio.sleep(_COMPOSER_SEND_GAP_SEC - elapsed)
+            self._last_composer_send_at = time.time()
+            await self._send(text)
+            # Учитываем в общем rate-limiter: сразу после текста в композер
+            # реакцию на следующую карточку лучше не слать (Leo ещё закрывает
+            # композер) — пусть пройдёт interval_sec.
+            self._last_action_at = self._last_composer_send_at
+
+    def _defer_reaction(
+        self,
+        decision: AIDecision,
+        profile_id: int | None,
+        message_id: int | None,
+        reasons: list[str] | None,
+        card_text: str | None,
+        informative: bool,
+        chat_id: int,
+    ) -> None:
+        """Откладывает реакцию на карточку, пока открыт композер.
+
+        Leo показывает одну активную карточку, поэтому в слоте хранится
+        ПОСЛЕДНЯЯ (остальные просто пролистываются). Отправка произойдёт, как
+        только цепочка «Берем)» закроется (``_flush_deferred``), либо по
+        таймауту ``_COMPOSER_WAIT_SEC``, если Leo так и не ответил.
+        """
+        self._deferred = {
+            "decision": decision,
+            "profile_id": profile_id,
+            "message_id": message_id,
+            "reasons": reasons,
+            "card_text": card_text,
+            "informative": informative,
+        }
+        logger.info(
+            "AutoAction: композер открыт — реакция по карточке "
+            f"{message_id} отложена ( ждём «Отправь текст…» )"
+        )
+        self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
+        """Планирует отложенный сброс: сразу по закрытию цепочки или по таймауту."""
+        if self._flush_task is None or self._flush_task.done():
+            try:
+                self._flush_task = asyncio.get_running_loop().create_task(
+                    self._flush_after_timeout()
+                )
+            except RuntimeError:
+                # Вне цикла событий (тесты) — отложенный сброс не запускаем.
+                self._flush_task = None
+
+    async def _flush_after_timeout(self) -> None:
+        """Ждёт ``_COMPOSER_WAIT_SEC``; если композер так и не открылся/не закрылся — отпускает ленту."""
+        await asyncio.sleep(_COMPOSER_WAIT_SEC)
+        self._drop_stale_chains()
+        await self._flush_deferred()
+
+    def _drop_stale_chains(self) -> None:
+        """Снимает цепочки, по которым Leo не ответил за ``_COMPOSER_WAIT_SEC``."""
+        now = time.time()
+        for card_id, chain in list(self._pending_chains.items()):
+            if chain.get("stage") != _STAGE_AWAIT_PROMPT:
+                continue
+            opened_at = chain.get("opened_at") or 0.0
+            if now - opened_at < _COMPOSER_WAIT_SEC:
+                continue
+            logger.warning(
+                f"AutoAction: «Берем)» карточка {card_id} — Leo не ответил на "
+                f"кнопку композера за {_COMPOSER_WAIT_SEC:.0f} с, цепочка снята"
+            )
+            self._pending_chains.pop(card_id, None)
+
+    async def _flush_deferred(self) -> None:
+        """Выполняет отложенную реакцию (после закрытия композера или по таймауту)."""
+        payload = self._deferred
+        if payload is None:
+            return
+        if not self.enabled:
+            return
+        # Композер всё ещё открыт (Leo ответил, но текст не отправлен) — ждём.
+        if self._has_open_composer():
+            return
+        self._deferred = None
+        logger.info(
+            "AutoAction: композер закрыт — отправляю отложенную реакцию "
+            f"по карточке {payload.get('message_id')}"
+        )
+        try:
+            action = await self.maybe_act(**payload)
+        except Exception as e:
+            logger.error(f"AutoAction: отложенная реакция не выполнена: {e}")
+            return
+        # Collector не записал действие (на момент отсрочки вернули DEFERRED).
+        if action in ("LIKE", "DISLIKE") and self._db is not None:
+            try:
+                await self._db.record_auto_action(
+                    payload.get("profile_id"),
+                    action,
+                    (payload.get("decision").value),
+                    self._chat_id,
+                    payload.get("message_id"),
+                )
+            except Exception as e:
+                logger.error(
+                    f"AutoAction: отложенное действие отправлено, но не записано: {e}"
+                )
 
     def _pick_message_text(self) -> str:
         """Выбирает текст сообщения «Берем)» из пула (or единственный).

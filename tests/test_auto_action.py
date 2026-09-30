@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -989,3 +990,134 @@ class TestLikeAndMessageChain:
         loop.run_until_complete(e.step_pending("Отправь текст.", 1234060895))
         # «Берем)» всё равно ушло, цепочка завершена.
         assert e._pending_chains == {}
+
+    def test_composer_text_bypasses_rate_limit(self) -> None:
+        """Текст в композер уходит сразу, не дожидаясь interval_sec.
+
+        Регрессия: общий rate-limit (10 с) успевал вставить между лайком и
+        сообщением «👎» на следующую карточку → Leo «Сообщение слишком
+        короткое».
+        """
+        client = make_client()
+        e = self._engine_with_msg(client=client, interval_sec=3.0)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        client.send_message.reset_mock()
+        start = time.time()
+        loop.run_until_complete(
+            e.step_pending("Отправь текст, видео или голосовое.", 1234060895)
+        )
+        assert time.time() - start < 1.0
+        args, _ = client.send_message.call_args
+        assert args[1] == "Берем)"
+
+    def test_reaction_deferred_while_composer_open(self) -> None:
+        """Пока композер открыт, «👎» на новую карточку НЕ отправляется."""
+        client = make_client()
+        db = MagicMock()
+        db.record_auto_action = AsyncMock()
+        e = self._engine_with_msg(client=client, db=db)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        client.send_message.reset_mock()
+        # Следующая карточка пришла, пока ждём композер.
+        result = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=6, message_id=101)
+        )
+        assert result == "DEFERRED"
+        client.send_message.assert_not_called()
+        assert e._deferred is not None
+
+        # Leo открыл композер → сначала текст, потом отложенный «👎».
+        loop.run_until_complete(
+            e.step_pending("Отправь текст, видео или голосовое.", 1234060895)
+        )
+        sent = [c.args[1] for c in client.send_message.call_args_list]
+        assert sent[0] == "Берем)"
+        assert DISLIKE_TEXT in sent
+        assert e._deferred is None
+        # Отложенное действие записано в БД (collector его не писал).
+        db.record_auto_action.assert_any_await(
+            6, "DISLIKE", "DISLIKE", 1234060895, 101
+        )
+
+    def test_deferred_reaction_keeps_latest_card(self) -> None:
+        """Leo показывает одну карточку — откладываем последнюю."""
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=6, message_id=101)
+        )
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=7, message_id=102)
+        )
+        assert e._deferred is not None
+        assert e._deferred["message_id"] == 102
+        assert e._deferred["profile_id"] == 7
+
+    def test_stale_chain_dropped_and_reaction_flushed(self, monkeypatch) -> None:
+        """Leo не ответил на кнопку композера — цепочка снимается, лента идёт."""
+        monkeypatch.setattr("collectors.auto_action._COMPOSER_WAIT_SEC", 0.01)
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=6, message_id=101)
+        )
+        assert e._deferred is not None
+        # Имитируем простой: цепочка висит дольше таймаута.
+        e._pending_chains[100]["opened_at"] = time.time() - 999
+        loop.run_until_complete(e._flush_after_timeout())
+        assert e._pending_chains == {}
+        sent = [c.args[1] for c in client.send_message.call_args_list]
+        assert DISLIKE_TEXT in sent
+        assert e._deferred is None
+
+    def test_deferred_kept_while_composer_still_open(self, monkeypatch) -> None:
+        """Не сбрасываем отсрочку, пока композер реально открыт."""
+        monkeypatch.setattr("collectors.auto_action._COMPOSER_WAIT_SEC", 0.01)
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=6, message_id=101)
+        )
+        e._pending_chains[100]["opened_at"] = time.time() + 60
+        loop.run_until_complete(e._flush_after_timeout())
+        assert e._pending_chains != {}
+        assert e._deferred is not None
+        client.send_message.reset_mock()
+        client.send_message.assert_not_called()
+
+    def test_deferred_flush_skipped_when_disabled(self, monkeypatch) -> None:
+        """OBSERVE/выключенные авто-действия: отложенное не отправляется."""
+        monkeypatch.setattr("collectors.auto_action._COMPOSER_WAIT_SEC", 0.01)
+        client = make_client()
+        e = self._engine_with_msg(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
+        )
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=6, message_id=101)
+        )
+        e.mode = Mode.OBSERVE
+        e._pending_chains[100]["opened_at"] = time.time() - 999
+        loop.run_until_complete(e._flush_after_timeout())
+        assert e._deferred is not None
+        client.send_message.reset_mock()
+        client.send_message.assert_not_called()

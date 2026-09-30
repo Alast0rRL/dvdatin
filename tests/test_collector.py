@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2250,6 +2251,50 @@ class TestCollectorAutoActions:
         engine = collector.auto_engine()
         assert engine is not None
         assert engine._pending_chains == {}
+
+    def test_dislike_deferred_while_composer_open(self) -> None:
+        """Пока композер открыт, «👎» на новую карточку не уходит в него."""
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        config = self._make_config(like_message_enabled=True)
+
+        decision = self._make_decision(AIDecision.LIKE, informative=True)
+        collector = self._make_collector(config, decision, auto_client, other_client)
+        engine = collector.auto_engine()
+        assert engine is not None
+
+        # Имитируем открытый композер: предыдущий лайк ждёт «Отправь текст…».
+        engine._pending_chains[910] = {
+            "profile_id": 1,
+            "chat_id": 1234060895,
+            "decision": "LIKE",
+            "stage": "AWAIT_PROMPT",
+            "opened_at": time.time(),
+        }
+
+        # Следующая карточка приходит с DISLIKE-решением.
+        collector._decision_service.evaluate = AsyncMock(
+            return_value=self._make_decision(AIDecision.DISLIKE, informative=False)
+        )
+        task = RawTask(
+            chat_id=1234060895, message_id=912, sender_id=1234060895,
+            sender_username="", sender_name="", text="Оля, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=13,
+        )
+        auto_client.send_message.reset_mock()
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        # «👎» не отправлен — реакция отложена, композер не забит.
+        sent = [c.args[1] for c in auto_client.send_message.call_args_list]
+        assert "\U0001F44E" not in sent
+        assert engine._deferred is not None
+        assert engine._deferred["message_id"] == 912
     def test_logged_profile_is_not_sent_twice(self) -> None:
         from models.decision import AIDecision
 
