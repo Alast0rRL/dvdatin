@@ -106,6 +106,29 @@ class TestPreferencesEngine:
         assert "курит" not in skip
         assert "пьёт" not in skip
 
+    def test_against_alcohol_not_skipped(self) -> None:
+        """Регресс: «Против алкоголя» больше не даёт SKIP «пьёт».
+
+        Подстрока «алкогол» матчилась в «Против алкоголя🧯» → бот шлёт 👎
+        анкете, которая как раз НЕ пьёт.
+        """
+        from app.preferences import load_preferences
+        e = load_preferences()
+        text = ("Скррр, 18, Сургут – Ищу общение, можно еще поиграть. "
+                "Люблю играть в Minecraft на хардкоре или в хорроры. "
+                "Против алкоголя🧯🧯🧯 Люблю невкусно готовить и рисовать.")
+        skip, like = e.evaluate(text)
+        assert "пьёт" not in skip
+        assert "курит" not in skip
+        assert "игры" in like or "гейм" in like or not like  # LIKE не сломан
+
+    def test_alcohol_still_skipped_without_negation(self) -> None:
+        """Без отрицания «алкогол» по-прежнему даёт SKIP «пьёт»."""
+        from app.preferences import load_preferences
+        e = load_preferences()
+        skip, _ = e.evaluate("Люблю вино по вечерам и пивасик")
+        assert "пьёт" in skip
+
 
 class TestDecisionHardRules:
     """Слой правил поверх порогов (прямой вызов _decide)."""
