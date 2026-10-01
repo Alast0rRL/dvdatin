@@ -209,12 +209,115 @@ class TestAutoActionConfig:
         c = AutoActionsConfig()
         assert c.enabled is False
         assert c.account_session == ""
-        assert c.interval_sec == 10.0
+        # Малый интервал: Leo принимает ❤️/👎 только пока карточка на экране,
+        # при 10 с реакция уезжала на 1–3 карточки вперёд.
+        assert c.interval_sec == 2.0
         assert c.notify_chat_id == 0
 
     def test_interval_positive(self) -> None:
         with pytest.raises(Exception):
             AutoActionsConfig(interval_sec=-1)
+
+
+class TestAutoActionStaleCard:
+    """Гейт «реакция — в свою карточку» (Leo держит одну активную карточку).
+
+    Прод-баг: лента листается САМА (~каждые 2–10 с), а реакция уходила с
+    лагом 10–30 с → 54 промаха из 60 попадали на ЧУЖУЮ анкету. Теперь
+    устаревшая карточка пропускается (возврат "STALE", ничего не отправляется).
+    """
+
+    def test_reaction_skipped_for_stale_card(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        # На экране уже карточка 25355, а решение считается для 25350.
+        e.note_card(1234060895, 25355)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, message_id=25350)
+        )
+        assert result == "STALE"
+        client.send_message.assert_not_called()
+
+    def test_stale_skip_beats_composer_defer(self) -> None:
+        """Устаревшая карточка отбрасывается сразу, не попадая в отложенные."""
+        client = make_client()
+        e = make_engine(client=client)
+        # Открытый композер: цепочка ждёт «Отправь текст…».
+        e._pending_chains[100] = {"stage": "AWAIT_PROMPT", "opened_at": time.time()}
+        e.note_card(1234060895, 300)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, message_id=200)
+        )
+        assert result == "STALE"
+        assert e._deferred is None
+        client.send_message.assert_not_called()
+
+    def test_current_card_still_reacted(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        e.note_card(1234060895, 25350)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, message_id=25350)
+        )
+        assert result == "DISLIKE"
+        client.send_message.assert_called_once()
+        args, _ = client.send_message.call_args
+        assert args[1] == DISLIKE_TEXT
+
+    def test_stale_like_message_chain_not_started(self) -> None:
+        """LIKE_AND_MESSAGE на устаревшей карточке: ни ❤️, ни цепочка."""
+        client = make_client()
+        e = make_engine(
+            client=client,
+            config=make_auto_config(like_message_enabled=True),
+        )
+        e.note_card(1234060895, 555)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, message_id=550, informative=True,
+            )
+        )
+        assert result == "STALE"
+        assert e._pending_chains == {}
+        client.send_message.assert_not_called()
+
+    def test_unknown_card_is_not_stale(self) -> None:
+        """Без отметки от хендлера гейт не включается (тесты/ручные send)."""
+        client = make_client()
+        e = make_engine(client=client)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, message_id=25350)
+        )
+        assert result == "LIKE"
+
+    def test_note_card_is_monotonic(self) -> None:
+        e = make_engine()
+        e.note_card(1234060895, 300)
+        e.note_card(1234060895, 200)  # поздняя доставка старой карточки
+        assert e.is_stale_card(1234060895, 200) is True
+        assert e.is_stale_card(1234060895, 300) is False
+
+    def test_swap_client_resets_card_pointer(self) -> None:
+        """У аккаунтов номера карточек в разных пространствах — сбрасываем."""
+        e = make_engine()
+        e.note_card(1234060895, 726751)
+        e.swap_client(make_client())
+        assert e.is_stale_card(1234060895, 300) is False
+
+    def test_deferred_reaction_dropped_when_card_gone(self) -> None:
+        """Отложенная реакция на устаревшую карточку не отправляется."""
+        client = make_client()
+        e = make_engine(client=client)
+        e._pending_chains[100] = {"stage": "AWAIT_PROMPT", "opened_at": time.time()}
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, message_id=200)
+        )
+        assert e._deferred is not None
+        # Пока композер был открыт, Leo показал более новую карточку.
+        e.note_card(1234060895, 201)
+        loop.run_until_complete(e._flush_deferred())
+        client.send_message.assert_not_called()
 
 
 class TestAutoActionRuntimeMode:

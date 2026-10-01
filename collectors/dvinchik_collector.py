@@ -1217,6 +1217,28 @@ class DvinchikCollector:
             # а не терять до restart.
             self._dedup.mark((chat_id, event.message.id))
 
+            # Активная карточка для гейта «реакция в свою карточку»
+            # (AutoActionEngine.is_stale_card). Помечаем ЗДЕСЬ, в хендлере, а
+            # не в worker'е: метка должна отражать реальный порядок показа
+            # карточек, иначе отставание pipeline не видно и ❤️/👎 уезжают
+            # на следующую анкету (прод: 54 промаха из 60). Классификация
+            # чистая — regex, без сети и БД; RAW уже сохранён выше.
+            if (
+                self._auto_engine.enabled
+                and chat_id == self._dvinchik_chat_id
+                and event.client is self._auto_engine.client
+            ):
+                try:
+                    if (
+                        self._parser.classify(
+                            text, has_media=media_type != ""
+                        )
+                        is MessageType.PROFILE
+                    ):
+                        self._auto_engine.note_card(chat_id, msg.id)
+                except Exception as e:
+                    logger.debug(f"AutoAction: note_card не удался: {e}")
+
             # D: raw_id поставлен в очередь в этой сессии (live handler).
             # Только пока активна startup-recovery (recover_backlog) — иначе в
             # steady-state set рос бы бесконечно (MEDIUM-1). При переполнении

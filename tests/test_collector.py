@@ -17,13 +17,19 @@ from collectors.dvinchik_collector import (
     _detect_media_type,
     is_manual_message_excluded,
 )
-from collectors.auto_action import MESSAGE_BUTTON_TEXT
+from collectors.auto_action import MESSAGE_BUTTON_TEXT, AutoActionEngine
 from collectors.dedup import Dedup
 from collectors.raw_queue import RawQueue
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from collectors.stats import CollectorStats
 from core.types import Mode
-from app.config import AppConfig, TelegramConfig, FiltersConfig, DvinchikConfig
+from app.config import (
+    AppConfig,
+    AutoActionsConfig,
+    TelegramConfig,
+    FiltersConfig,
+    DvinchikConfig,
+)
 from database.database import Database
 from services.profile_service import ProfileService
 
@@ -164,6 +170,92 @@ class TestCollectorStats:
 
 
 # ==================== COLLECTOR INTEGRATION ====================
+
+class TestCollectorActiveCard:
+    """Хендлер помечает активную карточку (гейт «реакция в свою карточку»).
+
+    Leo держит одну карточку и принимает ❤️/👎 только пока она на экране, а
+    ленту листает САМА. Отметка ставится в хендлере (порядок прихода), а не
+    в worker'е — иначе отставание pipeline не видно и реакция уезжает на
+    чужую анкету (прод: 54 промаха из 60).
+    """
+
+    @staticmethod
+    def _collector() -> tuple[DvinchikCollector, AsyncMock, AutoActionEngine]:
+        client = AsyncMock()
+        collector = DvinchikCollector(client, make_db_mock(), make_config())
+        engine = AutoActionEngine(
+            client=client,
+            config=AutoActionsConfig(enabled=True, interval_sec=0.0),
+            mode=Mode.SEMI_AUTO,
+            chat_id=1234060895,
+        )
+        collector._auto_engine = engine
+        return collector, client, engine
+
+    def test_profile_message_marks_active_card(self) -> None:
+        collector, client, engine = self._collector()
+        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=100)
+        event.client = client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        # Показанная карточка — актуальная, а всё, что ниже, уже устарело.
+        assert engine.is_stale_card(1234060895, 100) is False
+        engine.note_card(1234060895, 200)
+        assert engine.is_stale_card(1234060895, 100) is True
+
+    def test_service_message_does_not_mark_card(self) -> None:
+        """Сервисный ответ Leo («Лайк отправлен…») карточкой не считается."""
+        collector, client, engine = self._collector()
+        event = make_event(text="Лайк отправлен, ждем ответа.", msg_id=300)
+        event.client = client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        # Указатель остался пустым — гейт не срабатывает.
+        assert engine.is_stale_card(1234060895, 250) is False
+
+    def test_photo_only_message_does_not_mark_card(self) -> None:
+        """Фото анкеты (MEDIA_ONLY) приходит после карточки и не сбивает гейт."""
+        collector, client, engine = self._collector()
+        card = make_event(text="wimx, 18, Санкт-Петербург", msg_id=400)
+        card.client = client
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(collector._handle_new_message(card))
+
+        photo = make_event(text="", msg_id=401, media_type="photo")
+        photo.client = client
+        loop.run_until_complete(collector._handle_new_message(photo))
+
+        # Карточка 400 всё ещё актуальна: фото не считается новой карточкой.
+        assert engine.is_stale_card(1234060895, 400) is False
+
+    def test_foreign_chat_does_not_mark_card(self) -> None:
+        """Чужой чат не участвует в гейте (карточек Leo там нет)."""
+        collector, client, engine = self._collector()
+        event = make_event(
+            text="wimx, 18, Санкт-Петербург", chat_id=777, msg_id=500,
+        )
+        event.client = client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        assert engine.is_stale_card(1234060895, 100) is False
+
+    def test_other_account_does_not_mark_card(self) -> None:
+        """Карточка не с авто-аккаунта реакцию не двигает."""
+        collector, client, engine = self._collector()
+        event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=600)
+        event.client = AsyncMock()  # другой аккаунт
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        assert engine.is_stale_card(1234060895, 100) is False
 
 class TestCollectorIntegration:
     def test_register(self) -> None:
