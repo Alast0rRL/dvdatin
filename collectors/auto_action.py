@@ -120,8 +120,9 @@ class AutoActionEngine:
         self._deferred: dict | None = None
         self._flush_task: asyncio.Task | None = None
         # Decision != Action (§30): резолвер сопоставляет Decision (LIKE/REVIEW/
-        # DISLIKE) с ActionPolicy (LIKE_ONLY / LIKE_AND_MESSAGE / DISLIKE_ONLY /
-        # NO_ACTION), затем применяет конфиг-гейты (like / like_message отдельно).
+        # DISLIKE) с ActionPolicy (LIKE_AND_MESSAGE / DISLIKE_ONLY /
+        # NO_ACTION), затем применяет конфиг-гейты (like / like_message
+        # отдельно). Голого лайка без сообщения (LIKE_ONLY) больше нет.
         self._resolver = ActionPolicyResolver()
         # Незавершённые цепочки LIKE_AND_MESSAGE: карточка → {stage, profile_id,
         # chat_id, decision, opened_at}. Прогрессирует из step_pending() по
@@ -247,8 +248,8 @@ class AutoActionEngine:
         а сейчас карточка усечённая).
 
         ``informative`` — информативность анкеты (из детерминированного
-        DecisionService). Нужна для выбора LIKE_ONLY vs LIKE_AND_MESSAGE
-        (Decision != Action, §30).
+        DecisionService). Учитывается в логике/логах, но политику уже не
+        разводит: LIKE — всегда цепочка «Берем)», голый ❤️ удалён (§30).
 
         Идемпотентность по ``telegram_message_id`` обеспечивается на уровне
         collector'а (``has_auto_action_for_message`` в БД), а не движка.
@@ -329,24 +330,17 @@ class AutoActionEngine:
             )
             return "DISLIKE"
 
-        if policy == ActionPolicy.LIKE_ONLY:
-            await self._send_locked(LIKE_TEXT)
-            logger.info(
-                f"AutoAction: отправил {LIKE_TEXT!r} (LIKE) на chat={self._chat_id}"
-            )
-            self._print_action("LIKE", LIKE_TEXT)
-            await self._notify(
-                "LIKE",
-                profile_id=profile_id,
-                message_id=message_id,
-                reasons=reasons,
-                card_text=card_text,
-            )
-            return "LIKE"
-
         if policy == ActionPolicy.LIKE_AND_MESSAGE:
-            # Шаг 1/3 цепочки «Берем)»: ❤️. Если карточка не привязана к
-            # message_id — цепочку завести нельзя, отправляем только LIKE.
+            # Шаг 1/3 цепочки «Берем)»: ❤️. Без привязки к message_id
+            # цепочку завести нельзя, а голый ❤️ больше не шлём (LIKE_ONLY
+            # удалён) — карточку пропускаем.
+            if message_id is None:
+                logger.info(
+                    "AutoAction: LIKE без message_id — цепочку «Берем)» "
+                    "завести нельзя, голый лайк не шлю (chat="
+                    f"{self._chat_id}, profile_id={profile_id})"
+                )
+                return "GATE"
             await self._send_locked(LIKE_TEXT)
             logger.info(
                 f"AutoAction: отправил {LIKE_TEXT!r} (LIKE, пункт 1 «Берем)») "
@@ -360,35 +354,34 @@ class AutoActionEngine:
                 reasons=reasons,
                 card_text=card_text,
             )
-            if message_id is not None:
-                chain = {
-                    "profile_id": profile_id,
-                    "chat_id": self._chat_id,
-                    "decision": decision.value,
-                    "stage": _STAGE_AWAIT_LIKE_ACK,
-                    "opened_at": time.time(),
-                }
-                self._pending_chains[message_id] = chain
-                # Шаг 2/3: сразу открываем композер строкой кнопок «💌 📹 🎤».
-                # Ждать ack Leo нельзя — он его больше не присылает (после ❤️
-                # сразу идёт следующая карточка), из-за чего цепочка стояла
-                # только на сердечке. rate-limiter сам разнесёт отправки на
-                # interval_sec. Не удалось — стадия остаётся AWAIT_LIKE_ACK,
-                # и тогда кнопку отправим по ack Leo (ретрай в step_pending).
-                try:
-                    await self._send_locked(MESSAGE_BUTTON_TEXT)
-                except Exception as e:
-                    logger.error(
-                        f"AutoAction: «Берем)» шаг 2/3 — не удалось отправить "
-                        f"{MESSAGE_BUTTON_TEXT!r}: {e}"
-                    )
-                else:
-                    chain["stage"] = _STAGE_AWAIT_PROMPT
-                    logger.info(
-                        f"AutoAction: «Берем)» шаг 2/3 — отправлено "
-                        f"{MESSAGE_BUTTON_TEXT!r} (chat={self._chat_id}, "
-                        f"карточка={message_id})"
-                    )
+            chain = {
+                "profile_id": profile_id,
+                "chat_id": self._chat_id,
+                "decision": decision.value,
+                "stage": _STAGE_AWAIT_LIKE_ACK,
+                "opened_at": time.time(),
+            }
+            self._pending_chains[message_id] = chain
+            # Шаг 2/3: сразу открываем композер строкой кнопок «💌 📹 🎤».
+            # Ждать ack Leo нельзя — он его больше не присылает (после ❤️
+            # сразу идёт следующая карточка), из-за чего цепочка стояла
+            # только на сердечке. rate-limiter сам разнесёт отправки на
+            # interval_sec. Не удалось — стадия остаётся AWAIT_LIKE_ACK,
+            # и тогда кнопку отправим по ack Leo (ретрай в step_pending).
+            try:
+                await self._send_locked(MESSAGE_BUTTON_TEXT)
+            except Exception as e:
+                logger.error(
+                    f"AutoAction: «Берем)» шаг 2/3 — не удалось отправить "
+                    f"{MESSAGE_BUTTON_TEXT!r}: {e}"
+                )
+            else:
+                chain["stage"] = _STAGE_AWAIT_PROMPT
+                logger.info(
+                    f"AutoAction: «Берем)» шаг 2/3 — отправлено "
+                    f"{MESSAGE_BUTTON_TEXT!r} (chat={self._chat_id}, "
+                    f"карточка={message_id})"
+                )
             return "LIKE"
 
         # NO_ACTION (напр. OBSERVE/выключенные like) — ничего не шлём.

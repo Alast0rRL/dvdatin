@@ -1,5 +1,7 @@
 # ActionPolicyResolver: детерминированно сопоставляет Decision с политикой
-# Telegram-действия (LIKE_ONLY / LIKE_AND_MESSAGE / DISLIKE_ONLY / NO_ACTION).
+# Telegram-действия (LIKE_AND_MESSAGE / DISLIKE_ONLY / NO_ACTION).
+# Обычного лайка без сообщения (LIKE_ONLY) больше НЕТ: LIKE всегда
+# превращается в цепочку «Берем)», иначе действие не выполняется.
 #
 # ЧАСТЬ АРХИТЕКТУРЫ «Decision != Action»:
 # DecisionService возвращает только LIKE/REVIEW/DISLIKE. Этот слой решает,
@@ -21,8 +23,7 @@ class ActionPolicyResolver:
     ----------|------------------------|---------------------------
     DISLIKE   | (неважно)              | DISLIKE_ONLY
     REVIEW    | (неважно)              | NO_ACTION (ждём человека)
-    LIKE      | True (информативная)   | LIKE_AND_MESSAGE
-    LIKE      | False (короткая)       | LIKE_ONLY
+    LIKE      | (неважно)              | LIKE_AND_MESSAGE
 
     Исполнитель (AutoActionEngine) затем применяет конфиг-гейты: в OBSERVE
     действия не выполняются, а LIKE_AND_MESSAGE требует и ``like.enabled``,
@@ -34,17 +35,20 @@ class ActionPolicyResolver:
         decision: AIDecision | None,
         informative: bool = False,
     ) -> ActionPolicy:
-        """Сопоставляет Decision + информативность → базовую ActionPolicy."""
+        """Сопоставляет Decision → базовую ActionPolicy.
+
+        ``informative`` оставлен для совместимости вызовов и НЕ влияет на
+        результат: голый ❤️ удалён, поэтому и короткая, и информативная
+        анкета дают LIKE_AND_MESSAGE (цепочка «Берем)»).
+        """
         if decision is None:
             return ActionPolicy.NO_ACTION
         if decision == AIDecision.DISLIKE:
             return ActionPolicy.DISLIKE_ONLY
         if decision == AIDecision.REVIEW:
             return ActionPolicy.NO_ACTION
-        # LIKE
-        if informative:
-            return ActionPolicy.LIKE_AND_MESSAGE
-        return ActionPolicy.LIKE_ONLY
+        # LIKE — только с сообщением.
+        return ActionPolicy.LIKE_AND_MESSAGE
 
     def resolve_config(
         self,
@@ -57,22 +61,16 @@ class ActionPolicyResolver:
 
         Правила:
         - DISLIKE_ONLY выполняется всегда (конфиг-гейт на LIKE его не трогает).
-        - LIKE_ONLY → LIKE_ONLY только если ``like_enabled``, иначе NO_ACTION.
-        - LIKE_AND_MESSAGE: если и ``like_enabled`` и ``like_message_enabled`` —
-          полная цепочка; если только ``like_enabled`` — деградируем к LIKE_ONLY;
-          иначе NO_ACTION.
+        - LIKE_AND_MESSAGE требует и ``like_enabled``, и ``like_message_enabled``;
+          иначе NO_ACTION — деградации до голого ❤️ больше нет.
         - NO_ACTION остаётся NO_ACTION.
 
         Mode-гейт (OBSERVE → NO_ACTION) применяется отдельно исполнителем.
         """
         if policy == ActionPolicy.DISLIKE_ONLY:
             return ActionPolicy.DISLIKE_ONLY
-        if policy == ActionPolicy.LIKE_ONLY:
-            return ActionPolicy.LIKE_ONLY if like_enabled else ActionPolicy.NO_ACTION
         if policy == ActionPolicy.LIKE_AND_MESSAGE:
             if like_message_enabled and like_enabled:
                 return ActionPolicy.LIKE_AND_MESSAGE
-            if like_enabled:
-                return ActionPolicy.LIKE_ONLY
             return ActionPolicy.NO_ACTION
         return ActionPolicy.NO_ACTION

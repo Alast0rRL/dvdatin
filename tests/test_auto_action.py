@@ -33,7 +33,7 @@ def make_auto_config(**overrides) -> AutoActionsConfig:
         {"enabled": True},
     }
     like_msg = {**
-        {"enabled": False, "text": "Берем)"},
+        {"enabled": True, "text": "Берем)"},
     }
     for k in list(overrides):
         if k == "like_enabled":
@@ -107,16 +107,27 @@ class TestAutoActionGate:
 
 
 class TestAutoActionExec:
-    def test_like_sends_heart(self) -> None:
+    def test_like_sends_heart_with_message(self) -> None:
+        """LIKE → только цепочка «Берем)»: ❤️ и кнопка композера."""
+        client = make_client()
+        e = make_engine(client=client)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=900)
+        )
+        assert result == "LIKE"
+        texts = [c.args[1] for c in client.send_message.call_args_list]
+        assert texts[0] == LIKE_TEXT
+        assert MESSAGE_BUTTON_TEXT in texts
+
+    def test_like_without_message_id_is_gated(self) -> None:
+        """Без message_id цепочку завести нельзя — голый ❤️ не шлём."""
         client = make_client()
         e = make_engine(client=client)
         result = asyncio.get_event_loop().run_until_complete(
             e.maybe_act(AIDecision.LIKE)
         )
-        assert result == "LIKE"
-        client.send_message.assert_called_once()
-        args, _ = client.send_message.call_args
-        assert args[1] == LIKE_TEXT
+        assert result == "GATE"
+        client.send_message.assert_not_called()
 
     def test_dislike_sends_thumbsdown(self) -> None:
         client = make_client()
@@ -183,7 +194,7 @@ class TestAutoActionExec:
         e = make_engine(client=client)
         with pytest.raises(AutoActionError):
             asyncio.get_event_loop().run_until_complete(
-                e.maybe_act(AIDecision.LIKE)
+                e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=900)
             )
 
 
@@ -196,9 +207,15 @@ class TestAutoActionRateLimit:
             client=client, config=make_auto_config(interval_sec=0.05)
         )
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(e.maybe_act(AIDecision.LIKE))
+        # 👎 дважды: LIKE открывает композер и отложил бы второе действие,
+        # поэтому для проверки rate-limit берём один тип действия.
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=1, message_id=901)
+        )
         t0 = time.monotonic()
-        loop.run_until_complete(e.maybe_act(AIDecision.DISLIKE))
+        loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=2, message_id=902)
+        )
         elapsed = time.monotonic() - t0
         # Второе действие должно подождать >= interval_sec.
         assert elapsed >= 0.04
@@ -364,17 +381,20 @@ class TestAutoActionNotify:
             e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=900)
         )
         client.forward_messages.assert_not_called()
-        # Основное действие всё равно отправлено.
-        client.send_message.assert_called_once()
-        args, _ = client.send_message.call_args
-        assert args[1] == LIKE_TEXT
+        # Основное действие всё равно отправлено: ❤️ + кнопка композера.
+        texts = [c.args[1] for c in client.send_message.call_args_list]
+        assert texts[0] == LIKE_TEXT
+        assert MESSAGE_BUTTON_TEXT in texts
 
     def test_no_notify_without_message_id(self) -> None:
         client, e = self._notify_engine()
-        asyncio.get_event_loop().run_until_complete(
+        result = asyncio.get_event_loop().run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=1)
         )
+        # Без карточки цепочка невозможна → ничего не отправляем и не уведомляем.
+        assert result == "GATE"
         client.forward_messages.assert_not_called()
+        client.send_message.assert_not_called()
 
     def test_like_forwards_and_explains(self) -> None:
         client, e = self._notify_engine()
@@ -389,8 +409,8 @@ class TestAutoActionNotify:
         client.forward_messages.assert_awaited_once_with(
             8525808108, 900, from_peer=1234060895
         )
-        # Одно сообщение — само действие (❤️), второе — объяснение.
-        assert client.send_message.call_count == 2
+        # Три сообщения: ❤️, объяснение владельцу, кнопка композера «Берем)».
+        assert client.send_message.call_count == 3
         explain_call = client.send_message.call_args_list[1]
         text = explain_call.args[1]
         assert text.startswith("❤️ Лайк")
@@ -474,7 +494,7 @@ class TestAutoActionNotify:
         )
         # Пересылка есть, но пояснение не отправляется (нет причин).
         client.forward_messages.assert_awaited_once()
-        assert client.send_message.call_count == 1
+        assert client.send_message.call_count == 2
 
     def test_notify_drops_stale_evidence_for_truncated_card(self) -> None:
         """Уведомление «нужно решение» не цитирует старое описание усечённой карточки."""
@@ -524,7 +544,7 @@ class TestAutoActionNotify:
             1753676469, 910, from_peer=1234060895
         )
         # Второе сообщение — объяснение, отправлено на Меланхолика.
-        assert client.send_message.call_count == 2
+        assert client.send_message.call_count == 3
         explain_call = client.send_message.call_args_list[1]
         assert explain_call.args[0] == 1753676469
 
@@ -555,8 +575,8 @@ class TestAutoActionNotify:
             e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=913)
         )
         client.forward_messages.assert_not_called()
-        # Основное действие отправлено.
-        assert client.send_message.call_count == 1
+        # Основное действие отправлено (❤️ + кнопка композера).
+        assert client.send_message.call_count == 2
 
 
 class TestFormatReason:
@@ -644,7 +664,27 @@ class TestAutoActionIdempotency:
     """
 
     def test_same_profile_id_allows_repeated_actions(self) -> None:
-        """Один profile_id, два разных действия — оба отправляются."""
+        """Один profile_id, два разных действия — оба отправляются.
+
+        LIKE открывает композер, поэтому чтобы проверить именно повторные
+        действия по profile_id, оба раза шлём 👎 (иначе второе действие
+        корректно отложится как DEFERRED).
+        """
+        client = make_client()
+        e = make_engine(client=client)
+        loop = asyncio.get_event_loop()
+        r1 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=42, message_id=100)
+        )
+        r2 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=42, message_id=200)
+        )
+        assert r1 == "DISLIKE"
+        assert r2 == "DISLIKE"
+        assert client.send_message.await_count == 2
+
+    def test_like_then_dislike_is_deferred_by_open_composer(self) -> None:
+        """LIKE открыл композер — реакция на следующую карточку отложена."""
         client = make_client()
         e = make_engine(client=client)
         loop = asyncio.get_event_loop()
@@ -655,8 +695,7 @@ class TestAutoActionIdempotency:
             e.maybe_act(AIDecision.DISLIKE, profile_id=42, message_id=200)
         )
         assert r1 == "LIKE"
-        assert r2 == "DISLIKE"
-        assert client.send_message.await_count == 2
+        assert r2 == "DEFERRED"
 
     def test_same_profile_id_allows_same_action_twice(self) -> None:
         """Два одинаковых действия подряд на один profile_id — оба проходят."""
@@ -678,10 +717,14 @@ class TestAutoActionIdempotency:
         client = make_client()
         e = make_engine(client=client)
         loop = asyncio.get_event_loop()
-        r1 = loop.run_until_complete(e.maybe_act(AIDecision.LIKE))
-        r2 = loop.run_until_complete(e.maybe_act(AIDecision.LIKE))
-        assert r1 == "LIKE"
-        assert r2 == "LIKE"
+        r1 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, message_id=401)
+        )
+        r2 = loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, message_id=402)
+        )
+        assert r1 == "DISLIKE"
+        assert r2 == "DISLIKE"
         assert client.send_message.await_count == 2
 
 
@@ -1053,8 +1096,8 @@ class TestLikeAndMessageChain:
         loop.run_until_complete(e.step_pending("Отправь текст.", 999999))
         client.send_message.assert_not_called()
 
-    def test_like_message_disabled_sends_only_like(self) -> None:
-        """like_message выключен → только ❤️, цепочка не создаётся."""
+    def test_like_message_disabled_sends_nothing(self) -> None:
+        """like_message выключен → голого ❤️ не остаётся, ничего не шлём."""
         client = make_client()
         e = make_engine(
             client=client,
@@ -1063,13 +1106,12 @@ class TestLikeAndMessageChain:
         result = asyncio.get_event_loop().run_until_complete(
             e.maybe_act(AIDecision.LIKE, profile_id=5, message_id=100, informative=True)
         )
-        assert result == "LIKE"
-        sent = [c.args[1] for c in client.send_message.call_args_list]
-        assert sent == [LIKE_TEXT]
+        assert result == "GATE"
+        client.send_message.assert_not_called()
         assert e._pending_chains == {}
 
-    def test_non_informative_like_is_like_only(self) -> None:
-        """Даже с включённым like_message: неинформативная анкета → только ❤️."""
+    def test_non_informative_like_also_sends_message(self) -> None:
+        """Неинформативная анкета тоже получает цепочку «Берем)» (LIKE_ONLY удалён)."""
         client = make_client()
         e = self._engine_with_msg(client=client)
         result = asyncio.get_event_loop().run_until_complete(
@@ -1077,8 +1119,8 @@ class TestLikeAndMessageChain:
         )
         assert result == "LIKE"
         sent = [c.args[1] for c in client.send_message.call_args_list]
-        assert sent == [LIKE_TEXT]
-        assert e._pending_chains == {}
+        assert sent == [LIKE_TEXT, MESSAGE_BUTTON_TEXT]
+        assert 100 in e._pending_chains
 
     def test_message_db_error_does_not_break(self) -> None:
         """Ошибка записи MESSAGE в БД → текст уже отправлен, действие не падает."""

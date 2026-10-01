@@ -1,4 +1,5 @@
 # Unit-тесты слоя «Decision != Action» (§30): ActionPolicyResolver.
+# Голого лайка (LIKE_ONLY) больше нет: LIKE → LIKE_AND_MESSAGE либо NO_ACTION.
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ RES = ActionPolicyResolver()
 
 
 class TestActionPolicyResolve:
-    """Базовое сопоставление Decision + информативность → ActionPolicy."""
+    """Базовое сопоставление Decision → ActionPolicy (LIKE_ONLY удалён)."""
 
     def test_none_decision_no_action(self) -> None:
         assert RES.resolve(None) == ActionPolicy.NO_ACTION
@@ -25,8 +26,17 @@ class TestActionPolicyResolve:
     def test_like_informative_goes_to_message(self) -> None:
         assert RES.resolve(AIDecision.LIKE, informative=True) == ActionPolicy.LIKE_AND_MESSAGE
 
-    def test_like_not_informative_like_only(self) -> None:
-        assert RES.resolve(AIDecision.LIKE, informative=False) == ActionPolicy.LIKE_ONLY
+    def test_like_not_informative_also_goes_to_message(self) -> None:
+        # Короткая анкета больше НЕ деградирует до голого ❤️.
+        assert RES.resolve(AIDecision.LIKE, informative=False) == ActionPolicy.LIKE_AND_MESSAGE
+
+    def test_like_only_policy_is_removed(self) -> None:
+        assert not hasattr(ActionPolicy, "LIKE_ONLY")
+        assert {p.value for p in ActionPolicy} == {
+            "NO_ACTION",
+            "LIKE_AND_MESSAGE",
+            "DISLIKE_ONLY",
+        }
 
 
 class TestActionPolicyConfig:
@@ -41,16 +51,6 @@ class TestActionPolicyConfig:
             == ActionPolicy.DISLIKE_ONLY
         )
 
-    def test_like_only_requires_like_enabled(self) -> None:
-        assert (
-            RES.resolve_config(ActionPolicy.LIKE_ONLY, like_enabled=True, like_message_enabled=False)
-            == ActionPolicy.LIKE_ONLY
-        )
-        assert (
-            RES.resolve_config(ActionPolicy.LIKE_ONLY, like_enabled=False, like_message_enabled=False)
-            == ActionPolicy.NO_ACTION
-        )
-
     def test_like_and_message_full_chain(self) -> None:
         assert (
             RES.resolve_config(
@@ -59,13 +59,13 @@ class TestActionPolicyConfig:
             == ActionPolicy.LIKE_AND_MESSAGE
         )
 
-    def test_like_and_message_degrades_to_like_only_without_msg(self) -> None:
-        # Сообщение выключено, но ❤️ включено → только LIKE (без сообщения).
+    def test_like_and_message_no_action_without_message(self) -> None:
+        # Сообщение выключено → никакого голого ❤️, действие не выполняется.
         assert (
             RES.resolve_config(
                 ActionPolicy.LIKE_AND_MESSAGE, like_enabled=True, like_message_enabled=False,
             )
-            == ActionPolicy.LIKE_ONLY
+            == ActionPolicy.NO_ACTION
         )
 
     def test_like_and_message_no_action_if_like_off(self) -> None:

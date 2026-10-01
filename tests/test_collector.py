@@ -2167,7 +2167,7 @@ class TestCollectorAutoActions:
 
     def _make_config(
         self, mode: str = "SEMI_AUTO", enabled: bool = True,
-        like_message_enabled: bool = False,
+        like_message_enabled: bool = True,
     ) -> AppConfig:
         cfg = make_config()
         # Два аккаунта: acc1 (индекс 0), acc2/авто (индекс 1).
@@ -2316,8 +2316,8 @@ class TestCollectorAutoActions:
         assert 910 in engine._pending_chains
         assert engine._pending_chains[910]["stage"] == "AWAIT_PROMPT"
 
-    def test_non_informative_like_no_message_chain(self) -> None:
-        """LIKE, но неинформативная анкета → только ❤️, цепочки нет."""
+    def test_non_informative_like_also_starts_message_chain(self) -> None:
+        """Неинформативная анкета тоже получает цепочку «Берем)» (LIKE_ONLY удалён)."""
         from models.decision import AIDecision
 
         auto_client = AsyncMock()
@@ -2338,11 +2338,12 @@ class TestCollectorAutoActions:
         )
         asyncio.get_event_loop().run_until_complete(collector._process_message(task))
 
-        args, _ = auto_client.send_message.call_args_list[0]
-        assert args[1] == "\u2764\ufe0f"
+        sent = [c.args[1] for c in auto_client.send_message.call_args_list]
+        assert sent[0] == "\u2764\ufe0f"
+        assert MESSAGE_BUTTON_TEXT in sent
         engine = collector.auto_engine()
         assert engine is not None
-        assert engine._pending_chains == {}
+        assert 911 in engine._pending_chains
 
     def test_dislike_deferred_while_composer_open(self) -> None:
         """Пока композер открыт, «👎» на новую карточку не уходит в него."""
@@ -2437,7 +2438,7 @@ class TestCollectorAutoActions:
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
-            self._make_config(), self._make_decision(AIDecision.LIKE),
+            self._make_config(), self._make_decision(AIDecision.DISLIKE),
             auto_client, other_client,
         )
         collector._db.record_auto_action = AsyncMock(side_effect=RuntimeError("db"))
@@ -2454,9 +2455,11 @@ class TestCollectorAutoActions:
         # Оба прохода отправляют действие (дублирование при ошибке БД —
         # принятый trade-off). Второй проход также пытается переслать
         # уведомление (notify), т.к. maybe_act снова вызывается.
+        # Берём 👎: LIKE открыл бы композер и второй проход отложился бы
+        # (DEFERRED), а тест про повтор при ошибке БД.
         action_calls = [
             c for c in auto_client.send_message.call_args_list
-            if c.args[1] in ("\u2764\ufe0f", "\U0001F44E")
+            if c.args[1] in ("❤️", "\U0001F44E")
         ]
         assert len(action_calls) == 2
 
