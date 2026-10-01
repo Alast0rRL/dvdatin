@@ -58,6 +58,14 @@ _MEDIA_TYPE_MAP: dict[type, str] = {
 #: Парсим по частичному вхождению, т.к. эмодзи могут различаться.
 VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 
+#: Кнопка «Смотреть анкеты» в ГЛАВНОМ МЕНЮ Leo. Когда лента исчерпана (или
+#: после переключения аккаунта) бот шлёт текстовое меню «1. Смотреть анкеты.
+#: 2. Моя анкета. …» с reply-клавиатурой [«1 🚀», «2», «3», «4»] — вот тут
+#: VIEW_BUTTON_FRAGMENT не встречается (текст кнопки «1 🚀»), и лента ВСТАЁТ
+#: до ручного нажатия. Жмём кнопку с этим фрагментом; остальные («2»/«3»/«4» —
+#: «Моя анкета», «Я больше не хочу никого искать», Premium) НИКОГДА не жмём.
+MENU_VIEW_FRAGMENT: str = "1 🚀"
+
 #: Кнопка-отказ от Premium Leo («Пока без Premium»): после ❤️/👎 бот иногда
 #: присылает премиум-реклму с кнопками [⭐️Активировать, Пока без Premium].
 #: Без нажатия отказной кнопки лента встаёт (новые анкеты/капчи не идут).
@@ -73,6 +81,11 @@ PREMIUM_DECLINE_FRAGMENT: str = "без premium"
 MATCH_CARD_FRAGMENT: str = "понравил"
 MATCH_SHOW_FRAGMENT: str = "показать"
 MATCH_SHOW_SKIP_FRAGMENT: str = "не хочу"
+#: На реальных карточках Leo клавиатура нумерованная: [«1 👍», «2 💤»],
+#: т.е. слова «показать» в тексте кнопки НЕТ (он только в тексте карточки).
+#: Поэтому «показать» ловим ещё и по 👍; отказной «2 💤» отсекается по MATCH_SHOW_SKIP_FRAGMENT.
+MATCH_SHOW_ALT_FRAGMENT: str = "👍"
+MATCH_SHOW_SKIP_ALT_FRAGMENT: str = "💤"
 
 #: Stage 8.5: тексты, которые НЕ считаются ручным «сообщением при лайке»
 #: (кнопки Leo/эмодзи-реакции/навигация). Они не попадают в sent_messages,
@@ -442,6 +455,8 @@ class DvinchikCollector:
                 return True
             if await self._press_premium_decline_if_needed():
                 return True
+            if await self._press_menu_view_if_needed():
+                return True
             return await self._handle_captcha()
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
@@ -594,6 +609,74 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка нажатия кнопки «Смотреть анкеты»: {e}")
             return False
 
+    async def _press_menu_view_if_needed(self) -> bool:
+        """Нажимает «1 🚀» в ГЛАВНОМ МЕНЮ Leo, если чат стоит на нём.
+
+        Когда лента исчерпана, Leo шлёт текстовое меню «1. Смотреть анкеты. …
+        4. Активируй Premium» с reply-клавиатурой [«1 🚀», «2», «3», «4»].
+        Кнопки-промо «🚀 Смотреть анкеты» здесь нет, поэтому
+        ``_press_view_button_if_needed`` молча выходит, и без ручного нажатия
+        лента стоит навсегда (типично после переключения авто-аккаунта, у
+        которого чат уже был в этом состоянии).
+
+        Жмём «1 🚀» ТОЛЬКО если самая свежая карточка с кнопками — это меню:
+        тогда карточка взаимного лайка / Premium-промо / капча (у них свои
+        обработчики, они проверяются раньше) не будет перебита нажатием.
+        Идемпотентность — как у view-кнопки: текст кнопки не отправлялся после
+        этой карточки. Сравнение id корректно, потому что оба прохода идут
+        через клиент авто-аккаунта (у каждого аккаунта своё пространство id).
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            card_msg = None
+            button_text = ""
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+                if getattr(msg, "out", False) or not (msg.text or "").strip():
+                    continue
+                texts = self._extract_button_texts(msg)
+                if not texts:
+                    # фото/текст без кнопок (карточка анкеты, сервис) —
+                    # состояние чата не меняет, смотрим дальше.
+                    continue
+                # Самая свежая карточка с кнопками определяет состояние чата.
+                card_msg = msg
+                hit = next((t for t in texts if MENU_VIEW_FRAGMENT in t), None)
+                button_text = hit or ""
+                break
+
+            if card_msg is None or not button_text:
+                return False
+
+            sent_at = card_msg.id
+            already_sent = False
+            async for msg in client.iter_messages(
+                self._dvinchik_chat_id, limit=15
+            ):
+                if msg.id <= sent_at:
+                    break
+                if (
+                    getattr(msg, "out", False)
+                    and (msg.text or "").strip() == button_text
+                ):
+                    already_sent = True
+                    break
+
+            if already_sent:
+                logger.info("AutoAction: кнопка меню «1 🚀» уже нажата")
+                return False
+
+            logger.info(
+                f"AutoAction: чат стоит на главном меню Leo (msg={card_msg.id}) — "
+                "жму «1 🚀», продолжаю ленту"
+            )
+            await self._auto_engine.send_text(button_text)
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия кнопки меню «1 🚀»: {e}")
+            return False
+
     async def _press_premium_decline_if_needed(self) -> bool:
         """Нажимает кнопку-отказ у Premium-промо Leo («Пока без Premium»).
 
@@ -662,8 +745,10 @@ class DvinchikCollector:
         нажмёт кнопку вручную. Поэтому авто-аккаунт продолжает поток сам.
 
         Ищем самую свежую карточку с фрагментом MATCH_CARD_FRAGMENT и жмём
-        кнопку с MATCH_SHOW_FRAGMENT (отказную пропускаем). Идемпотентно:
-        если после карточки текст этой кнопки уже отправляли — не жмём снова.
+        кнопку с MATCH_SHOW_FRAGMENT или MATCH_SHOW_ALT_FRAGMENT («👍» —
+        реальные клавиатуры Leo нумерованные: [«1 👍», «2 💤»]; отказную
+        пропускаем по «не хочу»/«💤»). Идемпотентно: если после карточки текст
+        этой кнопки уже отправляли — не жмём снова.
         """
         client = self._auto_engine.client
         if client is None or not self._auto_engine.enabled:
@@ -676,13 +761,7 @@ class DvinchikCollector:
                     continue
                 texts = self._extract_button_texts(msg)
                 hit = next(
-                    (
-                        t
-                        for t in texts
-                        if MATCH_SHOW_FRAGMENT in t.lower()
-                        and MATCH_SHOW_SKIP_FRAGMENT not in t.lower()
-                    ),
-                    None,
+                    (t for t in texts if self._is_match_show_button(t)), None
                 )
                 if hit:
                     card_msg = msg
@@ -856,6 +935,20 @@ class DvinchikCollector:
         if not any(m in text for m in CAPTCHA_MARKERS):
             return False
         return len(self._extract_button_texts(msg)) >= CAPTCHA_MIN_BUTTONS
+
+    @staticmethod
+    def _is_match_show_button(button_text: str) -> bool:
+        """Кнопка «Показать» на карточке взаимного лайка?
+
+        Leo шлёт разные клавиатуры: [«1. Показать.», «2. Не хочу…»] (старый
+        вид) и [«1 👍», «2 💤»] (нумерованная, прод-2026). Отказную («не хочу»
+        / «💤») не считаем — её жать нельзя.
+        """
+        t = button_text or ""
+        low = t.lower()
+        if MATCH_SHOW_SKIP_FRAGMENT in low or MATCH_SHOW_SKIP_ALT_FRAGMENT in t:
+            return False
+        return MATCH_SHOW_FRAGMENT in low or MATCH_SHOW_ALT_FRAGMENT in t
 
     async def _find_captcha_message(self) -> object | None:
         """Ищет самую свежую капчу среди последних сообщений чата."""
@@ -1656,9 +1749,7 @@ class DvinchikCollector:
                         if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
                         elif any(
-                            MATCH_SHOW_FRAGMENT in t.lower()
-                            and MATCH_SHOW_SKIP_FRAGMENT not in t.lower()
-                            for t in texts
+                            self._is_match_show_button(t) for t in texts
                         ):
                             # Карточка «Ты понравился N девушке, показать её?»
                             # — без нажатия лента стоит, жмём «Показать».
@@ -1678,10 +1769,13 @@ class DvinchikCollector:
                             # меню/Premium-промо такой кнопки не содержат → не
                             # зацикливаемся. Плюс Premium-промо с кнопкой «Пока
                             # без Premium» (после ❤️/👎) — нажимаем отказ, чтобы
-                            # лента не встала.
+                            # лента не встала. И главное меню ([«1 🚀», …]) —
+                            # нажатие «1 🚀» продолжает ленту (см.
+                            # _press_menu_view_if_needed).
                             await self._press_view_button_if_needed()
                             await self._press_match_show_if_needed()
                             await self._press_premium_decline_if_needed()
+                            await self._press_menu_view_if_needed()
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
 
@@ -1705,6 +1799,7 @@ class DvinchikCollector:
                         else:
                             await self._press_match_show_if_needed()
                             await self._press_premium_decline_if_needed()
+                            await self._press_menu_view_if_needed()
                     except Exception as e:
                         logger.error(
                             f"AutoAction: ошибка нажатия кнопки ленты "

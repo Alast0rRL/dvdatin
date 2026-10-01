@@ -2866,6 +2866,120 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_start_stream_main_menu_presses_rocket(self) -> None:
+        """Главное меню Leo ([«1 🚀», «2», «3», «4»]) → жмём «1 🚀».
+
+        Регресс (прод-база 2026-10-01): чат авто-аккаунта стоял на этом меню,
+        у него нет кнопки «🚀 Смотреть анкеты», поэтому ни один обработчик не
+        срабатывал — лента была заблокирована до ручного нажатия.
+        """
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        menu = (
+            "1. Смотреть анкеты.\n2. Моя анкета.\n"
+            "3. Я больше не хочу никого искать.\n***\n"
+            "4. Активируй Premium — будь в топе ⭐️."
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 25309, menu, buttons=["1 🚀", "2", "3", "4"]
+            )
+            yield self._iter_msg(auto_client, 25308, "Отлично! Начинай общаться 👉 [Алина]")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, "1 🚀")
+
+    def test_start_stream_main_menu_already_pressed(self) -> None:
+        """«1 🚀» уже отправлен после меню — повторно не жмём."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(auto_client, 25311, "1 🚀", out=True)
+            yield self._iter_msg(
+                auto_client, 25309,
+                "1. Смотреть анкеты.\n2. Моя анкета.",
+                buttons=["1 🚀", "2", "3", "4"],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_match_card_wins_over_stale_menu(self) -> None:
+        """Свежая карточка взаимного лайка важнее старого меню.
+
+        Жмём «Показать», а не «1 🚀» из устаревшей карточки меню.
+        """
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 804,
+                "Ты понравился 1 девушке, показать её?",
+                buttons=["1 👍", "2 💤"],
+            )
+            yield self._iter_msg(
+                auto_client, 802,
+                "1. Смотреть анкеты.\n2. Моя анкета.",
+                buttons=["1 🚀", "2", "3", "4"],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, "1 👍")
+
+    def test_start_stream_main_menu_never_presses_other_buttons(self) -> None:
+        """Меню без «1 🚀» — ничего не жмём (2/3/4 — Моя анкета/стоп/Premium)."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 25309,
+                "1. Смотреть анкеты.\n2. Моя анкета.",
+                buttons=["2", "3", "4"],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
     def test_start_stream_unrelated_card_does_not_press_show(self) -> None:
         """Обычная кнопка «Показать девушку» без карточки лайка — не жмём.
 
@@ -3129,10 +3243,14 @@ class TestCollectorAutoActions:
         auto_client.send_message.assert_not_called()
 
     def test_start_stream_menu_after_profile_marks_it_stale(self) -> None:
-        """После анкеты Leo перешёл в меню/премиум-промо (лента кончилась) —
-        старая анкета НЕ «активная», ❤️/👎 на неё не шлём («Нет такого варианта
-        ответа»). Профилируется по переключению аккаунта: в истории dvai могла
-        остаться анкета, на которую реагировать уже нельзя."""
+        """После анкеты Leo перешёл в меню (лента кончилась) — старая анкета НЕ
+        «активная», ❤️/👎 на неё НЕ шлём («Нет такого варианта ответа»).
+        Профилируется по переключению аккаунта: в истории dvai могла остаться
+        анкета, на которую реагировать уже нельзя.
+
+        При этом лента продолжается: жмём «1 🚀» в главном меню (Stage 7.8) —
+        это НЕ реакция на анкету, поэтому допустимое единственное действие.
+        """
         from models.decision import AIDecision
 
         auto_client = AsyncMock()
@@ -3160,8 +3278,9 @@ class TestCollectorAutoActions:
         ok = asyncio.get_event_loop().run_until_complete(
             collector.start_auto_stream()
         )
-        assert ok is False
-        auto_client.send_message.assert_not_called()
+        assert ok is True
+        # Реакции на старую анкету нет — только продолжение ленты кнопкой меню.
+        auto_client.send_message.assert_called_once_with(1234060895, "1 🚀")
 
     def test_start_stream_like_ack_after_profile_marks_it_stale(self) -> None:
         """Входящее подтверждение Leo «Лайк отправлен, ждем ответа.» после анкеты
