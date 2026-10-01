@@ -24,7 +24,10 @@
             {% if p.normalized_city or p.raw_city %}
             <span class="row__city">{{ p.normalized_city or p.raw_city }}</span>
             {% endif %}
-            {% if decision %}
+            {# AI-бейдж скрываем, если по анкете уже есть строка действия ниже
+               по ленте — иначе у одной карточки висят два 👎. Для фильтра
+               data-decision (строка 12) остаётся всегда. #}
+            {% if decision and not p.acted %}
             <span class="badge badge--{{ 'like' if decision == 'LIKE' else ('review' if decision == 'REVIEW' else 'dislike') }}">
                 {{ '❤️' if decision == 'LIKE' else ('🤔' if decision == 'REVIEW' else '👎') }} {{ decision }}
             </span>
@@ -88,13 +91,20 @@
         </form>
         {% endif %}
 
-        {# ── Наше действие ── #}
+        {# ── Наше исходящее: реакция или просто отправленный текст ── #}
         {% elif item.direction == 'out' %}
         <div class="row__head">
+            {% if item.action_label %}
             <span class="badge badge--{{ 'like' if item.action == 'LIKE' else ('dislike' if item.action == 'DISLIKE' else 'neutral') }}">
                 {{ item.action_label }}
             </span>
+            {% endif %}
+            {% if item.manual is not none %}
             <span class="row__meta">{{ 'вручную' if item.manual else 'авто' }}</span>
+            {% endif %}
+            {% if item.get('decision') and item.get('decision') != item.action %}
+            <span class="row__meta">AI: {{ item.decision }}</span>
+            {% endif %}
         </div>
         {% if item.text and item.text not in ('❤️', '👎') %}
         <div class="row__text">{{ item.text }}</div>

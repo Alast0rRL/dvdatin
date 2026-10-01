@@ -10,9 +10,15 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+
+# Насколько скоро после карточки анкеты приходит наша реакция — Leo держит
+# одну активную карточку, а мы жмём кнопку сразу. Нужен на случай, когда в
+# аннотации нет profile_id (см. _profile_acted).
+ACTION_TS_WINDOW_SEC = 300
 
 
 class SyncDB:
@@ -319,78 +325,141 @@ class SyncDB:
     ) -> dict[str, Any]:
         """Собирает хронологическую ленту «Чат» — сырой поток Leo как TG-chat.
 
-        Merge с трёх источников по времени:
-          * raw_messages        — входящие (пузыри слева, Leo)
-          * sent_messages       — ручные/веб исходящие (пузыри справа)
-          * auto_actions_log    — авто-действия (LIKE/DISLIKE/MESSAGE, справа)
-        Каждая входящая запись обогащается inline:
-          * профиль  — если raw → profile (через profile_messages join),
-            с фото (media_type='photo'), AI-решением и человеческим решением;
-          * капча    — если текст совпадает по сигнатуре с captcha_memory
+        ОДНО сообщение Telegram = ОДНА строка ленты. Коллектор пишет каждое
+        сообщение чата (и входящее от Leo, и наше исходящее) в ``raw_messages`` —
+        это и есть хребет ленты, уникальный по ``(chat_id, telegram_message_id)``.
+        ``sent_messages`` и ``auto_actions_log`` — не отдельные события, а
+        АННОТАЦИИ исходящих: по ``telegram_message_id`` они приклеиваются к
+        строке-хребту (значок «👎 DISLIKE», «вручную/авто», текст «Берем)»).
+
+        Без склейки одна анкета давала три строки: карточка профиля, голый
+        эмодзи «👎» из raw_messages и «👎 DISLIKE вручную» из sent_messages —
+        при том что эмодзи и sent-строка были ОДНИМ и тем же сообщением
+        Telegram. Реклейм профиля разводит ещё и «действие уже есть» → AI-бейдж
+        в карточке скрывается (см. ``_enrich_message``).
+
+        Enrichment строки-входящей (profile/captcha) — как раньше:
+          * профиль — raw → profile через profile_messages join, с фото
+            (``media_type='photo'``), AI-решением и человеческим решением;
+          * капча — по сигнатуре текста из ``captcha_memory``
             (pending → форма ответа inline, known → выученный ответ).
+
+        Строки-исходящие без пары в ``raw_messages`` (RAW не сохранился,
+        сырые записи веб открыл раньше миграции) добавляются отдельными
+        строками — лента не теряет действия.
 
         ПАГИНАЦИЯ «С КОНЦА»: page=1 — самые свежие сообщения (как в Telegram),
         page=2 — предыдущие и т.д. Внутри страницы хронологически ASC
-        (сверху старые, снизу новые). Свежие всегда на первой странице.
+        (сверху старые, снизу новые).
 
         Возвращает {items, total, page, total_pages}.
         """
         page = max(1, page)
         per_page = max(1, per_page)
-        # Сколько свежих сообщений нужно для этой страницы.
-        limit = page * per_page
 
-        # ── Входящие: raw_messages ──
+        # ── Шаг 1: страница ключей (chat_id, telegram_message_id) ──
+        # Объединение ключей ПАГИНИРУЕТСЯ В SQL, а не собирается в Python:
+        # если брать «последние N» из каждой таблицы отдельно и потом
+        # склеивать, окна не совпадают и на соседних страницах сообщения
+        # повторяются/пропускаются (проверено на реальной базе: 578 дублей).
+        total = self._chat_total(chat_id)
+        keys = self._feed_keys(chat_id, per_page, (page - 1) * per_page)
+        if not keys:
+            return {
+                "items": [], "total": total, "page": page,
+                "total_pages": max(1, (total + per_page - 1) // per_page),
+            }
+
+        in_keys = [(c, t) for c, t, d in keys if d == "in"]
+        out_keys = [(c, t) for c, t, d in keys if d == "out"]
+
+        def _clause(items: list[tuple[Any, Any]]) -> tuple[str | None, tuple]:
+            """``(chat_id, telegram_message_id) IN (...)`` для списка ключей.
+
+            ``None`` — ключей нет, запрос по ветке надо пропустить целиком:
+            заглушка ``(NULL, NULL)`` невалидна для row-value ``IN`` в SQLite.
+            """
+            if not items:
+                return None, ()
+            clause = "(" + ",".join("(?,?)" for _ in items) + ")"
+            return clause, tuple(v for pair in items for v in pair)
+
+        in_clause, in_params = _clause(in_keys)
+        out_clause, out_params = _clause(out_keys)
+
+        # ── Шаг 2: сырые записи только этой страницы ──
+        # Запросов ДВА, а не один: ключ строки — (chat, tm, направление), и
+        # номер входящего сообщения Leo может совпасть с номером исходящего
+        # нашего (у аккаунтов свои диапазоны id). Один запрос по (chat, tm)
+        # возвращал бы оба и на соседних страницах строки дублировались бы.
         raw_sql = """
             SELECT
                 'raw' AS kind, rm.id AS row_id, rm.chat_id, rm.telegram_message_id,
-                rm.sender_name, rm.sender_username,
-                rm.text AS text, rm.message_date AS ts, rm.media_type AS media_type
+                rm.sender_id, rm.sender_name, rm.sender_username,
+                rm.text AS text, rm.message_date AS ts, rm.media_type AS media_type,
+                rm.is_outgoing AS is_outgoing
             FROM raw_messages rm
+            WHERE rm.is_outgoing = {is_out}
+              AND (rm.chat_id, rm.telegram_message_id) IN {clause}
+            ORDER BY rm.id DESC
         """
-        raw_params: list[Any] = []
-        if chat_id is not None:
-            raw_sql += " WHERE rm.chat_id = ?"
-            raw_params.append(chat_id)
-        raw_sql += " ORDER BY rm.message_date DESC, rm.id DESC LIMIT ?"
-        raw_params.append(limit)
+        raws: list[dict[str, Any]] = []
+        for is_out, clause, params in (
+            (0, in_clause, in_params), (1, out_clause, out_params)
+        ):
+            if clause is None:
+                continue
+            raws += self._query(
+                raw_sql.format(is_out=is_out, clause=clause), params
+            )
 
-        # ── Исходящие: sent_messages (ручные/веб) ──
+        # ── Шаг 3: аннотации исходящих этой же страницы ──
         sent_sql = """
             SELECT
                 'sent' AS kind, sm.id AS row_id, sm.chat_id,
-                sm.telegram_message_id, NULL AS sender_name, NULL AS sender_username,
+                sm.telegram_message_id, sm.profile_id, NULL AS decision,
                 NULL AS media_type, sm.text AS text, sm.sent_at AS ts,
                 sm.action AS action, sm.source AS source
             FROM sent_messages sm
+            WHERE (sm.chat_id, sm.telegram_message_id) IN {clause}
+            ORDER BY sm.id DESC
         """
-        sent_params: list[Any] = []
-        if chat_id is not None:
-            sent_sql += " WHERE sm.chat_id = ?"
-            sent_params.append(chat_id)
-        sent_sql += " ORDER BY sm.sent_at DESC, sm.id DESC LIMIT ?"
-        sent_params.append(limit)
-
-        # ── Исходящие: auto_actions_log (авто-действия) ──
         auto_sql = """
             SELECT
                 'auto' AS kind, a.id AS row_id, a.chat_id,
-                a.telegram_message_id, NULL AS sender_name, NULL AS sender_username,
+                a.telegram_message_id, a.profile_id, a.decision AS decision,
                 NULL AS media_type,
                 COALESCE(a.message_text, '') AS text, a.sent_at AS ts,
-                a.action AS action, a.decision AS decision
+                a.action AS action, NULL AS source
             FROM auto_actions_log a
+            WHERE (a.chat_id, a.telegram_message_id) IN {clause}
+            ORDER BY a.id DESC
         """
-        auto_params: list[Any] = []
-        if chat_id is not None:
-            auto_sql += " WHERE a.chat_id = ?"
-            auto_params.append(chat_id)
-        auto_sql += " ORDER BY a.sent_at DESC, a.id DESC LIMIT ?"
-        auto_params.append(limit)
+        sents: list[dict[str, Any]] = []
+        autos: list[dict[str, Any]] = []
+        if out_clause is not None:
+            sents = self._query(sent_sql.format(clause=out_clause), out_params)
+            autos = self._query(auto_sql.format(clause=out_clause), out_params)
 
-        raws = self._query(raw_sql, tuple(raw_params))
-        sents = self._query(sent_sql, tuple(sent_params))
-        autos = self._query(auto_sql, tuple(auto_params))
+        # Аннотации по (chat_id, telegram_message_id). Авто важнее ручной:
+        # у него есть decision (что решил AI) и message_text («Берем)»).
+        marks: dict[tuple[Any, Any], dict[str, Any]] = {}
+        for s in sents:
+            marks[(s["chat_id"], s["telegram_message_id"])] = s
+        for a in autos:
+            marks[(a["chat_id"], a["telegram_message_id"])] = a
+
+        # Профили, по которым в этом окне уже есть действие — их AI-бейдж
+        # в карточке скрываем, иначе рядом с «👎 DISLIKE» стоит второй 👎.
+        acted_profile_ids = {
+            m["profile_id"] for m in marks.values() if m.get("profile_id")
+        }
+        # Аннотации этой страницы (chat_id, время) — для признака «реакция
+        # почти сразу после карточки», когда profile_id в аннотации нет
+        # (см. _profile_acted).
+        action_marks = [
+            (m["chat_id"], m.get("ts")) for m in marks.values()
+        ]
 
         # Индексы капч по сигнатуре (зеркало коллектора — см. collector.py
         # captcha_signature; web остаётся Telegram-free).
@@ -402,45 +471,149 @@ class SyncDB:
         except Exception:
             captcha_by_sig = {}
 
-        # Входящие: профиль + капча inline, исходящие: флаг manual/auto.
         rows = []
+        seen_keys: set[tuple[Any, Any, str]] = set()
         for r in raws:
-            rows.append(self._enrich_incoming(r, captcha_by_sig))
-        for s in sents:
-            rows.append(self._enrich_outgoing(s, manual=True))
-        for a in autos:
-            rows.append(self._enrich_outgoing(a, manual=False))
+            direction = "out" if r.get("is_outgoing") else "in"
+            key = (r["chat_id"], r["telegram_message_id"], direction)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            # Аннотация — только к ИСХОДЯЩЕМУ: tm входящих Leo и tm наших
+            # сообщений живут в разных пространствах id (см. _feed_keys).
+            mark = marks.get((r["chat_id"], r["telegram_message_id"])) \
+                if direction == "out" else None
+            rows.append(
+                self._enrich_message(
+                    r, mark, captcha_by_sig, acted_profile_ids, action_marks
+                )
+            )
+        # Исходящие без сырой записи (не сохранился RAW / до миграции) —
+        # показываем отдельной строкой, лента не теряет действие.
+        for mkey, mark in marks.items():
+            key = (mkey[0], mkey[1], "out")
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            rows.append(
+                self._enrich_outgoing(mark, manual=mark["kind"] == "sent")
+            )
 
-        # Хронология внутри окна: ASC (сверху старые, снизу новые).
+        # Хронология внутри страницы: ASC (сверху старые, снизу новые).
         rows.sort(key=lambda r: (r["ts"] or "", r.get("row_id") or 0))
-
-        # Полное число сообщений — отдельными COUNT (не тянем всю таблицу).
-        total = self._chat_total(chat_id)
-
-        # Страница 1 = свежие (последние per_page окна), page 2 = перед ними.
-        end = -((page - 1) * per_page) or None
-        items = rows[-limit:end] if per_page else rows
         return {
-            "items": items,
+            "items": rows,
             "total": total,
             "page": page,
             "total_pages": max(1, (total + per_page - 1) // per_page),
         }
 
-    def _chat_total(self, chat_id: int | None) -> int:
-        """Суммарное число сообщений чата (для пагинации «с конца»)."""
-        where = " WHERE chat_id = ?" if chat_id is not None else ""
+    def _feed_keys(
+        self, chat_id: int | None, limit: int, offset: int,
+    ) -> list[tuple[Any, Any, str]]:
+        """Ключи сообщений ленты — одна строка на ОДНО сообщение Telegram.
+
+        Ключ — ``(chat_id, telegram_message_id, направление)``, и направление
+        в ключе обязательно: у каждого аккаунта Telegram СВОЙ диапазон id
+        сообщений в одном чате, поэтому номер исходящего сообщения
+        пересекается с номерами входящих от Leo. На реальной базе входящие
+        и исходящие не пересекаются вообще (1729 против 799) — склеивать их
+        по одному лишь ``telegram_message_id`` нельзя, иначе наш ❤️ с id
+        708197 склеится с карточкой анкеты Leo с тем же номером.
+
+        UNION ALL четырёх ветвей, группировка по ключу:
+          * входящие ``raw_messages`` (is_outgoing=0) — карточки, тексты Leo;
+          * исходящие ``raw_messages`` (is_outgoing=1) — всё, что отправили мы;
+          * ``sent_messages`` / ``auto_actions_log`` — аннотации исходящих;
+          пропускаются пустые сообщения (фото ``MEDIA_ONLY``, кнопки меню) —
+            показывать нечего, фото уже есть внутри карточки анкеты.
+
+        Порядок — по времени (``message_date`` / ``sent_at``), а не по id:
+        ветви лежат в разных пространствах id, и сортировка по номеру была бы
+        бессмысленной. Пагинация делается здесь, в SQL: если брать «последние
+        N» из каждой таблицы отдельно, окна не совпадают и на соседних
+        страницах сообщения повторяются (проверено: 578 дублей).
+        """
+        where = " AND {a}.chat_id = ?" if chat_id is not None else ""
         params: tuple = (chat_id,) if chat_id is not None else ()
+        branches = self._feed_branches(where)
+        sql = f"""
+            SELECT chat_id, telegram_message_id, direction, MAX(ts) AS ts FROM (
+                {branches}
+            ) u
+            GROUP BY chat_id, telegram_message_id, direction
+            ORDER BY ts DESC, telegram_message_id DESC, chat_id DESC, direction DESC
+            LIMIT ? OFFSET ?
+        """
         try:
-            total = 0
-            for table in ("raw_messages", "sent_messages", "auto_actions_log"):
-                row = self._query_one(
-                    f"SELECT COUNT(*) AS c FROM {table}{where}", params
-                )
-                total += int(row["c"] or 0)
-            return total
+            rows = self._query(sql, params * 4 + (limit, offset))
+        except Exception:
+            return []
+        return [
+            (r["chat_id"], r["telegram_message_id"], r["direction"])
+            for r in rows
+        ]
+
+    def _chat_total(self, chat_id: int | None) -> int:
+        """Число строк ленты = |объединение ключей сырых и аннотаций|.
+
+        Считается по тем же правилам, что и ``_feed_keys`` (в т.ч. с
+        направлением и без пустых сообщений), иначе ``total`` разошёлся бы
+        с пагинацией.
+        """
+        where = " AND {a}.chat_id = ?" if chat_id is not None else ""
+        params: tuple = (chat_id,) if chat_id is not None else ()
+        # GROUP BY обязателен: ветви UNION ALL пересекаются (сырое исходящее
+        # + его же аннотация в sent_messages), и без склейки по ключу total
+        # завышался на число аннотаций.
+        sql = f"""
+            SELECT COUNT(*) AS c FROM (
+                SELECT chat_id, telegram_message_id, direction, MAX(ts) AS ts
+                FROM (
+                    {self._feed_branches(where)}
+                ) u
+                GROUP BY chat_id, telegram_message_id, direction
+            ) g
+        """
+        try:
+            row = self._query_one(sql, params * 4)
+            return int(row["c"] or 0)
         except Exception:
             return 0
+
+    @staticmethod
+    def _feed_branches(where: str) -> str:
+        """Четыре ветви ленты (сырое входящее/исходящее + аннотации).
+
+        ``where`` — шаблон ``" AND {a}.chat_id = ?"`` (или пустой), чтобы
+        фильтр по чату подставлялся во все ветви с правильным алиасом.
+        """
+        return f"""
+                SELECT rm.chat_id AS chat_id,
+                       rm.telegram_message_id AS telegram_message_id,
+                       'in' AS direction, rm.message_date AS ts
+                FROM raw_messages rm
+                WHERE rm.telegram_message_id IS NOT NULL
+                  AND rm.is_outgoing = 0
+                  AND TRIM(COALESCE(rm.text, '')) <> ''{where.format(a="rm")}
+                UNION ALL
+                SELECT rm.chat_id, rm.telegram_message_id,
+                       'out', rm.message_date
+                FROM raw_messages rm
+                WHERE rm.telegram_message_id IS NOT NULL
+                  AND rm.is_outgoing = 1
+                  AND TRIM(COALESCE(rm.text, '')) <> ''{where.format(a="rm")}
+                UNION ALL
+                SELECT sm.chat_id, sm.telegram_message_id,
+                       'out', sm.sent_at
+                FROM sent_messages sm
+                WHERE sm.telegram_message_id IS NOT NULL{where.format(a="sm")}
+                UNION ALL
+                SELECT a.chat_id, a.telegram_message_id,
+                       'out', a.sent_at
+                FROM auto_actions_log a
+                WHERE a.telegram_message_id IS NOT NULL{where.format(a="a")}
+        """
 
     @staticmethod
     def _captcha_signature(text: str) -> str:
@@ -453,23 +626,54 @@ class SyncDB:
         import re
         return " ".join((text or "").lower().split())
 
-    def _enrich_incoming(self, r: dict[str, Any], captcha_by_sig: dict) -> dict[str, Any]:
-        """Входящий raw → пузырь слева + inline профиль/капча."""
+    def _enrich_message(
+        self,
+        r: dict[str, Any],
+        mark: dict[str, Any] | None,
+        captcha_by_sig: dict,
+        acted_profile_ids: set[Any] | None = None,
+        action_marks: list[tuple[Any, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Строка-хребет ``raw_messages`` → элемент ленты.
+
+        Наше исходящее (is_outgoing) рисуется как действие справа — даже если
+        аннотации (sent/auto) нет: коллектор пишет в raw ВСЁ, что мы отправили,
+        включая кнопки меню Leo. Иначе наш же 👎 выглядел бы как сообщение
+        от бота (sender «Leo», стрелка «входящее»).
+        """
+        outgoing = bool(r.get("is_outgoing"))
         item = {
-            "direction": "in",
+            "direction": "out" if outgoing else "in",
             "kind": r["kind"],
             "row_id": r["row_id"],
             "chat_id": r["chat_id"],
             "telegram_message_id": r["telegram_message_id"],
-            "sender": r.get("sender_name") or r.get("sender_username") or "Leo",
+            "sender": "Я" if outgoing else (
+                r.get("sender_name") or r.get("sender_username") or "Leo"
+            ),
             "sender_username": r.get("sender_username") or "",
             "text": r.get("text") or "",
             "ts": r.get("ts") or "",
             "media_type": r.get("media_type") or "",
             "profile": None,
             "captcha": None,
+            "action": "",
             "action_label": "",
+            "manual": None,
         }
+
+        if outgoing:
+            action = (mark or {}).get("action") or ""
+            item["kind"] = "action"
+            item["action"] = str(action).upper()
+            item["action_label"] = self._action_label(item["action"])
+            # Аннотация знает, вручную ли действие; без неё — не наше решение,
+            # а обычная отправка (кнопка меню Leo и т.п.).
+            item["manual"] = None if mark is None else (mark["kind"] == "sent")
+            if mark is not None and mark.get("text"):
+                item["text"] = mark["text"]
+            item["decision"] = (mark or {}).get("decision") or ""
+            return item
 
         # Капча inline (по сигнатуре текста, как учит коллектор).
         sig = self._captcha_signature(item["text"])
@@ -513,20 +717,82 @@ class SyncDB:
                 """,
                 (prof["id"],),
             )
+            # Действие по анкете уже отработано отдельной строкой ниже по
+            # ленте — второй 👎 в карточке не рисуем (data-decision для
+            # фильтра при этом остаётся всегда).
+            prof["acted"] = self._profile_acted(
+                prof["id"], item, acted_profile_ids, action_marks
+            )
             item["profile"] = prof
             item["kind"] = "profile"
         return item
 
     @staticmethod
-    def _enrich_outgoing(r: dict[str, Any], manual: bool) -> dict[str, Any]:
-        """Исходящее (sent/auto) → пузырь справа."""
-        action = (r.get("action") or "").upper()
-        labels = {
+    def _profile_acted(
+        profile_id: Any,
+        item: dict[str, Any],
+        acted_profile_ids: set[Any] | None,
+        action_marks: list[tuple[Any, Any]] | None,
+    ) -> bool:
+        """Есть ли по этой анкете действие (тогда AI-бейдж в карточке лишний).
+
+        Два признака, потому что ``profile_id`` в аннотации есть не всегда:
+        часть ручных отправок записана с ``profile_id = NULL`` (на реальной
+        базе 165 из 597 — профиль не удалось резолвить в момент записи).
+
+        Второй признак — ВРЕМЯ, а не номера сообщений: у каждого аккаунта
+        Telegram свой диапазон message id в одном чате, поэтому «реакция в
+        пределах N id после карточки» смысла не имеет. Leo держит одну
+        активную карточку, и мы реагируем на неё в течение секунд — этого
+        достаточно.
+        """
+        if acted_profile_ids and profile_id in acted_profile_ids:
+            return True
+        card_ts = SyncDB._parse_ts(item.get("ts"))
+        chat_id = item.get("chat_id")
+        if card_ts is None or not chat_id:
+            return False
+        window = timedelta(seconds=ACTION_TS_WINDOW_SEC)
+        for mark_chat, mark_ts in action_marks or ():
+            if mark_chat != chat_id:
+                continue
+            when = SyncDB._parse_ts(mark_ts)
+            if when is not None and timedelta(0) < when - card_ts <= window:
+                return True
+        return False
+
+    @staticmethod
+    def _parse_ts(value: Any) -> datetime | None:
+        """ISO-строка времени → datetime с приведением к UTC.
+
+        ``raw_messages.message_date`` без зоны, а ``sent_messages.sent_at``
+        с ``+00:00`` — сравнивать их наивно нельзя (TypeError либо разные
+        часы), поэтому naive считаем UTC.
+        """
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _action_label(action: str) -> str:
+        """Код действия → подпись бейджа в ленте."""
+        return {
             "LIKE": "❤️ LIKE",
             "DISLIKE": "👎 DISLIKE",
             "MESSAGE": "💬 Сообщение",
             "CAPTCHA": "🔑 Ответ на капчу",
-        }
+        }.get(action, action)
+
+    @classmethod
+    def _enrich_outgoing(cls, r: dict[str, Any], manual: bool) -> dict[str, Any]:
+        """Аннотация исходящего БЕЗ сырой записи → строка ленты."""
+        action = (r.get("action") or "").upper()
         return {
             "direction": "out",
             "kind": "action",
@@ -541,8 +807,9 @@ class SyncDB:
             "profile": None,
             "captcha": None,
             "action": action,
-            "action_label": labels.get(action, action),
+            "action_label": cls._action_label(action),
             "manual": manual,
+            "decision": r.get("decision") or "",
         }
 
     def get_chat_signals(self) -> dict[str, Any]:

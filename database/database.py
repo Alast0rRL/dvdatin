@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     media_type TEXT DEFAULT '',
     reply_to_message_id INTEGER,
     received_at TEXT NOT NULL,
-    processed_at TEXT
+    processed_at TEXT,
+    is_outgoing INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS profiles (
@@ -269,6 +270,8 @@ class Database:
         await self._ensure_raw_processed_column()
         # Кнопки сообщения (reply_markup) — read-only разведка слоя действий.
         await self._ensure_raw_reply_markup_column()
+
+        await self._ensure_raw_is_outgoing_column()
         await self._ensure_auto_actions_log()
         # Аналитика лайков (Stage 8.5): таблицы ответов/исходящих и текст
         # действия MESSAGE в авто-журнале (пустая строка = текста не было).
@@ -645,6 +648,33 @@ class Database:
         )
         await self._connection.commit()
 
+    async def _ensure_raw_is_outgoing_column(self) -> None:
+        """Добавляет raw_messages.is_outgoing и проставляет его истории.
+
+        Коллектор логирует ВЕСЬ чат: и входящие от Leo, и исходящие от нас
+        (``_handle_outgoing_message``). Без явного флага лента не может
+        отличить «Leo написал» от «мы отправили 👎» и рисует наше собственное
+        действие как входящее сообщение от бота.
+
+        Для существующих баз флаг восстанавливается по инварианту личных
+        чатов с ботом: входящие сообщения приходят от ``sender_id == chat_id``
+        (id бота = id чата), исходящие — от нашего пользователя. Групповые
+        чаты (sender_id != chat_id) тоже считаются исходящими, но их в ленте
+        Дайвинчика нет, поэтому точность тут не критична.
+        """
+        cursor = await self._connection.execute("PRAGMA table_info(raw_messages)")
+        rows = await cursor.fetchall()
+        columns = {row[1] for row in rows}
+        if "is_outgoing" not in columns:
+            await self._connection.execute(
+                "ALTER TABLE raw_messages ADD COLUMN is_outgoing INTEGER DEFAULT 0"
+            )
+            await self._connection.execute(
+                "UPDATE raw_messages SET is_outgoing = 1 WHERE sender_id <> chat_id"
+            )
+            await self._connection.commit()
+            logger.info("Миграция: raw_messages.is_outgoing добавлен (история помечена)")
+
     async def _ensure_raw_reply_markup_column(self) -> None:
         """Добавляет reply_markup (кнопки сообщения) для существующих БД.
 
@@ -720,6 +750,7 @@ class Database:
         media_type: str = "",
         reply_to_message_id: int | None = None,
         received_at: str = "",
+        is_outgoing: bool = False,
         retry_attempts: int = _RAW_SAVE_MAX_RETRIES,
     ) -> int | None:
         """Сохраняет сырое сообщение в БД с ограниченным retry при транзитных сбоях.
@@ -733,6 +764,10 @@ class Database:
         дальше в pipeline (RAW-first: сырьё либо сохранено, либо сообщение
         отброшено до парсинга).
 
+        ``is_outgoing=True`` ставится перехватчиком исходящих: коллектор
+        логирует весь чат, и без флага лента рисует наш собственный 👎
+        как входящее сообщение от Leo.
+
         Returns:
             ID записи или None, если сообщение уже было сохранено (дубликат).
         """
@@ -743,12 +778,13 @@ class Database:
                     """INSERT OR IGNORE INTO raw_messages
                     (telegram_message_id, chat_id, sender_id, sender_username,
                      sender_name, message_date, text, raw_entities, reply_markup,
-                     media_type, reply_to_message_id, received_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     media_type, reply_to_message_id, received_at, is_outgoing)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         telegram_message_id, chat_id, sender_id, sender_username,
                         sender_name, message_date, text, raw_entities,
                         reply_markup, media_type, reply_to_message_id, received_at,
+                        1 if is_outgoing else 0,
                     ),
                 )
                 await self._connection.commit()

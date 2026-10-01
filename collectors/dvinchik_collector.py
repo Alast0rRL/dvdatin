@@ -1187,9 +1187,15 @@ class DvinchikCollector:
     async def _handle_outgoing_message(self, event: events.NewMessage.Event) -> None:
         """Перехват исходящих сообщений (actions пользователя) в чате бота.
 
-        Сохраняет RAW в raw_messages и помечает processed_at — pipeline
-        (парсинг/фильтр/AI) НЕ запускается. Единственная цель — ground truth
-        для реверса механики LIKE: что именно отправляет пользователь.
+        Сохраняет RAW в raw_messages с ``is_outgoing=True`` и помечает
+        processed_at — pipeline (парсинг/фильтр/AI) НЕ запускается. Единственная
+        цель — ground truth для реверса механики LIKE: что именно отправляет
+        пользователь.
+
+        Исходящие НЕ отдельные события ленты: веб склеивает их с аннотациями
+        ``sent_messages``/``auto_actions_log`` по ``telegram_message_id``, чтобы
+        один отправленный 👎 не показывался в ленте дважды (и не выглядел как
+        сообщение от Leo).
         """
         chat_id = event.chat_id
         if chat_id != self._dvinchik_chat_id:
@@ -1219,6 +1225,7 @@ class DvinchikCollector:
                 media_type="",
                 reply_to_message_id=None,
                 received_at=now,
+                is_outgoing=True,
             )
         except Exception as e:
             logger.error(f"Outgoing RAW save failed: {e}")

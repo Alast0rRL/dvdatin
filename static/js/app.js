@@ -9,6 +9,37 @@
     var drawer = document.getElementById('drawer');
     var backdrop = document.getElementById('drawer-backdrop');
 
+    /* ── Переключатель темы ──────────────────────────────────────── */
+    /* Тема применена инлайном ДО отрисовки (partials/theme_boot.html);
+       здесь только переключаем и запоминаем выбор. */
+    var THEME_KEY = 'dvai.theme';
+
+    function currentTheme() {
+        return document.documentElement.getAttribute('data-theme') === 'light'
+            ? 'light' : 'dark';
+    }
+
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        try {
+            localStorage.setItem(THEME_KEY, theme);
+        } catch (e) { /* приватный режим — просто не запоминаем */ }
+    }
+
+    var themeBtn = document.getElementById('theme-toggle');
+    if (themeBtn) {
+        themeBtn.addEventListener('click', function () {
+            applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+        });
+    }
+
+    /* ── Аккаунт-исполнитель: переключение сразу по выбору ────────── */
+    document.querySelectorAll('select[data-auto-submit]').forEach(function (sel) {
+        sel.addEventListener('change', function () {
+            if (sel.form) sel.form.submit();
+        });
+    });
+
     /* ── Drawer настроек ─────────────────────────────────────────── */
     var lastFocused = null;
 

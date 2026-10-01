@@ -78,7 +78,7 @@ dvdatin/
 ├── collectors/                  # см. таблицу выше
 ├── web/                         # Stage 9 Web UI: Flask (create_app, blueprints, SyncDB, photos)
 ├── static/                      # CSS/JS для Web UI
-├── tests/                       # 607 тестов (17 файлов), baseline в tests/baseline/
+├── tests/                       # 705 тестов (20 файлов), baseline в tests/baseline/
 ├── deploy/                      # systemd unit + runbook
 ├── proxy/                       # vendored xray-core + VLESS (НЕ коммитить)
 └── data/                        # БД, сессии, логи, экспорт (gitignored)
@@ -90,7 +90,7 @@ dvdatin/
 
 | Таблица | Назначение |
 |---|---|
-| `raw_messages` | Сырые сообщения (append-only; включает `raw_entities`, `reply_markup`) |
+| `raw_messages` | Сырые сообщения чата (append-only; включает `raw_entities`, `reply_markup`, `is_outgoing`) |
 | `profiles` | Профили (name/age/city/description/fingerprint/status…) |
 | `profile_messages` | Связь профиль ↔ сообщения (в т.ч. MEDIA_ONLY); `account_session` — аккаунт-получатель (для скачивания фото тем клиентом, кто реально видел сообщение) |
 | `chat_context` | Контекст «последняя анкета чата» |
@@ -190,7 +190,7 @@ cp config/preferences.example.yaml config/preferences.yaml   # по желани
 
 python main.py                 # или run.bat на Windows
 python main.py --export-review # CSV-экспорт рецензий
-python -m pytest tests/ -v     # 685 тестов
+python -m pytest tests/ -v     # 705 тестов
 ```
 
 ### Экспорт анализа и очистка БД (Stage 11)
@@ -248,14 +248,34 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 - **панель управления лентой**: фильтр по решению (Все / ❤️ / 🤔 / 👎) и поиск по имени-городу работают на клиенте по `data-decision` / `data-name` строк, поэтому перерисовка ленты polling-ом не сбрасывает выбор; счётчик показывает «N из M»;
 - **выбор режима** в топбаре — `OBSERVE` / `SEMI_AUTO` / `AUTO`, текущий подсвечен, POST на `/settings/mode` (переключение на лету);
 - **кнопки ❤️/👎** у анкеты — **только если AI-решение `REVIEW`** и человек ещё не решил; POST на `/chat/profile/<id>/<LIKE|DISLIKE>` (CSRF + серверный гейт по `get_latest_ai_decision`, `is_already_reviewed` → `save_human_decision` + реакция в чат Leo);
-- **⚙ настройки** — одна кнопка открывает drawer поверх ленты (режим, аккоунт-исполнитель, фильтры, `SKIP/LIKE`-предпочтения);
+- **аккаунт-исполнитель** — селект в топбаре рядом с режимом (`#account-form`, авто-сабмит при выборе, кнопка `ОК` как fallback без JS); в drawer настроек его больше нет;
+- **переключатель темы** — кнопка в топбаре (тёмная ⇄ светлая), выбор в `localStorage`, применяется **до первой отрисовки** (`web/templates/partials/theme_boot.html`), работает и на `/login`;
+- **⚙ настройки** — одна кнопка открывает drawer поверх ленты (только фильтры и `SKIP/LIKE`-предпочтения);
 - **блок «⚠️ Капчи ждут ответ»** над лентой (`captcha_memory` с `answer IS NULL`) — виден всегда, независимо от пагинации: ответ (с подсказками из кнопок Leo, POST `/chat/captcha/<id>/answer`) и «забыть» (POST `/chat/captcha/<id>/delete`).
 
 Лента обновляется без перезагрузки: polling `/chat/new-count` (сигнатура raw∪sent∪auto∪captcha) → подмена фрагмента `/chat/feed`. Всегда открывается на **свежих** сообщениях (пагинация «s конца»: `page=1` — новые, `page=2` — более ранние, «Показать более ранние» вставляет их сверху, `FEED_PER_PAGE = 40`).
 
+
+### Лента = одно сообщение Telegram = одна строка
+
+Коллектор пишет в `raw_messages` **весь** чат — и входящие от Leo, и наши исходящие (RAW-first). Поэтому строки ленты строятся как **хребет + аннотации**, а не как склейка трёх таблиц:
+
+- **ключ строки** — `(chat_id, telegram_message_id, направление)`. Направление в ключе обязательно: у каждого аккаунта Telegram **свой диапазон message id** в одном чате, поэтому номер нашего исходящего совпадает с номером входящего от Leo. На реальной базе диапазоны пересекаются полностью (входящие 22757..723077, исходящие 22871..723078);
+- **`raw_messages` — хребет**; `sent_messages` и `auto_actions_log` — **аннотации** исходящих, приклеиваются по ключу, приоритет авто > ручная (у авто есть `decision` и `message_text`);
+- **`raw_messages.is_outgoing`** — новая колонка (`INTEGER DEFAULT 0`), ставится перехватчиком исходящих в `DvinchikCollector._handle_outgoing_message`; миграция `_ensure_raw_is_outgoing_column` + backfill `WHERE sender_id <> chat_id`. Без неё наш собственный `👎` рисовался в ленте как входящее сообщение от Leo;
+- **пустые сообщения не показываются** — фото Leo без текста (`MEDIA_ONLY`) и кнопки меню; фото анкеты уже есть внутри карточки, иначе анкета рисовалась в ленте дважды;
+- **пагинация — в SQL** (`SyncDB._feed_keys`): объединение ветвей группируется по ключу и режется `ORDER BY ts ... LIMIT/OFFSET`. Постранично брать «последние N» из каждой таблицы нельзя — окна не совпадают, и на соседних страницах сообщения повторялись (на реальной базе 578 повторов). Порядок — по времени (`message_date`/`sent_at`), а не по id: ветви лежат в разных пространствах id;
+- **AI-бейдж скрывается, если действие уже показано отдельной строкой** (`profile.acted`). Признак — `profile_id` в аннотации, а при `profile_id IS NULL` (на реальной базе 165 из 597) — **время**: реакция пришла в течение `ACTION_TS_WINDOW_SEC` после карточки. Сравнение по времени, а не по номерам сообщений;
+
+**Важное следствие уникального индекса**: у `raw_messages` есть `UNIQUE(chat_id, telegram_message_id)` (`idx_raw_unique`), а пространства id входящих и исходящих пересекаются. Поэтому `INSERT OR IGNORE` **молча отбрасывал** наши исходящие сообщения, номер которых совпал с входящим — на реальной базе так потеряны сырые записи всех `153` авто-действий. Лента это переживает (действие приходит из аннотации и рисуется отдельной строкой), но знать об этом нужно: думать, что в `raw_messages` лежит весь чат, нельзя.
+
+Регресс-тесты: `TestChatFeedDedup` — одна строка на сообщение, исходящее не выглядит как сообщение от Leo, обход всех страниц без дублей, коллизия номера входящего и исходящего, скрытие бейджа при `profile_id IS NULL`, пустой `MEDIA_ONLY` не дублирует карточку, `total` считает сообщения, а не записи в таблицах.
+
 Старые адреса сохранены как **редиректы** на главный экран (чтобы старые закладки не отдавали 404): `/chat` (синоним `/`), `/dashboard`, `/settings`, `/profiles/<id>`, `/profiles/<id>/action`; legacy API-роут быстрых действий `/dashboard/action/<id>/<action>` остался для обратной совместимости. Шаблоны `chat.html` / `dashboard.html` / `settings.html` / `profile.html` / `captchas.html`, blueprint `web/blueprints/captchas.py` и `static/css/style.css` удалены (Stage 9). Подробнее в `web/` и `AGENTS.md`.
 
-**Дизайн** (Stage 9.2, переписан с нуля): тёмная тема, статика без внешних зависимостей — `static/css/app.css` + `static/js/app.js`. Плотный лог-список событий (без «пузырей»), фильтр по решению и поиск, pill-бейджи решений, миниатюры фото, SVG-иконки ⚙/выход, toast-уведомления, drawer настроек.
+**Дизайн** (Stage 9.2, переписан с нуля): **тёмная и светлая темы**, статика без внешних зависимостей — `static/css/app.css` + `static/js/app.js`. Плотный лог-список событий (без «пузырей»), фильтр по решению и поиск, pill-бейджи решений, миниатюры фото, SVG-иконки ⚙/выход, toast-уведомления, drawer настроек.
+
+Тема: палитра задана CSS-переменными (`:root` — тёмная, `[data-theme="light"]` — светлая), переключатель `#theme-toggle` в топбаре пишет выбор в `localStorage`, а `web/templates/partials/theme_boot.html` применяет его инлайн-скриптом **до первой отрисовки** (иначе при перезагрузке мигает тёмная тема). За пределами палитр сырых цветов в `app.css` нет — это проверяет `TestTheme::test_no_raw_colors_outside_palettes`, иначе в светлой теме остались бы тёмные пятна.
 
 Жёсткие правила вёрстки (проверяются тестами и числовым аудитом в headless-браузере, `_audit.py`):
 
@@ -271,7 +291,7 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 
 **Режим на сайте меняется на лету** (`web/actions.py` → `set_mode_sync`): POST на `/settings/mode` не только пишет `project.mode` в `config.yaml`, но и вызывает `collector.set_mode()` — живой `AutoActionEngine` переключается сразу, а для SEMI_AUTO/AUTO запускается `start_auto_stream()` (обработка активной анкеты / продолжение ленты Leo). Перезапуск не нужен. Без привязанного коллектора (например в тестах) режим просто сохраняется в YAML.
 
-**Аккаунт-исполнитель меняется на лету** (`web/actions.py` → `set_account_sync`): POST на `/settings/account` пишет `auto_actions.account_session` в `config.yaml` И вызывает `collector.switch_auto_account(session)` — живой `AutoActionEngine` получает клиент другого аккаунта (`AutoActionEngine.swap_client`), кэш peer сбрасывается (у каждого аккаунта свой access_hash чата Leo), rate-limiter обнуляется, затем запускается `start_auto_stream()` на новом аккаунте. UI: выпадающий список на **ленте** (главная) и в `/settings` (аккаунты читаются из `telegram.accounts` конфига); на ленте переключение происходит сразу при выборе (авто-сабмит формы).
+**Аккаунт-исполнитель меняется на лету** (`web/actions.py` → `set_account_sync`): POST на `/settings/account` пишет `auto_actions.account_session` в `config.yaml` И вызывает `collector.switch_auto_account(session)` — живой `AutoActionEngine` получает клиент другого аккаунта (`AutoActionEngine.swap_client`), кэш peer сбрасывается (у каждого аккаунта свой access_hash чата Leo), rate-limiter обнуляется, затем запускается `start_auto_stream()` на новом аккаунте. UI: выпадающий список аккаунтов в **топбаре** (`web/templates/app.html`, `#account-form`, рядом с выбором режима) — в drawer настроек его больше нет. Аккаунты читаются из `telegram.accounts` конфига; переключение происходит сразу при выборе (авто-сабмит формы, кнопка `ОК` — fallback без JS).
 
 ### Ключевые константы
 

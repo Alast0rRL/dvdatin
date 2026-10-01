@@ -1,0 +1,22 @@
+{# ── Применение темы ДО первой отрисовки (иначе моргание тёмным фоном) ──
+   Выбор пользователя лежит в localStorage; если его нет — берём системную
+   тему (prefers-color-scheme). Пишем прямо в <html data-theme>, CSS
+   переключается по этому атрибуту (см. [data-theme="light"] в app.css).
+   Скрипт намеренно инлайновый и синхронный: внешний app.js успевает
+   загрузиться позже первой отрисовки. #}
+<script>
+(function () {
+    var KEY = 'dvai.theme';
+    var theme;
+    try {
+        theme = localStorage.getItem(KEY);
+    } catch (e) {
+        theme = null;   // приватный режим / отключённое хранилище
+    }
+    if (theme !== 'light' && theme !== 'dark') {
+        theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+            ? 'light' : 'dark';
+    }
+    document.documentElement.setAttribute('data-theme', theme);
+})();
+</script>

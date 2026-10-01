@@ -1,4 +1,6 @@
-{# ── Настройки: выдвижная панель на том же экране (без отдельных вкладок) ── #}
+{# ── Настройки: выдвижная панель на том же экране (без отдельных вкладок) ──
+   Только то, что меняют РЕДКО: фильтры и правила SKIP/LIKE.
+   Режим работы и аккаунт-исполнитель — «горячие» селекторы, они в топбаре. #}
 <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="drawer" aria-label="Настройки" hidden>
     <div class="drawer__head">
@@ -7,40 +9,6 @@
     </div>
 
     <div class="drawer__body">
-        <section class="drawer__section">
-            <h3>Режим работы</h3>
-            <p class="drawer__hint">OBSERVE — только смотрим · SEMI_AUTO — авто-действия, REVIEW-анкеты ждут тебя · AUTO — полная автоматика.</p>
-            <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch mode-switch--block">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-                {% for m in modes %}
-                <button type="submit" name="mode" value="{{ m }}"
-                        class="mode-switch__btn mode-switch__btn--{{ m|lower }} {% if mode == m %}is-active{% endif %}">
-                    {{ m|replace('_', ' ') }}
-                </button>
-                {% endfor %}
-            </form>
-        </section>
-
-        <section class="drawer__section">
-            <h3>Аккаунт-исполнитель</h3>
-            <p class="drawer__hint">С него отправляются ❤️/👎 и «Берем)» в чат Leo.</p>
-            <form method="POST" action="{{ url_for('settings.update_account') }}" class="drawer__form">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-                <select name="account_session" class="input">
-                    {% for acc in accounts %}
-                    <option value="{{ acc.session }}" {% if acc.session == account_session %}selected{% endif %}>
-                        {{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}
-                    </option>
-                    {% else %}
-                    <option value="" disabled>аккаунты не заданы</option>
-                    {% endfor %}
-                </select>
-                <button type="submit" class="btn btn--primary">Переключить</button>
-            </form>
-        </section>
-
         <section class="drawer__section">
             <h3>Фильтры</h3>
             <p class="drawer__hint">Возраст и города, по которым отбираются анкеты.</p>

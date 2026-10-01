@@ -180,6 +180,21 @@ def _login(client) -> None:
     client.post("/login", data={"password": "testpass", "csrf_token": token})
 
 
+def _drawer_html(page_html: str) -> str:
+    """Вырезает только <aside class="drawer">…</aside> из страницы.
+
+    Нужно, чтобы проверять «в панели настроек есть / нет» — в шапке те же
+    формы продолжают жить, и просто `'/settings/mode' in page` ничего не
+    говорит о содержимом drawer.
+    """
+    start = page_html.find('id="drawer"')
+    if start < 0:
+        return ""
+    start = page_html.rfind("<aside", 0, start)
+    end = page_html.find("</aside>", start)
+    return page_html[start:end] if start >= 0 and end > 0 else ""
+
+
 # ── Auth Tests ────────────────────────────────────────────────────
 
 class TestLogin:
@@ -278,17 +293,57 @@ class TestAppShell:
         assert "is-active" in data  # текущий режим подсвечен
 
     def test_settings_button_and_forms_in_drawer(self, client) -> None:
+        """В панели остались только настройки, которые меняют редко."""
         _login(client)
         data = client.get("/").get_data(as_text=True)
         assert 'id="settings-open"' in data
         assert 'id="drawer"' in data
         assert 'id="drawer-close"' in data
-        for ep in ("/settings/mode", "/settings/account", "/settings/filters",
-                   "/settings/preferences"):
-            assert ep in data
+        drawer = _drawer_html(data)
+        for ep in ("/settings/filters", "/settings/preferences"):
+            assert ep in drawer, ep
         for field in ('name="age_min"', 'name="age_max"', 'name="city_allowed"',
-                      'name="account_session"', 'name="skip_rules"', 'name="like_rules"'):
-            assert field in data
+                      'name="skip_rules"', 'name="like_rules"'):
+            assert field in drawer, field
+
+    def test_mode_switch_not_in_settings_drawer(self, client) -> None:
+        """Режим работы — только в шапке: в панели настроек его больше нет.
+
+        Регресс: переключатель режима дублировался в drawer и в топбаре —
+        два места для одного и того же и лишний клик на ровном месте.
+        """
+        _login(client)
+        drawer = _drawer_html(client.get("/").get_data(as_text=True))
+        assert "/settings/mode" not in drawer
+        assert 'name="mode"' not in drawer
+        assert "Режим работы" not in drawer
+        # ...но в шапке он остался.
+        assert "/settings/mode" in client.get("/").get_data(as_text=True)
+
+    def test_account_selector_moved_to_topbar(self, client) -> None:
+        """Аккаунт-исполнитель вынесен из панели настроек в шапку.
+
+        Регресс: переключение аккаунта спрятано было за ⚙-панель, хотя это
+        «горячий» селектор — как и режим работы.
+        """
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        drawer = _drawer_html(data)
+
+        # В панели — нет.
+        assert "/settings/account" not in drawer
+        assert 'name="account_session"' not in drawer
+        assert "Аккаунт-исполнитель" not in drawer
+
+        # В шапке — есть, и он рядом с переключателем режима.
+        assert 'id="account-form"' in data
+        assert "/settings/account" in data
+        assert 'name="account_session"' in data
+        assert 'id="account-select"' in data
+        # Авто-отправка по выбору значения (кнопка «ОК» — фолбэк без JS).
+        assert "data-auto-submit" in data
+        assert 'name="csrf_token"' in data
+        assert data.index('id="mode-switch"') < data.index('id="account-form"')
 
     def test_settings_values_loaded_into_drawer(self, client) -> None:
         """Значения фильтров/режима подставляются из config.yaml."""
@@ -449,9 +504,9 @@ class TestAppShell:
         defined = set(re.findall(r"\.([A-Za-z][\w-]*)", css))
         # Префиксы наших компонентов; служебные/сторонние классы не проверяем.
         prefixes = ("topbar", "brand", "icon-btn", "mode", "app", "feed", "row", "thumbs",
-                    "badge", "btn", "input", "link-btn", "chip", "pending", "drawer",
-                    "seg", "toolbar", "empty", "toast", "login", "form", "flash",
-                    "inline-form")
+                     "badge", "btn", "input", "link-btn", "chip", "pending", "drawer",
+                     "seg", "toolbar", "empty", "toast", "login", "form", "flash",
+                     "inline-form", "account", "theme")
 
         missing: dict[str, set[str]] = {}
         for template in (root / "web" / "templates").rglob("*.html"):
@@ -472,6 +527,78 @@ class TestAppShell:
                 missing[template.name] = gap
 
         assert not missing, f"классы без стилей: {missing}"
+
+
+# ── Theme Tests ───────────────────────────────────────────────────
+
+class TestTheme:
+    """Светлая тема + переключатель (тёмная осталась по умолчанию)."""
+
+    def test_theme_boot_script_runs_before_first_paint(self, client) -> None:
+        """data-theme ставится инлайном до подключения app.js.
+
+        Иначе страница моргает тёмным фоном, пока грузится внешний скрипт.
+        """
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert "localStorage" in data
+        assert "prefers-color-scheme" in data
+        assert "dvai.theme" in data
+        assert data.index("data-theme") < data.index("js/app.js"), (
+            "тема должна ставиться до app.js"
+        )
+        assert "<script>" in data, "скрипт инлайновый, а не отдельный запрос"
+
+    def test_theme_boot_also_on_login_page(self, client) -> None:
+        """Страница входа тоже уважает выбранную тему."""
+        html = client.get("/login").get_data(as_text=True)
+        assert "dvai.theme" in html
+        assert "prefers-color-scheme" in html
+
+    def test_theme_toggle_button_in_topbar(self, client) -> None:
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'id="theme-toggle"' in data
+        assert 'class="icon-btn theme-toggle"' in data
+        assert 'aria-label="Сменить тему"' in data
+        # Обе иконки на месте, что из них видно — решает CSS по data-theme.
+        assert "theme-toggle__sun" in data and "theme-toggle__moon" in data
+
+    def test_toggle_logic_in_js(self, client) -> None:
+        src = client.get("/static/js/app.js").get_data(as_text=True)
+        assert "theme-toggle" in src
+        assert "data-theme" in src
+        assert "dvai.theme" in src
+        assert "applyTheme" in src
+
+    def test_both_palettes_defined_in_css(self, client) -> None:
+        """Две палитры: :root (тёмная) и [data-theme='light'] (светлая)."""
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        assert '[data-theme="light"]' in css
+        dark = css.split(":root {", 1)[1].split("}", 1)[0]
+        light = css.split('[data-theme="light"] {', 1)[1].split("}", 1)[0]
+        tokens_dark = set(re.findall(r"(--[\w-]+):", dark))
+        tokens_light = set(re.findall(r"(--[\w-]+):", light))
+        # Светлая тема обязана переопределять ВСЕ токены тёмной, иначе
+        # часть вёрстки так и останется тёмной.
+        assert tokens_dark, "у :root должны быть токены"
+        missing = tokens_dark - tokens_light
+        assert not missing, f"в светлой теме нет токенов: {sorted(missing)}"
+
+    def test_no_raw_colors_outside_palettes(self, client) -> None:
+        """Вне блоков палитры цветов нет — иначе в светлой теме будут пятна."""
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        rules = re.sub(r':root\s*\{[^}]*\}', "", css, count=1)
+        rules = re.sub(r'\[data-theme="light"\]\s*\{[^}]*\}', "", rules, count=1)
+        raw = re.findall(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)", rules)
+        assert not raw, f"сырые цвета вне палитры: {sorted(set(raw))}"
+
+    def test_theme_switch_respects_media_query(self, client) -> None:
+        """Без сохранённого выбора тема берётся из системных настроек."""
+        html = client.get("/login").get_data(as_text=True)
+        assert "matchMedia" in html
+        assert "'light'" in html and "'dark'" in html
+
 
 # ── Quick Action Tests ───────────────────────────────────────────
 
@@ -1378,3 +1505,333 @@ class TestChatFeed:
         m = re.search(r'data-sig="([^"]*)"', body)
         assert m and m.group(1).strip(), "data-sig должен содержать сигнатуру"
         assert "/static/js/app.js" in body
+
+
+def _card_html(page_html: str, profile_id: int) -> str:
+    """Весь <article> строки анкеты (data-decision живёт в открывающем теге)."""
+    marker = f'id="profile-{profile_id}"'
+    idx = page_html.index(marker)
+    start = page_html.rfind("<article", 0, idx)
+    end = page_html.index("</article>", idx)
+    return page_html[start:end]
+
+
+class TestChatFeedDedup:
+    """Одно сообщение Telegram = одна строка ленты (регресс на 3 «👎»)."""
+
+    def _seed_dislike_flow(self, db, *, card_tm: int, reaction_tm: int,
+                           profile_id: int, ts: str = "2025-03-01T10:00:00") -> None:
+        """Один реальный цикл: карточка анкеты → отправленный 👎.
+
+        Ровно то, что пишет коллектор: карточка от Leo в raw_messages,
+        исходящий 👎 тоже в raw_messages (перехватчик исходящих) И его же
+        аннотация в sent_messages. Раньше это давало три строки ленты на
+        одну анкету — карточка, голый «👎» и «👎 DISLIKE вручную».
+        """
+        loop = asyncio.get_event_loop()
+
+        async def _seed() -> None:
+            await db.save_raw_message(
+                telegram_message_id=card_tm, chat_id=1234060895, sender_id=1234060895,
+                sender_username="", sender_name="Leo", message_date=ts,
+                text="Варвара, 20, Сургут", raw_entities="[]", reply_markup="[]",
+                media_type="photo", received_at=ts,
+            )
+            # Исходящий 👎 — с is_outgoing=True (иначе это выглядит как
+            # сообщение от Leo).
+            await db.save_raw_message(
+                telegram_message_id=reaction_tm, chat_id=1234060895,
+                sender_id=1753676469, sender_username="", sender_name="",
+                message_date=ts, text="👎", raw_entities="[]", reply_markup="[]",
+                media_type="", received_at=ts, is_outgoing=True,
+            )
+            await db.record_sent_message(
+                "👎", 1234060895, reaction_tm, source="manual",
+                action="DISLIKE", profile_id=profile_id,
+            )
+
+        loop.run_until_complete(_seed())
+
+    def test_reaction_shown_once_not_twice(self, sync_db) -> None:
+        """Отправленный 👎 = ОДНА строка ленты, а не две (raw + sent)."""
+        sync, _, db = sync_db
+        self._seed_dislike_flow(db, card_tm=7001, reaction_tm=7002, profile_id=3)
+
+        items = sync.get_chat_feed(page=1, per_page=50)["items"]
+        by_tm = {}
+        for i in items:
+            by_tm.setdefault(i["telegram_message_id"], []).append(i)
+
+        assert len(by_tm[7002]) == 1, f"👎 должен быть один раз: {by_tm[7002]}"
+        row = by_tm[7002][0]
+        assert row["direction"] == "out" and row["kind"] == "action"
+        assert row["action"] == "DISLIKE"
+        assert row["manual"] is True
+        assert "👎 DISLIKE" in row["action_label"]
+
+    def test_outgoing_raw_row_is_our_action_not_leo(self, sync_db) -> None:
+        """Наш исходящий не рисуется как сообщение от Leo.
+
+        Регресс: коллектор логирует весь чат, поэтому отправленный 👎 лежал
+        в raw_messages и лента показывала его слева с подписью «Leo».
+        """
+        sync, _, db = sync_db
+        self._seed_dislike_flow(db, card_tm=7011, reaction_tm=7012, profile_id=3)
+
+        items = sync.get_chat_feed(page=1, per_page=50)["items"]
+        ours = [i for i in items if i["telegram_message_id"] == 7012]
+        assert ours and ours[0]["direction"] == "out"
+        assert ours[0]["sender"] == "Я"
+
+        card = [i for i in items if i["telegram_message_id"] == 7011]
+        assert card and card[0]["direction"] == "in" and card[0]["sender"] == "Leo"
+
+    def test_no_duplicate_telegram_message_ids(self, sync_db) -> None:
+        """Ни одно сообщение Telegram не встречается в ленте дважды."""
+        sync, _, db = sync_db
+        for i in range(6):
+            self._seed_dislike_flow(
+                db, card_tm=7100 + i * 2, reaction_tm=7101 + i * 2,
+                profile_id=3, ts=f"2025-03-02T10:0{i}:00",
+            )
+
+        items = sync.get_chat_feed(page=1, per_page=100)["items"]
+        tms = [i["telegram_message_id"] for i in items]
+        assert len(tms) == len(set(tms)), "в ленте есть дубли telegram_message_id"
+        # Фикстура даёт 3 анкеты; добавили 6 карточек + 6 реакций = 15 строк.
+        # Без склейки было бы 21 (каждый 👎 считался дважды).
+        assert len(items) == 15, f"ожидали 15 строк, получили {len(items)}"
+
+    def test_ai_badge_hidden_when_profile_already_acted(self, client, sync_db) -> None:
+        """Бейдж AI в карточке скрыт, если по анкете уже есть строка действия.
+
+        Три «👎» на одну анкету (бейдж в карточке + голый эмодзи + «DISLIKE
+        вручную») сводились к двум строкам; чтобы вторая строка не читалась
+        как повтор, вердикт AI из карточки убираем — действие рядом и есть
+        вердикт. Атрибут data-decision для фильтра остаётся всегда.
+        """
+        sync, _, db = sync_db
+        self._seed_dislike_flow(db, card_tm=7201, reaction_tm=7202, profile_id=3)
+
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        card = _card_html(html, 3)
+
+        assert 'data-decision="DISLIKE"' in card, "фильтр по решению должен работать"
+        assert "👎 DISLIKE</span>" not in card, "бейдж AI не должен дублировать действие"
+        # Ровно один 👎 DISLIKE на всю страницу — в строке действия.
+        assert html.count("👎 DISLIKE") == 1, "в ленте больше одного «👎 DISLIKE»"
+
+    def test_ai_badge_kept_when_no_action_yet(self, client, sync_db) -> None:
+        """Если действия по анкете ещё нет — вердикт AI остаётся в карточке."""
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        # Варвара (id=3) = AI DISLIKE, действий в тестовой БД нет.
+        assert "👎 DISLIKE" in _card_html(html, 3)
+
+    def test_empty_media_only_message_not_rendered_twice(self, client, sync_db) -> None:
+        """Фото без текста (MEDIA_ONLY) не дублирует карточку анкеты.
+
+        Leo шлёт карточку и следом отдельное фото; оба сообщения linked в
+        profile_messages, из-за чего анкета рисовалась в ленте дважды.
+        """
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        ts = "2025-03-03T10:00:00"
+
+        async def _seed() -> None:
+            await db.link_profile_message(
+                profile_id=3, telegram_message_id=7302, chat_id=1234060895,
+                created_at=ts, account_session="dvai",
+            )
+            await db.save_raw_message(
+                telegram_message_id=7302, chat_id=1234060895, sender_id=1234060895,
+                sender_username="", sender_name="Leo", message_date=ts, text="",
+                raw_entities="[]", reply_markup="[]", media_type="photo",
+                received_at=ts,
+            )
+
+        loop.run_until_complete(_seed())
+
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        # Одна строка на анкету, не две.
+        assert html.count('id="profile-3"') == 1
+        rows = sync.get_chat_feed(page=1, per_page=50)["items"]
+        assert [i["telegram_message_id"] for i in rows].count(7302) == 0
+
+    def test_feed_total_counts_messages_not_annotations(self, sync_db) -> None:
+        """Пагинация считает сообщения, а не записи в трёх таблицах.
+
+        Регресс: total складывал COUNT трёх таблиц, поэтому один 👎
+        (raw + sent) занимал в пагинации два места.
+        """
+        sync, _, db = sync_db
+        before = sync.get_chat_feed(page=1, per_page=50)["total"]
+        self._seed_dislike_flow(db, card_tm=7401, reaction_tm=7402, profile_id=3)
+        after = sync.get_chat_feed(page=1, per_page=50)["total"]
+        # +2 сообщения (карточка и 👎), а не +3 записей.
+        assert after - before == 2, f"{before} -> {after}"
+
+    def test_orphan_annotation_still_shown(self, sync_db) -> None:
+        """Аннотация без сырой записи не теряется (RAW не сохранился)."""
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+
+        async def _seed() -> None:
+            await db.record_sent_message(
+                "👎", 1234060895, 7502, source="manual", action="DISLIKE",
+                profile_id=3,
+            )
+
+        loop.run_until_complete(_seed())
+        rows = sync.get_chat_feed(page=1, per_page=50)["items"]
+        orphan = [i for i in rows if i["telegram_message_id"] == 7502]
+        assert len(orphan) == 1
+        assert orphan[0]["kind"] == "action" and orphan[0]["manual"] is True
+
+    def test_annotation_id_colliding_with_incoming_not_merged(self, sync_db) -> None:
+        """Номер входящего Leo и номер нашего исходящего — разные сообщения.
+
+        У каждого аккаунта Telegram свой диапазон message id в одном чате, так
+        что номер нашего ❤️ может совпасть с номером карточки Leo. На реальной
+        базе это не rarity: диапазоны полностью пересекаются (входящие
+        22757..723077, исходящие 22871..723078), а уникальный индекс
+        ``idx_raw_unique(chat_id, telegram_message_id)`` не даёт сохранить
+        оба — исходящее сырьё молча отбрасывалось, и в ленте оставалась одна
+        строка. Именно поэтому все 153 авто-действия не имеют сырой пары.
+
+        Лента обязана показывать ОБЕ строки: карточка Leo и наше действие —
+        это два разных сообщения, просто с одинаковым номером.
+        """
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        ts = "2025-03-04T10:00:00"
+
+        async def _seed() -> None:
+            # Карточка от Leo с id 9001...
+            await db.save_raw_message(
+                telegram_message_id=9001, chat_id=1234060895, sender_id=1234060895,
+                sender_username="", sender_name="Leo", message_date=ts,
+                text="Лиза, 21, Казань", raw_entities="[]", reply_markup="[]",
+                media_type="photo", received_at=ts,
+            )
+            # ...и наше ❤️ с ТЕМ ЖЕ номером. Сырое исходящее отбросится по
+            # UNIQUE — как на реальной базе, — но аннотация сохранится.
+            await db.save_raw_message(
+                telegram_message_id=9001, chat_id=1234060895, sender_id=1753676469,
+                sender_username="", sender_name="", message_date=ts, text="❤️",
+                raw_entities="[]", reply_markup="[]", media_type="",
+                received_at=ts, is_outgoing=True,
+            )
+            await db.record_auto_action(
+                profile_id=3, action="LIKE", decision="LIKE", chat_id=1234060895,
+                telegram_message_id=9001,
+            )
+
+        loop.run_until_complete(_seed())
+        rows = sync.get_chat_feed(page=1, per_page=50)["items"]
+        same_tm = [i for i in rows if i["telegram_message_id"] == 9001]
+        assert len(same_tm) == 2, f"ожидали 2 разных сообщения, получили {len(same_tm)}"
+        by_dir = {i["direction"]: i for i in same_tm}
+        assert set(by_dir) == {"in", "out"}
+        # Карточка Leo осталась карточкой и не получила наше действие.
+        assert by_dir["in"]["kind"] == "raw" and by_dir["in"]["action"] == ""
+        assert by_dir["out"]["kind"] == "action" and by_dir["out"]["action"] == "LIKE"
+        assert by_dir["out"]["sender"] == "Я" and by_dir["out"]["manual"] is False
+
+    def test_pagination_walks_all_pages_without_duplicates(self, sync_db) -> None:
+        """Постраничный обход всей ленты даёт каждое сообщение ровно раз.
+
+        Ключ ленты — объединение четырёх ветвей, и если брать «последние N»
+        из каждой таблицы отдельно, окна не совпадают: на реальной базе это
+        давало 578 повторов на соседних страницах.
+        """
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+
+        async def _seed() -> None:
+            for i in range(12):
+                ts = f"2025-03-05T10:{i:02d}:00"
+                await db.save_raw_message(
+                    telegram_message_id=8000 + i, chat_id=1234060895,
+                    sender_id=1234060895, sender_username="", sender_name="Leo",
+                    message_date=ts, text=f"Карточка {i}", raw_entities="[]",
+                    reply_markup="[]", media_type="photo", received_at=ts,
+                )
+                await db.save_raw_message(
+                    telegram_message_id=8500 + i, chat_id=1234060895,
+                    sender_id=1753676469, sender_username="", sender_name="",
+                    message_date=ts, text="👎", raw_entities="[]",
+                    reply_markup="[]", media_type="", received_at=ts,
+                    is_outgoing=True,
+                )
+                await db.record_sent_message(
+                    "👎", 1234060895, 8500 + i, source="manual",
+                    action="DISLIKE", profile_id=3,
+                )
+
+        loop.run_until_complete(_seed())
+
+        total = sync.get_chat_feed(page=1, per_page=50)["total"]
+        seen: set[tuple] = set()
+        rows: list[dict] = []
+        page = 1
+        while page <= 20:
+            items = sync.get_chat_feed(page=page, per_page=5)["items"]
+            if not items:
+                break
+            for item in items:
+                key = (
+                    item["chat_id"], item["telegram_message_id"], item["direction"]
+                )
+                assert key not in seen, f"дубль {key} на странице {page}"
+                seen.add(key)
+            rows += items
+            page += 1
+
+        # 12 карточек + 12 реакций; фикстура добавляет ещё 3 анкеты.
+        assert len(rows) == len(seen) == total
+        assert sum(1 for i in rows if i["direction"] == "out") == 12
+
+    def test_badge_hidden_when_annotation_has_no_profile_id(self, client, sync_db) -> None:
+        """Бейдж скрыт и когда в аннотации нет profile_id.
+
+        Часть ручных отправок пишется с profile_id = NULL (на реальной базе
+        165 из 597 — профиль не удалось резолвить в момент записи). Leo держит
+        одну активную карточку, поэтому реакция приходит сразу за ней.
+        """
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        # Время карточки — «сейчас»: record_sent_message ставит sent_at = now(),
+        # и признак «реакция почти сразу после карточки» работает по времени.
+        ts = datetime.now(timezone.utc).isoformat()
+
+        async def _seed() -> None:
+            await db.save_raw_message(
+                telegram_message_id=9101, chat_id=1234060895, sender_id=1234060895,
+                sender_username="", sender_name="Leo", message_date=ts,
+                text="Лена, 22, Пермь", raw_entities="[]", reply_markup="[]",
+                media_type="photo", received_at=ts,
+            )
+            await db.link_profile_message(
+                profile_id=3, telegram_message_id=9101, chat_id=1234060895,
+                created_at=ts, account_session="dvai",
+            )
+            await db.save_raw_message(
+                telegram_message_id=9102, chat_id=1234060895, sender_id=1753676469,
+                sender_username="", sender_name="", message_date=ts, text="👎",
+                raw_entities="[]", reply_markup="[]", media_type="",
+                received_at=ts, is_outgoing=True,
+            )
+            await db.record_sent_message(
+                "👎", 1234060895, 9102, source="manual", action="DISLIKE",
+            )
+
+        loop.run_until_complete(_seed())
+
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        card = _card_html(html, 3)
+        assert 'data-decision="DISLIKE"' in card
+        assert "👎 DISLIKE</span>" not in card, "бейдж должен быть скрыт"

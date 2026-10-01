@@ -10,21 +10,104 @@
    3) Фото — фиксированные миниатюры с aspect-ratio: геометрия не зависит
       от загрузки файла и его исходного разрешения.
    4) Кликабельные элементы >= 36px по высоте.
+
+   ТЕМА. Ни одного «сырого» цвета вне переменных: палитра задана двумя
+   блоками — :root (тёмная) и [data-theme="light"] (светлая). Атрибут на
+   <html> ставит инлайновый скрипт partials/theme_boot.html ДО первой
+   отрисовки (localStorage → иначе prefers-color-scheme), переключатель —
+   #theme-toggle в шапке (THEME_* в app.js).
    ══════════════════════════════════════════════════════════════════ */
 
+/* ── Тёмная тема (по умолчанию) ─────────────────────────────────── */
 :root {
     --bg: #0d1117;
     --bg-soft: #151b24;
     --bg-row: #161d28;
+    --bg-row-out: #131b28;      /* строка нашего исходящего */
     --bg-input: #0f141c;
     --line: #26303d;
     --text: #e7ebf2;
+    --text-soft: #cfd6e2;
     --muted: #8f99ab;
+    --faint: #6b7488;
+    --fainter: #66718a;
     --accent: #6352f8;
+    --on-accent: #fff;
     --like: #2ea86a;
     --dislike: #e0574c;
     --review: #f0a92b;
     --tap: 36px;
+
+    --hover: #212a37;
+    --hover-line: #3a4557;
+    --observe: #3d4a63;         /* активный OBSERVE (не цвет решения) */
+    --row-hover-line: #35404f;
+    --thumb-bg: #0a0e14;
+    --toast-bg: #1a222e;
+    --backdrop: rgba(0, 0, 0, .6);
+    --shadow: rgba(0, 0, 0, .45);
+
+    --neutral-fg: #c4cbdb;
+    --like-fg: #bdf3d4;
+    --like-bg: rgba(46, 168, 106, .18);
+    --like-line: rgba(46, 168, 106, .6);
+    --like-line-soft: rgba(46, 168, 106, .35);
+    --dislike-fg: #ffd6d2;
+    --dislike-bg: rgba(224, 87, 76, .18);
+    --dislike-line: rgba(224, 87, 76, .6);
+    --dislike-line-soft: rgba(224, 87, 76, .35);
+    --review-fg: #ffe4b5;
+    --review-bg: rgba(240, 169, 43, .08);
+    --review-line: rgba(240, 169, 43, .45);
+    --review-line-soft: rgba(240, 169, 43, .55);
+    --pending-fg: #ffd48a;
+}
+
+/* ── Светлая тема ──────────────────────────────────────────────── */
+/* На белом фоне светлые «мягкие» цвета нечитаемы, поэтому hereink
+   заметно темнее, а подложки — бледнее. Контраст текста к фону >= 4.5:1. */
+[data-theme="light"] {
+    --bg: #eef1f6;
+    --bg-soft: #ffffff;
+    --bg-row: #ffffff;
+    --bg-row-out: #f6f8fc;
+    --bg-input: #ffffff;
+    --line: #d5dbe6;
+    --text: #161d2b;
+    --text-soft: #3b4557;
+    --muted: #5c6678;
+    --faint: #6b7488;
+    --fainter: #838d9f;
+    --accent: #4b3ae8;
+    --on-accent: #ffffff;
+    --like: #1d8a54;
+    --dislike: #c53a2d;
+    --review: #a9710a;
+    --tap: 36px;
+
+    --hover: #e7ebf3;
+    --hover-line: #c0c9d9;
+    --observe: #d2d9e6;
+    --row-hover-line: #c0c9d9;
+    --thumb-bg: #e2e7f0;
+    --toast-bg: #ffffff;
+    --backdrop: rgba(22, 29, 43, .42);
+    --shadow: rgba(22, 29, 43, .16);
+
+    --neutral-fg: #48525f;
+    --like-fg: #11663c;
+    --like-bg: rgba(29, 138, 84, .12);
+    --like-line: rgba(29, 138, 84, .5);
+    --like-line-soft: rgba(29, 138, 84, .34);
+    --dislike-fg: #a82d21;
+    --dislike-bg: rgba(197, 58, 45, .10);
+    --dislike-line: rgba(197, 58, 45, .5);
+    --dislike-line-soft: rgba(197, 58, 45, .34);
+    --review-fg: #7d5405;
+    --review-bg: rgba(169, 113, 10, .10);
+    --review-line: rgba(169, 113, 10, .4);
+    --review-line-soft: rgba(169, 113, 10, .5);
+    --pending-fg: #7d5405;
 }
 
 * { box-sizing: border-box; }
@@ -82,7 +165,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     font-size: 14px;
     line-height: 1;
 }
-.icon-btn:hover { background: #212a37; border-color: #3a4557; }
+.icon-btn:hover { background: var(--hover); border-color: var(--hover-line); }
 .icon-btn:focus-visible, .btn:focus-visible, .input:focus-visible,
 .chip:focus-visible, .mode-switch__btn:focus-visible, .seg__btn:focus-visible {
     outline: 2px solid var(--accent);
@@ -99,7 +182,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     border: 1px solid var(--line);
     border-radius: 9px;
 }
-.mode-switch--block { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
 .mode-switch__btn {
     min-height: 28px;
     padding: 4px 10px;
@@ -117,9 +199,42 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     text-overflow: ellipsis;
 }
 .mode-switch__btn:hover { color: var(--text); }
-.mode-switch__btn.is-active { background: var(--accent); color: #fff; }
+.mode-switch__btn.is-active { background: var(--accent); color: var(--on-accent); }
 .mode-switch__btn--auto.is-active { background: var(--dislike); }
-.mode-switch__btn--observe.is-active { background: #3d4a63; }
+.mode-switch__btn--observe.is-active { background: var(--observe); color: var(--text); }
+
+/* ── Аккаунт-исполнитель (топбар) ───────────────────────────────── */
+/* Раньше жил в панели настроек — нажимать приходилось каждый раз, когда
+   менялся аккаунт. Теперь селектор всегда на виду. */
+.account-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.account-form__label {
+    display: grid;
+    place-items: center;
+    flex: 0 0 auto;
+    color: var(--muted);
+    cursor: pointer;
+}
+.account-form__select {
+    width: auto;
+    min-width: 0;
+    max-width: 190px;
+    min-height: 30px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+.account-form__go { flex: 0 0 auto; min-height: 30px; padding: 4px 10px; }
+
+/* ── Переключатель темы ─────────────────────────────────────────── */
+.theme-toggle { color: var(--muted); }
+.theme-toggle:hover { color: var(--text); }
+.theme-toggle__moon { display: none; }
+[data-theme="light"] .theme-toggle__sun { display: none; }
+[data-theme="light"] .theme-toggle__moon { display: block; }
 
 .mode-pill {
     flex: 0 0 auto;
@@ -132,8 +247,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     font-weight: 700;
     letter-spacing: .3px;
 }
-.mode-pill--semi_auto { color: #bdf3d4; border-color: rgba(46, 168, 106, .5); }
-.mode-pill--auto { color: #ffd6d2; border-color: rgba(224, 87, 76, .5); }
+.mode-pill--semi_auto { color: var(--like-fg); border-color: var(--like-line); }
+.mode-pill--auto { color: var(--dislike-fg); border-color: var(--dislike-line); }
 
 /* ── Список событий ────────────────────────────────────────────── */
 .app {
@@ -163,12 +278,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     border: 1px solid var(--line);
     border-radius: 10px;
 }
-.row:hover { border-color: #35404f; }
-.row--action { background: #131b28; }
-.row--captcha { border-color: rgba(240, 169, 43, .45); }
+.row:hover { border-color: var(--row-hover-line); }
+.row--action { background: var(--bg-row-out); }
+.row--captcha { border-color: var(--review-line); }
 
 .row__time {
-    color: #66718a;
+    color: var(--fainter);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     padding-top: 1px;
@@ -178,11 +293,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .row__head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
 .row__name { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
 .row__city { color: var(--muted); font-size: 12px; }
-.row__meta { color: #6b7488; font-size: 11px; }
+.row__meta { color: var(--faint); font-size: 11px; }
 .row__hint { color: var(--review); font-size: 11px; }
 
 .row__text {
-    color: #cfd6e2;
+    color: var(--text-soft);
     font-size: 13px;
     white-space: pre-wrap;
     word-break: break-word;
@@ -200,7 +315,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     border-radius: 10px;
     overflow: hidden;
     border: 1px solid var(--line);
-    background: #0a0e14;
+    background: var(--thumb-bg);
 }
 .thumbs__img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumbs__item:hover { border-color: var(--accent); }
@@ -221,12 +336,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     font-size: 11px;
     font-weight: 700;
 }
-.badge--like { color: #bdf3d4; border-color: rgba(46, 168, 106, .5); }
-.badge--dislike { color: #ffd6d2; border-color: rgba(224, 87, 76, .5); }
-.badge--review { color: #ffe4b5; border-color: rgba(240, 169, 43, .55); }
-.badge--approve { color: #bdf3d4; border-color: rgba(46, 168, 106, .35); }
-.badge--reject { color: #ffd6d2; border-color: rgba(224, 87, 76, .35); }
-.badge--neutral { color: #c4cbdb; }
+.badge--like { color: var(--like-fg); border-color: var(--like-line); }
+.badge--dislike { color: var(--dislike-fg); border-color: var(--dislike-line); }
+.badge--review { color: var(--review-fg); border-color: var(--review-line-soft); }
+.badge--approve { color: var(--like-fg); border-color: var(--like-line-soft); }
+.badge--reject { color: var(--dislike-fg); border-color: var(--dislike-line-soft); }
+.badge--neutral { color: var(--neutral-fg); }
 
 /* ── Панель управления списком ─────────────────────────────────── */
 .toolbar {
@@ -257,9 +372,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     cursor: pointer;
 }
 .seg__btn:hover { color: var(--text); }
-.seg__btn.is-active { background: var(--accent); color: #fff; }
+.seg__btn.is-active { background: var(--accent); color: var(--on-accent); }
 
-.toolbar__count { margin-left: auto; color: #6b7488; font-size: 12px; }
+.toolbar__count { margin-left: auto; color: var(--faint); font-size: 12px; }
 
 .input {
     display: block;
@@ -298,9 +413,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 }
 .btn:hover { filter: brightness(1.14); }
 .btn--sm { min-height: 30px; padding: 4px 12px; font-size: 12px; }
-.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn--like { background: rgba(46, 168, 106, .18); border-color: rgba(46, 168, 106, .6); color: #bdf3d4; }
-.btn--dislike { background: rgba(224, 87, 76, .18); border-color: rgba(224, 87, 76, .6); color: #ffd6d2; }
+.btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn--like { background: var(--like-bg); border-color: var(--like-line); color: var(--like-fg); }
+.btn--dislike { background: var(--dislike-bg); border-color: var(--dislike-line); color: var(--dislike-fg); }
 .btn--ghost { background: transparent; }
 .btn--full { width: 100%; }
 
@@ -335,12 +450,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .pending {
     padding: 12px;
     margin-bottom: 12px;
-    background: rgba(240, 169, 43, .08);
-    border: 1px solid rgba(240, 169, 43, .45);
+    background: var(--review-bg);
+    border: 1px solid var(--review-line);
     border-radius: 10px;
 }
 .pending__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
-.pending__title { color: #ffd48a; font-weight: 700; font-size: 13px; }
+.pending__title { color: var(--pending-fg); font-weight: 700; font-size: 13px; }
 .pending__hint { color: var(--muted); font-size: 11px; }
 .pending__item { padding: 10px; margin-top: 8px; background: var(--bg-row); border: 1px solid var(--line); border-radius: 9px; }
 .pending__text { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -349,7 +464,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .captcha-form .input { flex: 1 1 160px; max-width: 280px; }
 
 /* ── Панель настроек ───────────────────────────────────────────── */
-.drawer-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .6); }
+.drawer-backdrop { position: fixed; inset: 0; z-index: 40; background: var(--backdrop); }
 .drawer {
     position: fixed;
     top: 0;
@@ -414,14 +529,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     padding: 10px 15px;
     border: 1px solid var(--line);
     border-radius: 9px;
-    background: #1a222e;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    background: var(--toast-bg);
+    box-shadow: 0 8px 24px var(--shadow);
     font-size: 13px;
     animation: toast-in .2s ease-out;
 }
-.toast--success { border-color: rgba(46, 168, 106, .6); color: #cdf5de; }
-.toast--error { border-color: rgba(224, 87, 76, .6); color: #ffd6d2; }
-.toast--warning { border-color: rgba(240, 169, 43, .6); color: #ffe4b5; }
+.toast--success { border-color: var(--like-line); color: var(--like-fg); }
+.toast--error { border-color: var(--dislike-line); color: var(--dislike-fg); }
+.toast--warning { border-color: var(--review-line); color: var(--review-fg); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
 
 /* ── Вход ──────────────────────────────────────────────────────── */
@@ -435,15 +550,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .form-group { display: flex; flex-direction: column; gap: 6px; }
 .form-label { color: var(--muted); font-size: 12px; }
 .flash { margin-bottom: 10px; padding: 9px 11px; border-radius: 9px; font-size: 13px; }
-.flash-success { background: rgba(46, 168, 106, .15); border: 1px solid rgba(46, 168, 106, .5); }
-.flash-error { background: rgba(224, 87, 76, .15); border: 1px solid rgba(224, 87, 76, .5); }
-.flash-warning { background: rgba(240, 169, 43, .15); border: 1px solid rgba(240, 169, 43, .5); }
+.flash-success { background: var(--like-bg); border: 1px solid var(--like-line); }
+.flash-error { background: var(--dislike-bg); border: 1px solid var(--dislike-line); }
+.flash-warning { background: var(--review-bg); border: 1px solid var(--review-line); }
 
 /* ── Узкие экраны ──────────────────────────────────────────────── */
 @media (max-width: 620px) {
     .topbar { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px 12px; }
     .topbar-side--right { justify-content: flex-start; }
     .mode-pill, .brand-name { display: none; }
+    .account-form__label { display: none; }
+    .account-form__select { max-width: none; flex: 1 1 90px; }
     .row { grid-template-columns: 38px minmax(0, 1fr); gap: 8px; padding: 9px 10px; }
     .drawer { border-left: 0; }
 }
