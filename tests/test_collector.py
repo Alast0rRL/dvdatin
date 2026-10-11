@@ -257,6 +257,35 @@ class TestCollectorActiveCard:
 
         assert engine.is_stale_card(1234060895, 100) is False
 
+    def test_like_rejection_marks_likes_exhausted(self) -> None:
+        """«Слишком много ❤️ за сегодня» → движок перестаёт слать ❤️ до 07:00."""
+        collector, client, engine = self._collector()
+        event = make_event(
+            text=(
+                "Слишком много \u2764\ufe0f за сегодня. "
+                "Перейди на Premium и получи больше \u2764\ufe0f!"
+            ),
+            msg_id=733421,
+        )
+        event.client = client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        assert engine.likes_exhausted() is True
+        collector._db.mark_like_rejected.assert_awaited_once()
+
+    def test_normal_message_does_not_exhaust_likes(self) -> None:
+        collector, client, engine = self._collector()
+        event = make_event(text="Лайк отправлен, ждем ответа.", msg_id=733500)
+        event.client = client
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_new_message(event)
+        )
+
+        assert engine.likes_exhausted() is False
+
+
 class TestCollectorIntegration:
     def test_register(self) -> None:
         client = AsyncMock()

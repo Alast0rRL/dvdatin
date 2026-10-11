@@ -228,6 +228,14 @@ CREATE INDEX IF NOT EXISTS idx_captcha_memory_pending
     ON captcha_memory(answer) WHERE answer IS NULL;
 CREATE INDEX IF NOT EXISTS idx_captcha_memory_updated
     ON captcha_memory(updated_at);
+
+-- app_state: простой key/value для рантайм-состояния, которое должно переживать
+-- рестарт (напр. likes_exhausted_until — дневной лимит ❤️ исчерпан до 07:00).
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -1238,6 +1246,45 @@ class Database:
         except Exception as e:
             await self._connection.rollback()
             logger.warning(f"mark_like_rejected: {e}")
+
+    async def set_state(self, key: str, value: str) -> None:
+        """Сохраняет рантайм-значение (переживает рестарт)."""
+        try:
+            await self._connection.execute(
+                """INSERT INTO app_state (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at""",
+                (key, value, datetime.now(timezone.utc).isoformat()),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"set_state({key}): {e}")
+
+    async def get_state(self, key: str) -> str | None:
+        """Читает рантайм-значение (None, если не задано)."""
+        try:
+            cursor = await self._connection.execute(
+                "SELECT value FROM app_state WHERE key = ?", (key,)
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.warning(f"get_state({key}): {e}")
+            return None
+
+    async def delete_state(self, key: str) -> None:
+        """Удаляет рантайм-значение."""
+        try:
+            await self._connection.execute(
+                "DELETE FROM app_state WHERE key = ?", (key,)
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"delete_state({key}): {e}")
 
     async def get_message_response_stats(self) -> list[dict]:
         """Конверсия по текстам сообщений при лайке.

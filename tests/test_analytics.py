@@ -610,3 +610,18 @@ class TestLikeMessageAnalyticsService:
         assert by_text["Берём)"]["rate"] == 1.0
         # текст без отправленных сообщений не даёт rate
         assert len(rows) == 1  # запись LIKE без текста не попадает в выдачу
+
+
+class TestAppState:
+    """Рантайм key/value (app_state): переживает рестарт (лимит ❤️ и пр.)."""
+
+    def test_set_get_delete(self, tmp_db) -> None:
+        db = tmp_db
+        assert run(db.get_state("likes_exhausted_until")) is None
+        run(db.set_state("likes_exhausted_until", "123.5"))
+        assert run(db.get_state("likes_exhausted_until")) == "123.5"
+        # upsert перезаписывает значение
+        run(db.set_state("likes_exhausted_until", "456.0"))
+        assert run(db.get_state("likes_exhausted_until")) == "456.0"
+        run(db.delete_state("likes_exhausted_until"))
+        assert run(db.get_state("likes_exhausted_until")) is None

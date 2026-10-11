@@ -1540,6 +1540,16 @@ class DvinchikCollector:
                         logger.info(
                             f"Leo: лайк отклонён (лимит). message_id={task.message_id}"
                         )
+                        # Лайки исчерпаны до ближайших 07:00: движок перестаёт
+                        # слать ❤️ (👎 продолжает), снимает цепочки «Берем)» и
+                        # один раз уведомляет владельца. Состояние — в БД.
+                        if self._auto_engine is not None:
+                            try:
+                                await self._auto_engine.handle_like_rejection(chat_id)
+                            except Exception as e:
+                                logger.error(
+                                    f"AutoAction: обработка лимита лайков: {e}"
+                                )
                 except Exception as e:
                     logger.warning(f"like_rejection hook error: {e}")
 

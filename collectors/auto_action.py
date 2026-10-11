@@ -9,6 +9,7 @@ import asyncio
 import random
 import re
 import time
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -47,6 +48,13 @@ MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
     "отправьте текст",
     "видео или голосовое",
 )
+
+# Дневной лимит ❤️ у Leo: когда он отвечает «Слишком много ❤️ за сегодня»,
+# лайки исчерпаны до ближайших 07:00 (см. _compute_like_limit_reset). Состояние
+# хранится в app_state и переживает рестарт.
+LIKE_LIMIT_STATE_KEY: str = "likes_exhausted_until"
+#: Час локального времени, когда сбрасывается дневной лимит лайков.
+LIKE_LIMIT_RESET_HOUR: int = 7
 
 # Стадии цепочки LIKE_AND_MESSAGE.
 _STAGE_AWAIT_LIKE_ACK = "AWAIT_LIKE_ACK"   # кнопка ещё не отправлена
@@ -137,6 +145,10 @@ class AutoActionEngine:
         # реакции на устаревшую карточку: Leo принимает ❤️/👎 только пока
         # карточка на экране, а лента листается САМА (~каждые 2–10 с).
         self._latest_card: dict[int, int] = {}
+        # Дневной лимит ❤️: timestamp, до которого лайки исчерпаны (0.0 —
+        # не исчерпаны). Лениво подгружается из app_state (переживает рестарт).
+        self._likes_exhausted_until: float = 0.0
+        self._like_limit_loaded: bool = False
 
     @property
     def mode(self) -> Mode:
@@ -192,6 +204,108 @@ class AutoActionEngine:
         if latest is None or message_id is None:
             return False
         return message_id < latest
+
+    @staticmethod
+    def _compute_like_limit_reset(now: float | None = None) -> float:
+        """Возвращает timestamp ближайших 07:00 локального времени.
+
+        Leo отвечает «Слишком много ❤️ за сегодня» — до сброса (утро
+        следующего дня, 07:00) лайки слать бессмысленно (все отклоняются).
+        Если сейчас ещё до 07:00, сброс — сегодня; иначе — завтра.
+        """
+        now_dt = datetime.fromtimestamp(now if now is not None else time.time())
+        reset = now_dt.replace(
+            hour=LIKE_LIMIT_RESET_HOUR, minute=0, second=0, microsecond=0
+        )
+        if reset <= now_dt:
+            reset += timedelta(days=1)
+        return reset.timestamp()
+
+    async def _ensure_like_limit_loaded(self) -> None:
+        """Один раз подгружает состояние лимита ❤️ из БД (переживает рестарт)."""
+        if self._like_limit_loaded:
+            return
+        self._like_limit_loaded = True
+        if self._db is None:
+            return
+        try:
+            raw = await self._db.get_state(LIKE_LIMIT_STATE_KEY)
+            if raw:
+                self._likes_exhausted_until = float(raw)
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось прочитать состояние лимита ❤️: {e}")
+
+    def likes_exhausted(self) -> bool:
+        """Исчерпан ли сейчас дневной лимит ❤️ (по загруженному состоянию)."""
+        return bool(
+            self._likes_exhausted_until
+            and time.time() < self._likes_exhausted_until
+        )
+
+    async def mark_likes_exhausted(self) -> None:
+        """Помечает лайки исчерпанными до ближайших 07:00 и сохраняет в БД."""
+        reset = self._compute_like_limit_reset()
+        self._likes_exhausted_until = reset
+        self._like_limit_loaded = True
+        if self._db is not None:
+            try:
+                await self._db.set_state(LIKE_LIMIT_STATE_KEY, str(reset))
+            except Exception as e:
+                logger.error(f"AutoAction: не удалось сохранить лимит ❤️: {e}")
+
+    def abort_like_chains(self, chat_id: int | None = None) -> None:
+        """Снимает незавершённые цепочки «Берем)» (композер больше не открываем).
+
+        Вызывается при исчерпании лимита: лайк отклонён, поэтому шаг с кнопкой
+        композера «💌 📹 🎤» и «Берем)» слать нельзя (Leo отвечает «Нет такого
+        варианта ответа»). Отложенная реакция тоже сбрасывается.
+        """
+        removed = 0
+        for card_id, chain in list(self._pending_chains.items()):
+            if chat_id is None or chain.get("chat_id") == chat_id:
+                self._pending_chains.pop(card_id, None)
+                removed += 1
+        if self._deferred is not None:
+            self._deferred = None
+        if removed:
+            logger.info(
+                f"AutoAction: лимит ❤️ — снято цепочек «Берем)»: {removed}"
+            )
+
+    async def handle_like_rejection(self, chat_id: int | None = None) -> None:
+        """Реакция на отказ Leo по дневному лимиту ❤️ (см. «Слишком много ❤️»).
+
+        Помечает лайки исчерпанными (в БД — переживает рестарт), снимает
+        незавершённые цепочки «Берем)» и уведомляет владельца РОВНО ОДИН раз
+        (только на переходе «было не исчерпано» → «исчерпано»). Дизлайки (👎)
+        продолжают уходить — иначе лента Leo замирает.
+        """
+        await self._ensure_like_limit_loaded()
+        first = not self.likes_exhausted()
+        await self.mark_likes_exhausted()
+        self.abort_like_chains(chat_id if chat_id is not None else self._chat_id)
+        if first:
+            await self.notify_like_limit()
+
+    async def notify_like_limit(self) -> None:
+        """Сообщает владельцу, что дневной лимит ❤️ исчерпан и лайки приостановлены."""
+        if not self.enabled:
+            return
+        target = await self._resolve_notify_target()
+        if target is None or self._client is None:
+            return
+        try:
+            until = time.strftime(
+                "%H:%M", time.localtime(self._likes_exhausted_until)
+            )
+            await self._client.send_message(
+                target,
+                "⚠️ Дневной лимит ❤️ в Дайвинчике исчерпан — лайки не отправляю "
+                f"до {until}. Дизлайки (👎) продолжаю слать.",
+            )
+            logger.info(f"AutoAction: уведомление о лимите ❤️ отправлено в chat={target}")
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка уведомления о лимите ❤️: {e}")
 
     def swap_client(
         self,
@@ -285,6 +399,21 @@ class AutoActionEngine:
         )
 
         notify_action = "LIKE" if decision == AIDecision.LIKE else "DISLIKE"
+
+        # Дневной лимит ❤️ исчерпан (Leo: «Слишком много ❤️ за сегодня»):
+        # голый лайк и цепочку «Берем)» НЕ шлём (все отклоняются), но 👎 —
+        # шлём, иначе лента Leo замирает (он ждёт реакцию на карточку).
+        if policy == ActionPolicy.LIKE_AND_MESSAGE:
+            await self._ensure_like_limit_loaded()
+            if self.likes_exhausted():
+                until = time.strftime(
+                    "%H:%M", time.localtime(self._likes_exhausted_until)
+                )
+                logger.info(
+                    f"AutoAction: дневной лимит ❤️ исчерпан — лайк по карточке "
+                    f"{message_id} не отправляю (сброс до {until})"
+                )
+                return "LIKE_LIMIT"
 
         # Гейт «реакция — в СВОЮ карточку». Leo держит одну активную карточку
         # и принимает ❤️/👎 только пока она на экране, а лента листается сама

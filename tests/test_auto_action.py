@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +13,7 @@ from collectors.auto_action import (
     AutoActionEngine,
     DISLIKE_TEXT,
     LIKE_ACK_MARKERS,
+    LIKE_LIMIT_STATE_KEY,
     LIKE_TEXT,
     MESSAGE_BUTTON_TEXT,
     MESSAGE_PROMPT_MARKERS,
@@ -1266,3 +1268,101 @@ class TestLikeAndMessageChain:
         assert e._deferred is not None
         client.send_message.reset_mock()
         client.send_message.assert_not_called()
+
+
+class TestAutoActionLikeLimit:
+    """Дневной лимит ❤️ у Leo («Слишком много ❤️ за сегодня»).
+
+    Лайки исчерпаны до ближайших 07:00: ❤️ (и цепочка «Берем)») не шлются, а
+    👎 — шлются (иначе лента Leo замирает). Состояние хранится в app_state и
+    переживает рестарт; владелец уведомляется один раз на переходе.
+    """
+
+    @staticmethod
+    def _make_db(state: str | None = None) -> MagicMock:
+        db = MagicMock()
+        db.get_state = AsyncMock(return_value=state)
+        db.set_state = AsyncMock()
+        db.delete_state = AsyncMock()
+        return db
+
+    def test_like_limit_blocks_like(self) -> None:
+        db = self._make_db(str(time.time() + 3600))
+        client = make_client()
+        e = make_engine(client=client, db=db)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=1, message_id=900, informative=True
+            )
+        )
+        assert result == "LIKE_LIMIT"
+        client.send_message.assert_not_called()
+
+    def test_like_limit_allows_dislike(self) -> None:
+        db = self._make_db(str(time.time() + 3600))
+        client = make_client()
+        e = make_engine(client=client, db=db)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=1, message_id=900)
+        )
+        assert result == "DISLIKE"
+        texts = [c.args[1] for c in client.send_message.call_args_list]
+        assert DISLIKE_TEXT in texts
+
+    def test_expired_limit_does_not_block(self) -> None:
+        db = self._make_db(str(time.time() - 10))
+        client = make_client()
+        e = make_engine(client=client, db=db)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, message_id=900, informative=True)
+        )
+        assert result == "LIKE"
+
+    def test_mark_persists_and_reports(self) -> None:
+        db = self._make_db(None)
+        e = make_engine(db=db)
+        asyncio.get_event_loop().run_until_complete(e.mark_likes_exhausted())
+        assert e.likes_exhausted() is True
+        db.set_state.assert_awaited_once()
+        key, value = db.set_state.await_args.args
+        assert key == LIKE_LIMIT_STATE_KEY
+        assert float(value) > time.time()
+
+    def test_compute_reset_before_and_after_7am(self) -> None:
+        # 03:00 локально → сброс в 07:00 того же дня.
+        d = datetime(2026, 10, 11, 3, 0, 0)
+        reset = AutoActionEngine._compute_like_limit_reset(d.timestamp())
+        assert datetime.fromtimestamp(reset) == d.replace(
+            hour=7, minute=0, second=0, microsecond=0
+        )
+        # 20:00 локально → сброс в 07:00 следующего дня.
+        d2 = datetime(2026, 10, 11, 20, 0, 0)
+        reset2 = AutoActionEngine._compute_like_limit_reset(d2.timestamp())
+        assert datetime.fromtimestamp(reset2) == d2.replace(
+            hour=7, minute=0, second=0, microsecond=0
+        ) + timedelta(days=1)
+
+    def test_handle_rejection_notifies_once(self) -> None:
+        client = make_client()
+        e = make_engine(
+            client=client, config=make_auto_config(notify_chat_id=8525808108)
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(e.handle_like_rejection(1234060895))
+        loop.run_until_complete(e.handle_like_rejection(1234060895))
+        assert client.send_message.call_count == 1
+        text = client.send_message.call_args.args[1]
+        assert "лимит" in text.lower()
+
+    def test_handle_rejection_aborts_chain(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=1, message_id=900, informative=True
+            )
+        )
+        assert e._pending_chains.get(900) is not None
+        loop.run_until_complete(e.handle_like_rejection(1234060895))
+        assert e._pending_chains == {}
