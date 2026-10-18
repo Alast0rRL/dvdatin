@@ -2188,7 +2188,7 @@ class TestCollectorAutoActions:
     """Авто-действия ❤️/👎 встраиваются в pipeline при SEMI_AUTO.
 
     Проверяем:
-    - Анкета на авто-аккаунте с решением LIKE → отправляется ❤️.
+    - Анкета на авто-аккаунте с решением LIKE → отправляется «💌 📹 🎤».
     - Анкета не на авто-аккаунте → никакого действия.
     - OBSERVE-режим → никакого действия (даже если enabled).
     Не используем реальный worker — вызываем _process_message напрямую.
@@ -2274,7 +2274,7 @@ class TestCollectorAutoActions:
             informative=informative,
         )
 
-    def test_like_decision_sends_heart_on_auto_account(self) -> None:
+    def test_like_decision_sends_composer_button_on_auto_account(self) -> None:
         from models.decision import AIDecision
 
         auto_client = AsyncMock()
@@ -2295,10 +2295,13 @@ class TestCollectorAutoActions:
         )
         asyncio.get_event_loop().run_until_complete(collector._process_message(task))
 
-        # Одно — сама реакция (❤️), затем пересылка карточки Меланхолику.
+        # Первое — открытие композера «💌 📹 🎤» (без ❤️), затем пересылка.
         assert auto_client.send_message.call_count >= 1
         args, _ = auto_client.send_message.call_args_list[0]
-        assert args[1] == "\u2764\ufe0f"  # ❤️
+        assert args[1] == MESSAGE_BUTTON_TEXT
+        assert "\u2764\ufe0f" not in [
+            c.args[1] for c in auto_client.send_message.call_args_list
+        ]
         auto_client.forward_messages.assert_awaited_once()
         collector._db.record_auto_action.assert_awaited_once_with(
             1, "LIKE", "LIKE", 1234060895, 900
@@ -2307,8 +2310,8 @@ class TestCollectorAutoActions:
     def test_informative_like_starts_message_chain_on_auto_account(self) -> None:
         """LIKE + informative + like_message → цепочка «Берем)» стартует.
 
-        Коллектор передаёт informative из решения в maybe_act; движок шлёт ❤️
-        и сразу открывает композер строкой кнопок «💌 📹 🎤» (Leo ack не шлёт),
+        Коллектор передаёт informative из решения в maybe_act; движок сразу
+        открывает композер строкой кнопок «💌 📹 🎤» (без ❤️, Leo ack не шлёт),
         записывает LIKE и заводит pending-цепочку в стадии AWAIT_PROMPT.
         """
         from models.decision import AIDecision
@@ -2331,11 +2334,10 @@ class TestCollectorAutoActions:
         )
         asyncio.get_event_loop().run_until_complete(collector._process_message(task))
 
-        # Шаг 1 — ❤️, шаг 2 — «💌 📹 🎤» (открытие композера).
+        # Сразу «💌 📹 🎤» (открытие композера), без ❤️.
         sent = [c.args[1] for c in auto_client.send_message.call_args_list]
-        assert sent[0] == "\u2764\ufe0f"
-        assert MESSAGE_BUTTON_TEXT in sent
-        assert sent.index(MESSAGE_BUTTON_TEXT) > sent.index("\u2764\ufe0f")
+        assert sent[0] == MESSAGE_BUTTON_TEXT
+        assert "\u2764\ufe0f" not in sent
         collector._db.record_auto_action.assert_awaited_once_with(
             1, "LIKE", "LIKE", 1234060895, 910
         )
@@ -2368,8 +2370,8 @@ class TestCollectorAutoActions:
         asyncio.get_event_loop().run_until_complete(collector._process_message(task))
 
         sent = [c.args[1] for c in auto_client.send_message.call_args_list]
-        assert sent[0] == "\u2764\ufe0f"
-        assert MESSAGE_BUTTON_TEXT in sent
+        assert sent[0] == MESSAGE_BUTTON_TEXT
+        assert "\u2764\ufe0f" not in sent
         engine = collector.auto_engine()
         assert engine is not None
         assert 911 in engine._pending_chains

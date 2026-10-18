@@ -1,7 +1,8 @@
-# Авто-действия (Stage 7, SEMI_AUTO): отправка ❤️/👎 на анкеты.
+# Авто-действия (Stage 7, SEMI_AUTO): реакция «💌 📹 🎤»(лайк)/👎 на анкеты.
 # Telegram-bound слой — работает только здесь (имеет доступ к клиентам).
 # Решение (LIKE/DISLIKE/REVIEW) принимает DecisionService; этот модуль лишь
-# выполняет действие (отправляет текст ❤️/👎) от имени настроенного аккаунта.
+# выполняет действие (лайк — композер + «Берем)», дизлайк — 👎) от имени
+# настроенного аккаунта. ❤️ больше НЕ шлём: он упирается в дневной лимит Leo.
 
 from __future__ import annotations
 
@@ -38,10 +39,10 @@ DISLIKE_TEXT: str = "\U0001F44E"     # 👎 — дизлайк
 # открывала композер, на который Leo отвечал «Отправь текст, видео или
 # голосовое(до 15сек)». Одиночный «💌» Leo не распознаёт.
 MESSAGE_BUTTON_TEXT: str = "\U0001F48C \U0001F4F9 \U0001F3A4"
-# Маркеры ответов Leo для цепочки «Берем)» (LIKE_AND_MESSAGE, §30).
-# Сравнение регистронезависимое. Ack Leo на текущем аккаунте НЕ приходит
-# (после ❤️ он сразу шлёт следующую карточку) — он оставлен лишь как
-# запасной ретрай кнопки, если проактивная отправка не удалась.
+# Маркеры ответов Leo про лайк для обратной совместимости (LIKE_AND_MESSAGE,
+# §30). Сравнение регистронезависимое. ❤️ больше не шлём (упирается в дневной
+# лимит), композер открывается сразу строкой кнопок, поэтому новые цепочки в
+# стадию AWAIT_LIKE_ACK не попадают — маркеры оставлены под старые записи.
 LIKE_ACK_MARKERS: tuple[str, ...] = ("лайк отправлен", "ждем ответа")
 MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
     "отправь текст",
@@ -400,9 +401,9 @@ class AutoActionEngine:
 
         notify_action = "LIKE" if decision == AIDecision.LIKE else "DISLIKE"
 
-        # Дневной лимит ❤️ исчерпан (Leo: «Слишком много ❤️ за сегодня»):
-        # голый лайк и цепочку «Берем)» НЕ шлём (все отклоняются), но 👎 —
-        # шлём, иначе лента Leo замирает (он ждёт реакцию на карточку).
+        # Дневной лимит лайков исчерпан (Leo: «Слишком много ❤️/💌 за сегодня»):
+        # цепочку «Берем)» (композер) НЕ шлём — Leo её тоже отклоняет. 👎
+        # продолжает уходить, иначе лента Leo замирает (он ждёт реакцию).
         if policy == ActionPolicy.LIKE_AND_MESSAGE:
             await self._ensure_like_limit_loaded()
             if self.likes_exhausted():
@@ -410,7 +411,7 @@ class AutoActionEngine:
                     "%H:%M", time.localtime(self._likes_exhausted_until)
                 )
                 logger.info(
-                    f"AutoAction: дневной лимит ❤️ исчерпан — лайк по карточке "
+                    f"AutoAction: дневной лимит лайков исчерпан — лайк по карточке "
                     f"{message_id} не отправляю (сброс до {until})"
                 )
                 return "LIKE_LIMIT"
@@ -460,22 +461,41 @@ class AutoActionEngine:
             return "DISLIKE"
 
         if policy == ActionPolicy.LIKE_AND_MESSAGE:
-            # Шаг 1/3 цепочки «Берем)»: ❤️. Без привязки к message_id
-            # цепочку завести нельзя, а голый ❤️ больше не шлём (LIKE_ONLY
-            # удалён) — карточку пропускаем.
+            # Лайк БЕЗ ❤️ (сердечко упирается в дневной лимит «Слишком много
+            # ❤️ за сегодня»). Вместо него сразу открываем композер строкой
+            # кнопок «💌 📹 🎤» — Leo отвечает «Отправь текст…», после чего
+            # шлём «Берем)». Без привязки к message_id цепочку завести нельзя.
             if message_id is None:
                 logger.info(
                     "AutoAction: LIKE без message_id — цепочку «Берем)» "
-                    "завести нельзя, голый лайк не шлю (chat="
+                    "завести нельзя, лайк не шлю (chat="
                     f"{self._chat_id}, profile_id={profile_id})"
                 )
                 return "GATE"
-            await self._send_locked(LIKE_TEXT)
+            chain = {
+                "profile_id": profile_id,
+                "chat_id": self._chat_id,
+                "decision": decision.value,
+                "stage": _STAGE_AWAIT_PROMPT,
+                "opened_at": time.time(),
+            }
+            self._pending_chains[message_id] = chain
+            # Шаг 1/2: сразу открываем композер. Не удалось — цепочку снимаем,
+            # ничего не отправлено (ретрая по ack больше нет: ❤️ не шлём).
+            try:
+                await self._send_locked(MESSAGE_BUTTON_TEXT)
+            except Exception as e:
+                self._pending_chains.pop(message_id, None)
+                logger.error(
+                    f"AutoAction: «Берем)» шаг 1/2 — не удалось отправить "
+                    f"{MESSAGE_BUTTON_TEXT!r}: {e}"
+                )
+                return "GATE"
             logger.info(
-                f"AutoAction: отправил {LIKE_TEXT!r} (LIKE, пункт 1 «Берем)») "
-                f"на chat={self._chat_id}"
+                f"AutoAction: отправил {MESSAGE_BUTTON_TEXT!r} (LIKE, шаг 1/2 "
+                f"«Берем)») на chat={self._chat_id}"
             )
-            self._print_action("LIKE", LIKE_TEXT)
+            self._print_action("LIKE", MESSAGE_BUTTON_TEXT)
             await self._notify(
                 "LIKE",
                 profile_id=profile_id,
@@ -483,34 +503,6 @@ class AutoActionEngine:
                 reasons=reasons,
                 card_text=card_text,
             )
-            chain = {
-                "profile_id": profile_id,
-                "chat_id": self._chat_id,
-                "decision": decision.value,
-                "stage": _STAGE_AWAIT_LIKE_ACK,
-                "opened_at": time.time(),
-            }
-            self._pending_chains[message_id] = chain
-            # Шаг 2/3: сразу открываем композер строкой кнопок «💌 📹 🎤».
-            # Ждать ack Leo нельзя — он его больше не присылает (после ❤️
-            # сразу идёт следующая карточка), из-за чего цепочка стояла
-            # только на сердечке. rate-limiter сам разнесёт отправки на
-            # interval_sec. Не удалось — стадия остаётся AWAIT_LIKE_ACK,
-            # и тогда кнопку отправим по ack Leo (ретрай в step_pending).
-            try:
-                await self._send_locked(MESSAGE_BUTTON_TEXT)
-            except Exception as e:
-                logger.error(
-                    f"AutoAction: «Берем)» шаг 2/3 — не удалось отправить "
-                    f"{MESSAGE_BUTTON_TEXT!r}: {e}"
-                )
-            else:
-                chain["stage"] = _STAGE_AWAIT_PROMPT
-                logger.info(
-                    f"AutoAction: «Берем)» шаг 2/3 — отправлено "
-                    f"{MESSAGE_BUTTON_TEXT!r} (chat={self._chat_id}, "
-                    f"карточка={message_id})"
-                )
             return "LIKE"
 
         # NO_ACTION (напр. OBSERVE/выключенные like) — ничего не шлём.
@@ -520,13 +512,12 @@ class AutoActionEngine:
         """Продвигает незавершённые цепочки «Берем)» по ответам Leo (§30).
 
         Вызывается коллектором на входящих сообщениях чата Дайвинчика
-        (НЕ PROFILE). Цепочка LIKE_AND_MESSAGE:
-          ❤️ → «💌 📹 🎤» (открытие композера, сразу после лайка) →
+        (НЕ PROFILE). Цепочка LIKE_AND_MESSAGE (без ❤️):
+          «💌 📹 🎤» (открытие композера, сразу в ``maybe_act``) →
           (Leo: «Отправь текст, видео или голосовое…») → «Берем)».
-        Кнопка композера отправляется проактивно в ``maybe_act``: Leo на
-        текущем аккаунте НЕ шлёт «Лайк отправлен, ждем ответа.», поэтому
-        ждать ack бессмысленно — цепочка на нём и вставала. Ack остался
-        только как ретрай на случай неудачной отправки кнопки.
+        Кнопка композера отправляется проактивно в ``maybe_act``. Ветка
+        ``AWAIT_LIKE_ACK`` оставлена для обратной совместимости (ретрай
+        кнопки по ack Leo), но с удалением ❤️ новые цепочки в неё не попадают.
         Идемпотентность: каждый шаг выполняется ровно один раз, потому что
         стадия переводится вперёд сразу после отправки.
         """

@@ -1330,12 +1330,17 @@ class TestCaptchas:
         captcha_sig = pending_before[0]["signature"]
         other_sig = pending_before[1]["signature"]
 
-        with patch("web.actions.send_captcha_answer_sync", return_value="SENT"):
+        with patch(
+            "web.actions.send_captcha_answer_sync", return_value="SENT"
+        ) as send_mock:
             resp = client.post(
                 f"/chat/captcha/{captcha_id}/answer",
                 data={"answer": "Пока без Premium", "csrf_token": token, "next": "/"},
             )
         assert resp.status_code == 302
+        # Ответ сохранился → отправка в Leo обязана быть вызвана (иначе веб
+        # показывал ложное «Ошибка сохранения ответа» из-за lastrowid у UPDATE).
+        send_mock.assert_called_once_with("Пока без Premium")
         assert [c["signature"] for c in sync.get_pending_captchas()] == [other_sig]
         known = sync.get_known_captchas()
         assert len(known) == 1

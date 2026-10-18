@@ -45,6 +45,9 @@ def make_prefs() -> PreferencesConfig:
             PreferenceRule(label="аниме", match=["аниме"]),
             PreferenceRule(label="переехала в спб", match=["переехала", "недавно в питер"]),
         ],
+        like_hard=[
+            PreferenceRule(label="политех", match=["политех"]),
+        ],
         scoring=ScoringPrefs(skip_is_hard=True),
     )
 
@@ -79,6 +82,20 @@ class TestPreferencesEngine:
         assert "не ищет отношений" in skip
         assert "аниме" in like
         assert "игры" in like
+
+    def test_evaluate_forced_like(self) -> None:
+        """like_hard ловит «политех» во всех формах (подстрока)."""
+        e = PreferencesEngine(make_prefs())
+        assert e.evaluate_forced_like("Учусь в Политехе на 2 курсе") == ["политех"]
+        assert e.evaluate_forced_like("Политехнический универ") == ["политех"]
+        # Нет упоминания → пусто; пустой текст → пусто.
+        assert e.evaluate_forced_like("люблю аниме") == []
+        assert e.evaluate_forced_like("") == []
+
+    def test_forced_like_negation_respected(self) -> None:
+        """«не политех» не считается срабатыванием (общий механизм отрицаний)."""
+        e = PreferencesEngine(make_prefs())
+        assert e.evaluate_forced_like("я не политех") == []
 
     def test_no_text_no_rules(self) -> None:
         e = PreferencesEngine(make_prefs())
@@ -177,6 +194,44 @@ class TestDecisionHardRules:
             filter_decision=FilterDecision.REJECT, filter_reasons=[],
             score=0.8, informative=True,
             skip_labels=[], like_labels=["игры"],
+            hard_negatives=[], positive_factors=[],
+        )
+        assert decision == AIDecision.DISLIKE
+
+    def test_hard_like_forces_like_on_short_profile(self) -> None:
+        # like_hard («политех») поднимает короткую/неинформативную анкету до LIKE.
+        svc = make_service(PreferencesEngine(make_prefs()))
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS, filter_reasons=[],
+            score=0.2, informative=False,
+            skip_labels=[], like_labels=[], hard_like_labels=["политех"],
+            hard_negatives=[], positive_factors=[],
+        )
+        assert decision == AIDecision.LIKE
+        assert any(r.startswith("USER_LIKE_HARD:") for r in reasons)
+
+    def test_hard_like_does_not_override_hard_negative(self) -> None:
+        # NO_HARD_NEGATIVE сохраняется: негатив перебивает like_hard.
+        from models.features import Feature, FeatureType
+
+        svc = make_service(PreferencesEngine(make_prefs()))
+        hn = Feature(code="H01", type=FeatureType.HARD_NEGATIVE, name="smokes", evidence="курю")
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS, filter_reasons=[],
+            score=0.8, informative=True,
+            skip_labels=[], like_labels=[], hard_like_labels=["политех"],
+            hard_negatives=[hn],
+            positive_factors=[],
+        )
+        assert decision == AIDecision.DISLIKE
+        assert any(r.startswith("HARD_NEGATIVE:") for r in reasons)
+
+    def test_hard_like_does_not_override_filter_reject(self) -> None:
+        svc = make_service(PreferencesEngine(make_prefs()))
+        decision, _, _ = svc._decide(
+            filter_decision=FilterDecision.REJECT, filter_reasons=[],
+            score=0.8, informative=True,
+            skip_labels=[], like_labels=[], hard_like_labels=["политех"],
             hard_negatives=[], positive_factors=[],
         )
         assert decision == AIDecision.DISLIKE

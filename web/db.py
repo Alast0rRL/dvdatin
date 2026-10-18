@@ -63,6 +63,20 @@ class SyncDB:
         finally:
             conn.close()
 
+    def _execute_rowcount(self, sql: str, params: tuple = ()) -> int:
+        """Как ``_execute``, но возвращает число затронутых строк.
+
+        Для UPDATE/DELETE ``lastrowid`` бесполезен (обычно 0), из-за чего
+        проверка вида ``if not db.set_...()`` ложно срабатывала как ошибка.
+        """
+        conn = self._connect()
+        try:
+            cur = conn.execute(sql, params)
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
     # ── Profiles ──────────────────────────────────────────────────
 
     def get_profiles_paginated(
@@ -874,10 +888,15 @@ class SyncDB:
             "SELECT * FROM captcha_memory WHERE id = ?", (int(captcha_id),)
         )
 
-    def set_captcha_answer(self, captcha_id: int, answer: str) -> int | None:
-        """Сохраняет выученный ответ владельца на капчу."""
+    def set_captcha_answer(self, captcha_id: int, answer: str) -> int:
+        """Сохраняет выученный ответ владельца на капчу.
+
+        Возвращает число изменённых строк (>0 — ответ записан). Не ``lastrowid``:
+        у UPDATE он 0, из-за чего веб-ответ ошибочно показывал «Ошибка
+        сохранения ответа», хотя запись проходила.
+        """
         now = datetime.now(timezone.utc).isoformat()
-        return self._execute(
+        return self._execute_rowcount(
             """
             UPDATE captcha_memory
             SET answer = ?, answered_at = ?, updated_at = ?
@@ -886,7 +905,7 @@ class SyncDB:
             (answer.strip(), now, now, int(captcha_id)),
         )
 
-    def delete_captcha(self, captcha_id: int) -> int | None:
-        return self._execute(
+    def delete_captcha(self, captcha_id: int) -> int:
+        return self._execute_rowcount(
             "DELETE FROM captcha_memory WHERE id = ?", (int(captcha_id),)
         )

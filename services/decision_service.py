@@ -103,9 +103,11 @@ class DecisionService:
         # 1. Preferences: user SKIP/LIKE
         skip_labels: list[str] = []
         like_labels: list[str] = []
+        hard_like_labels: list[str] = []
         text = profile.description or ""
         if self._prefs.enabled and text:
             skip_labels, like_labels = self._prefs.evaluate(text)
+            hard_like_labels = self._prefs.evaluate_forced_like(text)
 
         # 2. Feature Extraction (детерминированно)
         extraction = self._extractor.extract(
@@ -135,6 +137,7 @@ class DecisionService:
             meaningful_words=scoring.meaningful_words,
             skip_labels=skip_labels,
             like_labels=like_labels,
+            hard_like_labels=hard_like_labels,
             hard_negatives=scoring.hard_negatives,
             positive_factors=scoring.positive_factors,
         )
@@ -168,6 +171,7 @@ class DecisionService:
         meaningful_words: int = 0,
         skip_labels: list[str] | None = None,
         like_labels: list[str] | None = None,
+        hard_like_labels: list[str] | None = None,
         hard_negatives: list | None = None,
         positive_factors: list | None = None,
     ) -> tuple[AIDecision, float, list[str]]:
@@ -177,11 +181,17 @@ class DecisionService:
         1. HARD USER SKIP (из preferences.yaml) → DISLIKE.
         2. HARD NEGATIVE (извлечён из текста) → DISLIKE.
         3. HARD FILTER REJECT (age/city) → DISLIKE.
-        4. FILTER REVIEW → REVIEW.
-        5. PASS: информативная И чистая анкета → LIKE.
-        6. Всё остальное (короткая/неинформативная, но чистая):
+        4. HARD LIKE (like_hard из preferences.yaml, напр. «политех») → LIKE.
+        5. FILTER REVIEW → REVIEW.
+        6. PASS: информативная И чистая анкета → LIKE.
+        7. Всё остальное (короткая/неинформативная, но чистая):
            по умолчанию → REVIEW; если в preferences.yaml задано
            ``low_info.action: skip`` → DISLIKE (скипаем пустые анкеты).
+
+        HARD LIKE (шаг 4) стоит ПОСЛЕ hard-negative/filter REJECT, но ДО
+        информативности: упоминание жёсткого признака (напр. «политех»)
+        превращает короткую/неинформативную анкету в LIKE, однако
+        NO_HARD_NEGATIVE-инвариант и явный SKIP/reject его перебивают.
 
         КЛЮЧЕВОЙ ИНВАРИАНТ: без hard-negative/скипа/reject НИКОГДА не DISLIKE.
         Единственное исключение — явно разрешённое владельцем правило
@@ -190,6 +200,7 @@ class DecisionService:
         """
         hard_negatives = list(hard_negatives or [])
         positive_factors = list(positive_factors or [])
+        hard_like_labels = list(hard_like_labels or [])
         reasons: list[str] = []
 
         # 1. HARD USER SKIP
@@ -221,7 +232,19 @@ class DecisionService:
                 reasons.append(f"USER_LIKE:{like_labels[0]}")
             return AIDecision.DISLIKE, score, reasons
 
-        # 4. FILTER REVIEW
+        # 4. HARD LIKE (like_hard): жёсткий положительный признак (напр.
+        # «политех») поднимает решение до LIKE даже для короткой анкеты.
+        # Стоит ПОСЛЕ hard-negative (шаг 2) и filter REJECT (шаг 3) — те
+        # перебивают его (NO_HARD_NEGATIVE-инвариант сохраняется).
+        if hard_like_labels:
+            reasons.append(f"USER_LIKE_HARD:{hard_like_labels[0]}")
+            for fr in filter_reasons:
+                reasons.append(fr)
+            for pf in positive_factors:
+                reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
+            return AIDecision.LIKE, score, reasons
+
+        # 5. FILTER REVIEW
         if filter_decision == FilterDecision.REVIEW:
             reasons.append("FILTER_REVIEW")
             if like_labels:
@@ -230,7 +253,7 @@ class DecisionService:
                 reasons.append(f"POSITIVE:{pf.name}:{pf.evidence}")
             return AIDecision.REVIEW, score, reasons
 
-        # 5. PASS: информативная И чистая анкета → LIKE
+        # 6. PASS: информативная И чистая анкета → LIKE
         # (достаточно значимых слов ИЛИ известных признаков, и нет
         # ни одного противопоказания — проверено шагами 2-4).
         for pf in positive_factors:
@@ -241,7 +264,7 @@ class DecisionService:
             reasons.append("INFORMATIVE_CLEAN")
             return AIDecision.LIKE, score, reasons
 
-        # 6. Короткая/неинформативная, но чистая анкета.
+        # 7. Короткая/неинформативная, но чистая анкета.
         # По умолчанию → REVIEW (ждём ручного решения владельца).
         # Если владелец в preferences.yaml задал low_info.action: skip —
         # скипаем (DISLIKE → авто-👎), чтобы лента Leo не замирала.

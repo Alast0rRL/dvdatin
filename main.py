@@ -165,7 +165,8 @@ async def main() -> None:
     if preferences.enabled:
         logger.info(
             "Предпочтения scoring загружены: "
-            f"skip={len(preferences._prefs.skip)} like={len(preferences._prefs.like)}"
+            f"skip={len(preferences._prefs.skip)} like={len(preferences._prefs.like)} "
+            f"like_hard={len(preferences._prefs.like_hard)}"
         )
 
     # Deterministic Decision Engine (Stage 8): детерминированный scoring

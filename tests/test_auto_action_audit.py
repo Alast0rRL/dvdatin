@@ -102,9 +102,10 @@ class TestAutoActionAudit:
         client.send_message = AsyncMock(side_effect=RuntimeError("network"))
         engine = AutoActionEngine(client, AutoActionsConfig(enabled=True, interval_sec=0), Mode.SEMI_AUTO, 1)
         try:
-            # message_id обязателен: без него цепочку «Берем)» завести нельзя.
+            # 👎 шлётся напрямую: ошибка Telegram поднимается наверх (LIKE же
+            # глотает ошибку композера и возвращает GATE).
             asyncio.get_event_loop().run_until_complete(
-                engine.maybe_act(AIDecision.LIKE, 1, message_id=100)
+                engine.maybe_act(AIDecision.DISLIKE, 1, message_id=100)
             )
         except AutoActionError:
             pass

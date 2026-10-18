@@ -74,6 +74,7 @@ class PreferencesConfig(BaseModel):
 
     skip: list[PreferenceRule] = []
     like: list[PreferenceRule] = []
+    like_hard: list[PreferenceRule] = []
     scoring: ScoringPrefs = ScoringPrefs()
     low_info: LowInfoPrefs = LowInfoPrefs()
 
@@ -87,7 +88,7 @@ class PreferencesEngine:
     @property
     def enabled(self) -> bool:
         """Есть ли хоть одно правило."""
-        return bool(self._prefs.skip or self._prefs.like)
+        return bool(self._prefs.skip or self._prefs.like or self._prefs.like_hard)
 
     @property
     def scoring(self) -> ScoringPrefs:
@@ -120,6 +121,22 @@ class PreferencesEngine:
             if any(_match_aware(low, k) for k in r.match)
         ]
         return skip, like
+
+    def evaluate_forced_like(self, text: str) -> list[str]:
+        """Возвращает метки жёстких LIKE-правил (``like_hard``).
+
+        Срабатывание такого правила ПОДНИМАЕТ решение до LIKE (при отсутствии
+        hard-negative/filter REJECT) — в отличие от ``like``, который лишь
+        фиксирует признак. Поиск — подстроки (lowercase), как и в
+        :meth:`evaluate`; отрицания учитываются (``_match_aware``).
+        """
+        if not text:
+            return []
+        low = text.lower()
+        return [
+            r.label for r in self._prefs.like_hard
+            if any(_match_aware(low, k) for k in r.match)
+        ]
 
 
 def load_preferences(path: Path | None = None) -> PreferencesEngine:
