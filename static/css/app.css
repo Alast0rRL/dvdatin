@@ -530,6 +530,60 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .drawer__row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .drawer__label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 
+.drawer__label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+
+/* ── Консоль отладки ───────────────────────────────────────────── */
+.drawer--wide { width: min(720px, 100vw); }
+.debug__controls { display: flex; align-items: center; gap: 6px; }
+.input--mini {
+    height: 30px;
+    min-height: var(--tap);
+    padding: 0 8px;
+    font-size: 12px;
+}
+.debug__body { gap: 14px; }
+.debug__state {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text-soft);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.debug__logs {
+    max-height: 46vh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--bg-input);
+}
+.debug__log {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--line);
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.debug__log:last-child { border-bottom: 0; }
+.debug__log-meta { white-space: nowrap; color: var(--faint); }
+.debug__log-level { font-weight: 600; }
+.debug__log-msg { min-width: 0; overflow-wrap: anywhere; color: var(--text-soft); }
+.debug__log--debug .debug__log-level { color: var(--faint); }
+.debug__log--info .debug__log-level { color: var(--muted); }
+.debug__log--success .debug__log-level { color: var(--like); }
+.debug__log--warning .debug__log-level { color: var(--review); }
+.debug__log--error .debug__log-level,
+.debug__log--critical .debug__log-level { color: var(--dislike); }
+.debug__log--error,
+.debug__log--critical { background: var(--dislike-bg); }
+.debug__log--warning { background: var(--review-bg); }
+.debug__empty { padding: 14px; color: var(--muted); font-size: 12px; }
+
 /* ── Пусто / тосты ─────────────────────────────────────────────── */
 .empty { padding: 48px 16px; text-align: center; color: var(--muted); }
 .empty__icon { margin-bottom: 8px; font-size: 30px; }

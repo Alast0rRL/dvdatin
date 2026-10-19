@@ -8,6 +8,7 @@
 #   GET  /chat                   — синоним / (старые закладки)
 #   GET  /chat/feed              — фрагмент ленты + капч (in-place polling)
 #   GET  /chat/new-count         — сигнатура состояния (polling)
+#   GET  /chat/debug             — отладочный срез: логи + состояние (polling)
 #   POST /chat/captcha/<id>/answer|delete — ответ на капчу
 #   POST /chat/profile/<id>/<action>     — ручное решение по REVIEW-анкете
 #
@@ -16,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +120,41 @@ def index() -> str:
         filter_cfg=db.get_filter_config(config_path),
         preferences=_load_preferences(config_path.parent / "preferences.yaml"),
         stream_error=db.get_stream_error(),
+    )
+
+
+@chat_bp.route("/chat/debug")
+@login_required
+def debug() -> tuple:
+    """Отладочная консоль: последние логи из памяти + снимок состояния.
+
+    Помогает понять, почему лента встала (``stream_error``/``likes_exhausted``),
+    что делал бот последними действиями и не разъехались ли счётчики БД/ленты.
+    """
+    from app.logging import get_recent_logs
+
+    db = _get_db()
+    config_path = _get_config_path()
+    limit = max(1, min(request.args.get("limit", 200, type=int) or 200, 500))
+    level = (request.args.get("level") or "").strip().upper() or None
+    _, account_session = _get_accounts(config_path)
+
+    payload = {
+        "generated_at": datetime.now().strftime("%H:%M:%S"),
+        "logs": get_recent_logs(limit=limit, min_level=level),
+        "state": {
+            "mode": db.get_mode(config_path),
+            "account_session": account_session,
+            **db.get_debug_states(),
+            "counts": db.get_debug_counts(),
+            "signals": db.get_chat_signals(),
+            "last_auto_actions": db.get_recent_auto_actions(limit=10),
+        },
+    }
+    return (
+        json.dumps(payload, ensure_ascii=False),
+        200,
+        {"Content-Type": "application/json; charset=utf-8"},
     )
 
 

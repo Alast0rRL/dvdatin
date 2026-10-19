@@ -1895,3 +1895,76 @@ class TestChatFeedDedup:
         card = _card_html(html, 3)
         assert 'data-decision="DISLIKE"' in card
         assert "👎 DISLIKE</span>" not in card, "бейдж должен быть скрыт"
+
+
+# ── Debug console (Stage 9) ───────────────────────────────────────
+
+class TestDebugConsole:
+    """Панель отладки: снимок состояния + логи из памяти."""
+
+    def test_debug_requires_login(self, client) -> None:
+        resp = client.get("/chat/debug")
+        assert resp.status_code == 302
+        assert "/login" in resp.headers.get("Location", "")
+
+    def test_debug_payload_shape(self, client, sync_db) -> None:
+        _login(client)
+        resp = client.get("/chat/debug")
+        assert resp.status_code == 200
+        data = json.loads(resp.get_data(as_text=True))
+        assert isinstance(data["logs"], list)
+        state = data["state"]
+        for key in (
+            "mode", "account_session", "stream_error", "likes_exhausted_until",
+            "counts", "signals", "last_auto_actions",
+        ):
+            assert key in state, f"нет ключа {key} в состоянии отладки"
+        assert state["mode"] == "OBSERVE"
+        assert state["counts"]["raw_messages"] >= 3
+        assert state["counts"]["profiles"] >= 3
+
+    def test_debug_captures_logs_and_filters_level(self, sync_db) -> None:
+        import app.logging as logging_mod
+        from loguru import logger
+
+        logging_mod._buffer_sink_id = None
+        logging_mod._ensure_buffer_sink()
+        with logging_mod._buffer_lock:
+            logging_mod.LOG_BUFFER.clear()
+
+        logger.info("dvai-debug-info")
+        logger.error("dvai-debug-error")
+
+        msgs = [e["message"] for e in logging_mod.get_recent_logs()]
+        assert "dvai-debug-info" in msgs
+        assert "dvai-debug-error" in msgs
+
+        err_msgs = [e["message"] for e in logging_mod.get_recent_logs(min_level="ERROR")]
+        assert "dvai-debug-error" in err_msgs
+        assert "dvai-debug-info" not in err_msgs
+
+    def test_debug_level_query_param(self, client, sync_db) -> None:
+        import app.logging as logging_mod
+        from loguru import logger
+
+        logging_mod._buffer_sink_id = None
+        logging_mod._ensure_buffer_sink()
+        with logging_mod._buffer_lock:
+            logging_mod.LOG_BUFFER.clear()
+        logger.info("dvai-debug-info-2")
+        logger.error("dvai-debug-error-2")
+
+        _login(client)
+        resp = client.get("/chat/debug?level=ERROR")
+        assert resp.status_code == 200
+        data = json.loads(resp.get_data(as_text=True))
+        assert data["logs"], "должны быть ERROR-логи"
+        assert {e["level"] for e in data["logs"]} <= {"ERROR", "CRITICAL"}
+        assert any(e["message"] == "dvai-debug-error-2" for e in data["logs"])
+
+    def test_debug_button_and_drawer_in_shell(self, client, sync_db) -> None:
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="debug-open"' in html
+        assert 'id="debug-drawer"' in html
+        assert 'id="debug-logs"' in html

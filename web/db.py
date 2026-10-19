@@ -868,6 +868,44 @@ class SyncDB:
             "stream_error_at": (self.get_stream_error() or {}).get("at") or "",
         }
 
+    # ── Debug console (Stage 9) ───────────────────────────────────
+
+    def get_debug_counts(self) -> dict[str, int]:
+        """Счётчики ключевых таблиц — сводка для панели отладки."""
+
+        def _count(table: str) -> int:
+            row = self._query_one(f"SELECT COUNT(*) AS c FROM {table}")
+            return int(row["c"] or 0)
+
+        pending = self._query_one(
+            "SELECT COUNT(*) AS c FROM captcha_memory WHERE answer IS NULL"
+        )
+        return {
+            "raw_messages": _count("raw_messages"),
+            "sent_messages": _count("sent_messages"),
+            "auto_actions": _count("auto_actions_log"),
+            "profiles": self.get_profiles_count(),
+            "profile_messages": _count("profile_messages"),
+            "pending_captchas": int(pending["c"] or 0),
+        }
+
+    def get_recent_auto_actions(self, limit: int = 12) -> list[dict[str, Any]]:
+        """Последние авто-действия (для отладки «почему лента встала»)."""
+        rows = self._query(
+            "SELECT id, profile_id, action, decision, chat_id, sent_at, "
+            "telegram_message_id, message_text "
+            "FROM auto_actions_log ORDER BY sent_at DESC, id DESC LIMIT ?",
+            (int(limit),),
+        )
+        return [dict(r) for r in rows]
+
+    def get_debug_states(self) -> dict[str, Any]:
+        """Служебные значения ``app_state`` (сбои, лимиты) для панели отладки."""
+        return {
+            "stream_error": self.get_stream_error(),
+            "likes_exhausted_until": self.get_app_state("likes_exhausted_until") or "",
+        }
+
     def get_captcha_by_id(self, captcha_id: int) -> dict[str, Any] | None:
         return self.get_captcha(int(captcha_id))
 

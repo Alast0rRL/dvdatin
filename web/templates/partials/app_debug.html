@@ -1,0 +1,31 @@
+{# ── Отладка: выдвижная консоль на том же экране (Stage 9) ──
+   Показывает последние логи из памяти (app/logging.LOG_BUFFER) и снимок
+   состояния: режим, аккаунт, сбои потока, лимит ❤️, счётчики и последние
+   авто-действия. Обновляется из /chat/debug (app.js) без перезагрузки. #}
+<div class="drawer-backdrop" id="debug-backdrop" hidden></div>
+<aside class="drawer drawer--wide" id="debug-drawer" aria-label="Отладка" hidden>
+    <div class="drawer__head">
+        <h2>Отладка</h2>
+        <div class="debug__controls">
+            <select id="debug-level" class="input input--mini" aria-label="Минимальный уровень логов">
+                <option value="">Все</option>
+                <option value="WARNING">WARNING+</option>
+                <option value="ERROR">ERROR</option>
+            </select>
+            <button type="button" class="icon-btn" id="debug-refresh" title="Обновить" aria-label="Обновить">⟳</button>
+            <button type="button" class="icon-btn" id="debug-close" aria-label="Закрыть">✕</button>
+        </div>
+    </div>
+
+    <div class="drawer__body debug__body">
+        <section class="drawer__section">
+            <h3>Состояние</h3>
+            <pre class="debug__state" id="debug-state">Загрузка…</pre>
+        </section>
+
+        <section class="drawer__section">
+            <h3>Логи</h3>
+            <div class="debug__logs" id="debug-logs">Загрузка…</div>
+        </section>
+    </div>
+</aside>

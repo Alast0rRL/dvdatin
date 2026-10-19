@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (758 total, no linter/formatter configured)
+# Run all tests (763 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -68,7 +68,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (27), test_auto_action (97), test_auto_action_audit (5), test_captcha_memory (11), test_collector (145), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (110) → **758 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (27), test_auto_action (97), test_auto_action_audit (5), test_captcha_memory (11), test_collector (145), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (115) → **763 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -135,6 +135,14 @@ Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)*
 - **Сигнал ответа** — взаимный лайк: MATCH-сообщение «Начинай общаться 👉 [Имя]» → `Database.record_match_response(name, chat_id, tm_id, telegram_username=...)`. Привязка к профилю по имени (`_resolve_profile_by_name`): регистронезависимо по-настоящему (Python `lower`), приоритет — профили со свежими записями `auto_actions_log`∪`sent_messages`. Дубликаты на карточку отсекаются UNIQUE-индексом `(chat_id, telegram_message_id)` (INSERT OR IGNORE). Заодно проставляет `responded=1` в `like_outcomes`.
 - **Отчёты** (Telegram-free, `AnalyticsService` + `Database`): `get_message_response_stats()` — по каждому тексту `sent` (уникальных профилей) / `responded` / `rate`; `get_top_liked_profiles(limit)` — топ по лайкам (из `like_outcomes`, авто∪ручные) + ответили ли + последнее сообщение при лайке. Команды ControlBot `/msgs` и `/top` (+ inline-кнопки «💬 Сообщения»/«💖 Топ лайков»).
 - **Правила**: аналитика read-only и не влияет на действия (LIKE/MESSAGE всё равно шлются); ошибки БД в записи ответов/исходящих не ломают pipeline (RAW уже сохранён).
+
+## Debug Console (Stage 9)
+
+- **Цель**: один экран для диагностики «почему бот встал / почему анкеты в TG и на сайте расходятся» — без ssh и journalctl.
+- **Источник логов**: `app/logging.py` держит кольцевой буфер `LOG_BUFFER` (`deque(maxlen=500)`) — sink `_buffer_sink` регистрируется в `setup_logging` (и лениво из `get_recent_logs`). Плюс stdlib→loguru перехват (`_InterceptHandler`, уровень `WARNING`), чтобы в буфер попадали ошибки сторонних библиотек (asyncio/telethon/werkzeug), которые Loguru сам по себе не видит. Формат записи: `{ts, level, no, name, message}`.
+- **API**: `GET /chat/debug` (`web/blueprints/chat.py`) — `login_required`, JSON: `logs` (из `app.logging.get_recent_logs(limit, min_level)`) + `state` (`mode`, `account_session`, `stream_error`, `likes_exhausted_until`, `counts`, `signals`, `last_auto_actions`). Query: `limit` (1..500, default 200), `level` (минимальный уровень: `WARNING`/`ERROR`…). Данные состояния — из `web/db.py`: `get_debug_counts`, `get_debug_states`, `get_recent_auto_actions`.
+- **UI**: кнопка `#debug-open` в топбаре (`web/templates/app.html`) открывает второй drawer `partials/app_debug.html` (`#debug-drawer`, `#debug-backdrop`, класс `.drawer--wide`) с блоком «Состояние» (`#debug-state`, `pre`) и списком логов `#debug-logs` (строки `.debug__log--<level>`, цвета — через переменные палитры). JS (`static/js/app.js`): `openDebug`/`closeDebug`, авто-обновление `refreshDebug` раз в `POLL_MS`, фильтр уровня `#debug-level`, Esc закрывает debug первым (иначе — drawer настроек). Рендер — только через `textContent`/DOM (без `innerHTML` из данных логов).
+- **Тесты**: `tests/test_web.py::TestDebugConsole` (login-gate, форма payload, фильтр уровня, кнопка+drawer в шелле).
 
 ## Control Panel (Stage 7.5)
 

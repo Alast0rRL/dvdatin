@@ -696,6 +696,11 @@ tests/test_web.py::TestChatFeedDedup::test_reaction_shown_once_not_twice
 tests/test_web.py::TestCSRF::test_login_requires_csrf
 tests/test_web.py::TestCSRF::test_logout_requires_csrf
 tests/test_web.py::TestCSRF::test_settings_update_requires_csrf
+tests/test_web.py::TestDebugConsole::test_debug_button_and_drawer_in_shell
+tests/test_web.py::TestDebugConsole::test_debug_captures_logs_and_filters_level
+tests/test_web.py::TestDebugConsole::test_debug_level_query_param
+tests/test_web.py::TestDebugConsole::test_debug_payload_shape
+tests/test_web.py::TestDebugConsole::test_debug_requires_login
 tests/test_web.py::TestLogin::test_login_page_renders
 tests/test_web.py::TestLogin::test_login_success
 tests/test_web.py::TestLogin::test_login_wrong_password

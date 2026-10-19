@@ -69,7 +69,13 @@
     if (closeBtn) closeBtn.addEventListener('click', closeDrawer);
     if (backdrop) backdrop.addEventListener('click', closeDrawer);
     document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') closeDrawer();
+        if (e.key === 'Escape') {
+            if (debugDrawer && !debugDrawer.hidden) {
+                closeDebug();
+            } else {
+                closeDrawer();
+            }
+        }
     });
 
     /* ── Тосты живут 5 секунд ────────────────────────────────────── */
@@ -260,9 +266,134 @@
             .catch(function () { /* тихо */ });
     }
 
+    /* ── Debug-консоль (Stage 9) ─────────────────────────────────── */
+    /* Снимок состояния + последние логи из памяти (/chat/debug).
+       Обновляется, пока панель открыта, — чтобы ловить «прямо сейчас». */
+    var debugDrawer = document.getElementById('debug-drawer');
+    var debugBackdrop = document.getElementById('debug-backdrop');
+    var debugStateBox = document.getElementById('debug-state');
+    var debugLogsBox = document.getElementById('debug-logs');
+    var debugOpenBtn = document.getElementById('debug-open');
+    var debugTimer = null;
+
+    function openDebug() {
+        if (!debugDrawer) return;
+        debugDrawer.hidden = false;
+        if (debugBackdrop) debugBackdrop.hidden = false;
+        document.body.style.overflow = 'hidden';
+        if (debugOpenBtn) debugOpenBtn.setAttribute('aria-expanded', 'true');
+        refreshDebug();
+        if (debugTimer) clearInterval(debugTimer);
+        debugTimer = setInterval(refreshDebug, POLL_MS);
+        var close = document.getElementById('debug-close');
+        if (close) close.focus();
+    }
+
+    function closeDebug() {
+        if (!debugDrawer) return;
+        debugDrawer.hidden = true;
+        if (debugBackdrop) debugBackdrop.hidden = true;
+        document.body.style.overflow = '';
+        if (debugOpenBtn) debugOpenBtn.setAttribute('aria-expanded', 'false');
+        if (debugTimer) { clearInterval(debugTimer); debugTimer = null; }
+    }
+
+    function fmtTs(state) {
+        return (state && state.generated_at) ? ' снимок ' + state.generated_at : '';
+    }
+
+    function renderDebugState(state) {
+        if (!debugStateBox) return;
+        state = state || {};
+        var counts = state.counts || {};
+        var signals = state.signals || {};
+        var err = state.stream_error;
+        var lines = [
+            'режим: ' + (state.mode || '—') + '   аккаунт: ' + (state.account_session || '—'),
+            'сбой потока: ' + (err ? (err.reason || err.message || 'да') + ' @ ' + (err.at || '') : 'нет'),
+            '❤️ лимит до: ' + (state.likes_exhausted_until || '—'),
+            'счётчики: raw=' + (counts.raw_messages || 0) +
+                ' sent=' + (counts.sent_messages || 0) +
+                ' auto=' + (counts.auto_actions || 0) +
+                ' profiles=' + (counts.profiles || 0) +
+                ' pm=' + (counts.profile_messages || 0) +
+                ' капчи=' + (counts.pending_captchas || 0),
+            'сигналы: raw=' + (signals.max_raw || '—') +
+                ' sent=' + (signals.max_sent || '—') +
+                ' auto=' + (signals.max_auto || '—')
+        ];
+        var actions = state.last_auto_actions || [];
+        if (actions.length) {
+            lines.push('', 'последние авто-действия:');
+            actions.forEach(function (a) {
+                lines.push('  ' + (a.sent_at || '') + '  ' + (a.action || '') +
+                    ' / ' + (a.decision || '') + '  #' + (a.profile_id == null ? '?' : a.profile_id) +
+                    '  ' + (a.message_text || ''));
+            });
+        }
+        debugStateBox.textContent = fmtTs(state) + '\n' + lines.join('\n');
+    }
+
+    function renderDebugLogs(logs) {
+        if (!debugLogsBox) return;
+        debugLogsBox.textContent = '';
+        if (!logs || !logs.length) {
+            var empty = document.createElement('div');
+            empty.className = 'debug__empty';
+            empty.textContent = 'Нет записей (поднимите уровень или подождите).';
+            debugLogsBox.appendChild(empty);
+            return;
+        }
+        logs.forEach(function (entry) {
+            var row = document.createElement('div');
+            row.className = 'debug__log debug__log--' + (entry.level || 'info').toLowerCase();
+            var meta = document.createElement('span');
+            meta.className = 'debug__log-meta';
+            var lvl = document.createElement('span');
+            lvl.className = 'debug__log-level';
+            lvl.textContent = (entry.level || '').padEnd(8);
+            var ts = document.createTextNode((entry.ts || '').slice(-8) + ' ');
+            meta.appendChild(ts);
+            meta.appendChild(lvl);
+            var msg = document.createElement('span');
+            msg.className = 'debug__log-msg';
+            msg.textContent = entry.message || '';
+            row.appendChild(meta);
+            row.appendChild(msg);
+            debugLogsBox.appendChild(row);
+        });
+        debugLogsBox.scrollTop = debugLogsBox.scrollHeight;
+    }
+
+    function refreshDebug() {
+        if (!debugDrawer || debugDrawer.hidden) return;
+        var levelSel = document.getElementById('debug-level');
+        var level = levelSel ? levelSel.value : '';
+        var url = '/chat/debug?limit=300' + (level ? '&level=' + encodeURIComponent(level) : '');
+        fetch(url, {headers: {'X-Requested-With': 'fetch'}})
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                renderDebugState(data.state);
+                renderDebugLogs(data.logs);
+            })
+            .catch(function () { /* тихо: следующий тик */ });
+    }
+
+    if (debugOpenBtn) debugOpenBtn.addEventListener('click', openDebug);
+    var debugCloseBtn = document.getElementById('debug-close');
+    if (debugCloseBtn) debugCloseBtn.addEventListener('click', closeDebug);
+    if (debugBackdrop) debugBackdrop.addEventListener('click', closeDebug);
+    var debugRefreshBtn = document.getElementById('debug-refresh');
+    if (debugRefreshBtn) debugRefreshBtn.addEventListener('click', refreshDebug);
+    var debugLevelSel = document.getElementById('debug-level');
+    if (debugLevelSel) debugLevelSel.addEventListener('change', refreshDebug);
+
     if (app) {
         setInterval(poll, POLL_MS);
         applyFilter();
-        window.dvai = {refreshFeed: refreshFeed, openDrawer: openDrawer, closeDrawer: closeDrawer};
+        window.dvai = {
+            refreshFeed: refreshFeed, openDrawer: openDrawer, closeDrawer: closeDrawer,
+            openDebug: openDebug, closeDebug: closeDebug
+        };
     }
 })();
