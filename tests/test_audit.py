@@ -443,3 +443,83 @@ class TestAudit12Regression:
 
         prof2 = loop.run_until_complete(svc.upsert_profile(p(msg_id=101)))
         assert prof2.status == "SEEN"
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 13. Разметка истории raw_messages по аккаунтам (лента-зеркало)
+# ═════════════════════════════════════════════════════════════════════
+
+class TestAudit13RawAccountBackfill:
+    """Legacy '' размечается по аккаунтам: исходящие по sender_id, входящие по
+    ближайшему диапазону id. Иначе лента двух аккаунтов — «супер-чат»."""
+
+    def _raw(self, db: Database, *, tm: int, outgoing: bool, sender_id: int,
+             acc: str = "") -> None:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.save_raw_message(
+                telegram_message_id=tm, chat_id=1234060895,
+                sender_id=sender_id, sender_username="", sender_name="",
+                message_date="2025-03-01T10:00:00", text="x",
+                raw_entities="[]", reply_markup="[]", media_type="",
+                received_at="2025-03-01T10:00:00", is_outgoing=outgoing,
+                account_session=acc,
+            )
+        )
+
+    def _sessions(self, db: Database) -> dict[int, str]:
+        loop = asyncio.get_event_loop()
+        cursor = loop.run_until_complete(
+            db._connection.execute(
+                "SELECT telegram_message_id, account_session FROM raw_messages"
+            )
+        )
+        rows = loop.run_until_complete(cursor.fetchall())
+        return {int(tm): acc for tm, acc in rows}
+
+    def test_incoming_attributed_by_nearest_id_range(self, db: Database) -> None:
+        """Входящие размечаются по ближайшему диапазону исходящих аккаунта."""
+        loop = asyncio.get_event_loop()
+        # dvai: исходящие 708000..739000; dvai_2: 22000..33000.
+        self._raw(db, tm=708100, outgoing=True, sender_id=1753676469)
+        self._raw(db, tm=22200, outgoing=True, sender_id=8525808108)
+        self._raw(db, tm=720000, outgoing=False, sender_id=1234060895)
+        self._raw(db, tm=25000, outgoing=False, sender_id=1234060895)
+        marked = loop.run_until_complete(
+            db.backfill_raw_account_session(
+                {1753676469: "dvai", 8525808108: "dvai_2"}
+            )
+        )
+        assert marked == 4
+        got = self._sessions(db)
+        assert got[720000] == "dvai"
+        assert self._sessions(db)[25000] == "dvai_2"
+
+    def test_outgoing_attributed_by_sender_id(self, db: Database) -> None:
+        loop = asyncio.get_event_loop()
+        self._raw(db, tm=708100, outgoing=True, sender_id=1753676469)
+        self._raw(db, tm=22200, outgoing=True, sender_id=8525808108)
+        loop.run_until_complete(
+            db.backfill_raw_account_session(
+                {1753676469: "dvai", 8525808108: "dvai_2"}
+            )
+        )
+        s = self._sessions(db)
+        assert s[708100] == "dvai"
+        assert s[22200] == "dvai_2"
+
+    def test_already_attributed_rows_untouched(self, db: Database) -> None:
+        """Строки с уже проставленной сессией не перезаписываются."""
+        loop = asyncio.get_event_loop()
+        self._raw(db, tm=25000, outgoing=False, sender_id=1234060895, acc="dvai_2")
+        marked = loop.run_until_complete(
+            db.backfill_raw_account_session({1753676469: "dvai"})
+        )
+        assert marked == 0
+        assert self._sessions(db)[25000] == "dvai_2"
+
+    def test_noop_without_sender_map(self, db: Database) -> None:
+        loop = asyncio.get_event_loop()
+        self._raw(db, tm=25000, outgoing=False, sender_id=1234060895)
+        assert loop.run_until_complete(db.backfill_raw_account_session({})) == 0
+

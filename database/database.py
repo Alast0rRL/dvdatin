@@ -663,6 +663,75 @@ class Database:
             await self._connection.commit()
             logger.info("Миграция: raw_messages.account_session добавлен")
 
+    async def backfill_raw_account_session(
+        self, sender_to_session: dict[int, str],
+    ) -> int:
+        """Размечает исторические RAW (``account_session=''``) по аккаунтам.
+
+        Каждый аккаунт слушает ОДИН и тот же чат Лео, но пространства
+        ``telegram_message_id`` у аккаунтов свои (у нас ``dvai`` ~708k, ``dvai_2``
+        ~22k). До появления колонки лента показывала сообщения обоих аккаунтов
+        сразу — «супер-чат», не совпадающий ни с одним Telegram-чатом.
+
+        Разметка legacy:
+          * исходящие — по ``sender_id`` (это user id аккаунта);
+          * входящие — по ближайшему диапазону id исходящих аккаунта
+            (диапазоны разнесены, разрыв огромный — привязка однозначна).
+
+        ``sender_to_session`` строится в ``main.py`` из ``client.get_me()``.
+        No-op для однопользовательских конфигов / когда размечено нечего.
+        """
+        if not sender_to_session:
+            return 0
+
+        cursor = await self._connection.execute(
+            """SELECT sender_id, MIN(telegram_message_id), MAX(telegram_message_id)
+               FROM raw_messages WHERE is_outgoing = 1 GROUP BY sender_id"""
+        )
+        ranges: list[tuple[str, int, int]] = []
+        for sender_id, mn, mx in await cursor.fetchall():
+            session = sender_to_session.get(int(sender_id or 0))
+            if session:
+                ranges.append((session, int(mn), int(mx)))
+        if not ranges:
+            return 0
+
+        def _nearest(tm: int) -> str | None:
+            best: str | None = None
+            best_dist: int | None = None
+            for session, mn, mx in ranges:
+                dist = 0 if mn <= tm <= mx else min(abs(tm - mn), abs(tm - mx))
+                if best_dist is None or dist < best_dist:
+                    best, best_dist = session, dist
+            return best
+
+        cursor = await self._connection.execute(
+            """SELECT id, telegram_message_id, is_outgoing, sender_id
+               FROM raw_messages WHERE account_session IS NULL OR account_session = ''"""
+        )
+        updates: list[tuple[str, int]] = []
+        for row_id, tm, is_out, sender_id in await cursor.fetchall():
+            session = None
+            if is_out:
+                session = sender_to_session.get(int(sender_id or 0))
+            if session is None:
+                session = _nearest(int(tm or 0))
+            if session:
+                updates.append((session, int(row_id)))
+        if not updates:
+            return 0
+
+        await self._connection.executemany(
+            "UPDATE raw_messages SET account_session = ? WHERE id = ?", updates
+        )
+        await self._connection.commit()
+        logger.info(
+            f"Миграция: raw_messages.account_session размечен "
+            f"({len(updates)} исторических строк)"
+        )
+        return len(updates)
+
+
     async def _ensure_raw_processed_column(self) -> None:
         """Добавляет processed_at и помечает исторические RAW как обработанные.
 

@@ -70,6 +70,10 @@ tests/test_audit.py::TestAudit11Concurrency::test_sequential_messages_no_duplica
 tests/test_audit.py::TestAudit12Regression::test_empty_description_not_overwrite
 tests/test_audit.py::TestAudit12Regression::test_fingerprint_in_db
 tests/test_audit.py::TestAudit12Regression::test_status_transitions
+tests/test_audit.py::TestAudit13RawAccountBackfill::test_already_attributed_rows_untouched
+tests/test_audit.py::TestAudit13RawAccountBackfill::test_incoming_attributed_by_nearest_id_range
+tests/test_audit.py::TestAudit13RawAccountBackfill::test_noop_without_sender_map
+tests/test_audit.py::TestAudit13RawAccountBackfill::test_outgoing_attributed_by_sender_id
 tests/test_audit.py::TestAudit1MultipleMessages::test_message_count_reflects
 tests/test_audit.py::TestAudit1MultipleMessages::test_three_messages_one_profile
 tests/test_audit.py::TestAudit2UniqueConstraint::test_constraint_exists

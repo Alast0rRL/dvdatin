@@ -148,6 +148,30 @@ async def main() -> None:
         await db.close()
         return
 
+    # Разметка истории raw_messages по аккаунтам: каждый аккаунт слушает один и
+    # тот же чат Лео, но пространства message_id у них свои. Без этого лента
+    # показывала бы оба аккаунта разом (не совпадая ни с одним TG-чатом).
+    # sender_id исходящих = user id аккаунта, поэтому строим карту из get_me().
+    if len(clients) > 1:
+        sender_to_session: dict[int, str] = {}
+        for client, sess in zip(clients, client_sessions):
+            try:
+                me = await client.get_me()
+                if me and getattr(me, "id", None):
+                    sender_to_session[int(me.id)] = sess
+            except Exception as e:
+                logger.error(f"Не удалось получить user id аккаунта {sess!r}: {e}")
+        if len(sender_to_session) > 1:
+            try:
+                marked = await db.backfill_raw_account_session(sender_to_session)
+                if marked:
+                    logger.info(
+                        f"RAW размечены по аккаунтам: {marked} строк "
+                        f"({', '.join(f'{s}:{i}' for i, s in sender_to_session.items())})"
+                    )
+            except Exception as e:
+                logger.error(f"Не удалось разметить RAW по аккаунтам: {e}")
+
     if config.dvinchik.chat_id == 0:
         logger.info(
             "dvinchik.chat_id не установлен. "
