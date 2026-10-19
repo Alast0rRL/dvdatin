@@ -158,6 +158,11 @@ class AutoActionEngine:
         self._like_limit_loaded: bool = False
 
     @property
+    def account_session(self) -> str:
+        """Аккаунт-исполнитель (session) движка авто-действий."""
+        return self._account_session
+
+    @property
     def mode(self) -> Mode:
         """Режим работы движка (OBSERVE/SEMI_AUTO/AUTO)."""
         return self._mode

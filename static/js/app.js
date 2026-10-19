@@ -181,19 +181,35 @@
         window.scrollTo({top: document.body.offsetHeight, behavior: 'smooth'});
     }
 
-    function setLoadMoreState(page, totalPages) {
+    /* Сколько страниц ленты сейчас показано (1 = только свежие). Храним в
+       dataset — перерисовка по polling НЕ должна схлопывать загруженную
+       историю обратно к первой странице. */
+    function loadedPages() {
+        var n = parseInt((app && app.dataset.pagesLoaded) || '1', 10);
+        return (!n || isNaN(n) || n < 1) ? 1 : n;
+    }
+    function setLoadedPages(n) {
+        if (app) app.dataset.pagesLoaded = String(Math.max(1, n || 1));
+    }
+    setLoadedPages(loadedPages());
+
+    function fetchPage(page) {
+        return fetch('/chat/feed?page=' + page).then(function (r) { return r.json(); });
+    }
+
+    function setLoadMoreState(pagesLoaded, totalPages) {
         if (!feedMore) return;
         var btn = feedMore.querySelector('#load-older');
         if (!btn) {
-            if (page > 1 && totalPages > 1) {
+            if (pagesLoaded >= 1 && totalPages > pagesLoaded) {
                 feedMore.innerHTML = '<button type="button" class="btn btn--ghost" id="load-older" ' +
-                    'data-page="' + (page + 1) + '">Показать более ранние</button>';
+                    'data-page="' + (pagesLoaded + 1) + '">Показать более ранние</button>';
                 bindLoadMore();
             }
             return;
         }
-        btn.dataset.page = page + 1;
-        btn.hidden = page >= totalPages;
+        btn.dataset.page = pagesLoaded + 1;
+        btn.hidden = pagesLoaded >= totalPages;
     }
 
     function bindLoadMore() {
@@ -204,12 +220,12 @@
             var next = parseInt(btn.dataset.page || '2', 10);
             if (!next || isNaN(next)) return;
             var before = document.body.offsetHeight;
-            fetch('/chat/feed?page=' + next)
-                .then(function (r) { return r.json(); })
+            fetchPage(next)
                 .then(function (data) {
                     // Страница 1 = свежие, дальше — более ранние → вставляем сверху.
                     feed.insertAdjacentHTML('afterbegin', data.feed);
-                    setLoadMoreState(next, data.total_pages);
+                    setLoadedPages(next);
+                    setLoadMoreState(next, data.total_pages || 1);
                     bindSuggestions(feed);
                     sweepBrokenImages(feed);
                     applyFilter();
@@ -220,34 +236,54 @@
     }
     bindLoadMore();
 
-    function refreshFeed(page, keepScroll) {
-        var stay = keepScroll === true;
+    /* Полная перерисовка ВСЕХ загруженных страниц. Раньше polling заменял
+       ленту только первой страницей — вся подгруженная история исчезала, а
+       позиция скролла сбрасывалась («лента съезжает»). Теперь тянем страницы
+       1..N и склеиваем: сверху — самые старые. */
+    function refreshFeed() {
+        var wasAtBottom = atBottom();
         var before = document.body.offsetHeight;
-        return fetch('/chat/feed?page=' + page)
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
+        var n = loadedPages();
+        var requests = [];
+        for (var p = 1; p <= n; p++) requests.push(fetchPage(p));
+        return Promise.all(requests)
+            .then(function (pages) {
+                var first = pages[0] || {};
+                var totalPages = first.total_pages || 1;
+                if (n > totalPages) {
+                    n = totalPages;
+                    pages = pages.slice(0, n);
+                }
+                setLoadedPages(n);
                 var banner = document.getElementById('stream-banner');
-                if (banner && typeof data.banner === 'string') {
-                    banner.innerHTML = data.banner;
+                if (banner && typeof first.banner === 'string') {
+                    banner.innerHTML = first.banner;
                 }
                 var oldPending = document.getElementById('pending');
                 if (oldPending) oldPending.remove();
-                if (data.pending) {
-                    feed.insertAdjacentHTML('beforebegin', data.pending);
+                if (first.pending) {
+                    feed.insertAdjacentHTML('beforebegin', first.pending);
                 }
-                feed.innerHTML = data.feed;
+                // pages[i] = страница i+1; визуально сверху старые (страница N).
+                var html = '';
+                for (var i = n - 1; i >= 0; i--) html += pages[i].feed;
+                feed.innerHTML = html;
                 if (app) {
-                    app.dataset.page = data.page;
-                    app.dataset.totalPages = data.total_pages;
+                    app.dataset.page = String(first.page || 1);
+                    app.dataset.totalPages = String(totalPages);
                 }
-                setLoadMoreState(data.page, data.total_pages);
+                setLoadMoreState(n, totalPages);
                 bindSuggestions(document);
                 sweepBrokenImages(feed);
                 applyFilter();
-                if (stay) {
-                    window.scrollTo(0, window.scrollY + (document.body.offsetHeight - before));
-                } else if (atBottom()) {
+                if (wasAtBottom) {
                     scrollToBottom();
+                } else {
+                    // Пользователь читает историю — держим позицию по дельте
+                    // высоты, чтобы новые сообщения снизу не дёргали вид.
+                    window.scrollTo(
+                        0, window.scrollY + (document.body.offsetHeight - before)
+                    );
                 }
             })
             .catch(function () { /* не сеть — ждём следующий тик */ });
@@ -260,7 +296,7 @@
             .then(function (sig) {
                 if (sig && sig.signature && sig.signature !== app.dataset.sig) {
                     app.dataset.sig = sig.signature;
-                    return refreshFeed(1, false);
+                    return refreshFeed();
                 }
             })
             .catch(function () { /* тихо */ });

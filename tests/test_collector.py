@@ -482,8 +482,10 @@ class TestMediaLinking:
         asyncio.get_event_loop().run_until_complete(
             collector._handle_new_message(self._photo_event(1234060895, 683841))
         )
-        # Контекст остаётся профилем 683833, media не перезаписывает его
-        assert collector._pending_profiles[1234060895] == 683833
+        # Контекст остаётся профилем 683833, media не перезаписывает его.
+        # Ключ — (account_session, chat_id): у мока event.client не совпадает с
+        # клиентом коллектора, поэтому сессия ''.
+        assert collector._pending_profiles[("", 1234060895)] == 683833
 
     def test_foreign_media_never_linked(self) -> None:
         client = AsyncMock()
@@ -496,8 +498,8 @@ class TestMediaLinking:
             collector._handle_new_message(event)
         )
         db.save_raw_message.assert_not_called()
-        assert 1234060895 not in collector._pending_profiles or \
-            collector._pending_profiles.get(-1001225291649) is None
+        assert ("", 1234060895) not in collector._pending_profiles or \
+            collector._pending_profiles.get(("", -1001225291649)) is None
 
 
 # ==================== IDEMPOTENCY (C1 + C2) ====================
@@ -642,8 +644,10 @@ class TestRawWorker:
         loop = asyncio.get_event_loop()
         event = make_event(text="wimx, 18, Санкт-Петербург", msg_id=100)
         loop.run_until_complete(collector._handle_new_message(event))
-        # Хендлер только ставит в очередь — сам pipeline НЕ выполняется
-        assert collector._dedup.is_known((1234060895, 100)) is True
+        # Хендлер только ставит в очередь — сам pipeline НЕ выполняется.
+        # Ключ дедупа — (account_session, chat_id, msg_id); у мока event.client
+        # не совпадает с клиентом коллектора, поэтому сессия ''.
+        assert collector._dedup.is_known(("", 1234060895, 100)) is True
         process.assert_not_called()
 
     def test_message_enqueued(self) -> None:

@@ -78,11 +78,14 @@ class ProfileService:
         return profile
 
     async def find_profile_by_message(
-        self, chat_id: int, telegram_message_id: int,
+        self,
+        chat_id: int,
+        telegram_message_id: int,
+        account_session: str | None = None,
     ) -> Profile | None:
-        """Ищет профиль по telegram message."""
+        """Ищет профиль по telegram message (при заданной сессии — в её рамках)."""
         row = await self._db.find_profile_by_message(
-            chat_id, telegram_message_id,
+            chat_id, telegram_message_id, account_session,
         )
         if row is None:
             return None

@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable
+
 from loguru import logger
 
 
 class Dedup:
-    """Предотвращает обработку дубликатов сообщений."""
+    """Предотвращает обработку дубликатов сообщений.
+
+    Ключ — произвольный хешируемый идентификатор. Коллектор использует
+    ``(account_session, chat_id, telegram_message_id)``: у аккаунтов свои
+    пространства message id в одном чате Leo.
+    """
 
     def __init__(self, max_size: int = 10000) -> None:
         self._max_size = max_size
-        self._seen: set[int] = set()
+        self._seen: set[Hashable] = set()
 
-    def is_known(self, message_id: int) -> bool:
+    def is_known(self, message_id: Hashable) -> bool:
         """Только проверка БЕЗ добавления (dedup ДО save_raw_message).
 
         Используется в коллекторе: дубликат отбрасывается ДО попытки сохранения,
@@ -21,7 +28,7 @@ class Dedup:
         """
         return message_id in self._seen
 
-    def mark(self, message_id: int) -> None:
+    def mark(self, message_id: Hashable) -> None:
         """Помечает сообщение обработанным (вызывается ПОСЛЕ успешного save)."""
         self._seen.add(message_id)
         if len(self._seen) > self._max_size:

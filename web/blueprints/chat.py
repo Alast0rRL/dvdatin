@@ -104,7 +104,7 @@ def index() -> str:
     data = db.get_chat_feed(
         page=1, per_page=FEED_PER_PAGE, account_session=account_session
     )
-    signals = db.get_chat_signals()
+    signals = db.get_chat_signals(account_session)
     pending = [_with_buttons(c) for c in db.get_pending_captchas(limit=20)]
 
     return render_template(
@@ -149,7 +149,7 @@ def debug() -> tuple:
             "account_session": account_session,
             **db.get_debug_states(),
             "counts": db.get_debug_counts(),
-            "signals": db.get_chat_signals(),
+            "signals": db.get_chat_signals(account_session),
             "last_auto_actions": db.get_recent_auto_actions(limit=10),
         },
     }
@@ -196,7 +196,8 @@ def feed() -> tuple:
 @login_required
 def new_count() -> tuple:
     """Сигнатура для polling: изменилась → обновить ленту."""
-    signals = _get_db().get_chat_signals() or {}
+    _, account_session = _get_accounts(_get_config_path())
+    signals = _get_db().get_chat_signals(account_session) or {}
     return (
         json.dumps({"signature": _chat_signature(signals), **signals}),
         200,

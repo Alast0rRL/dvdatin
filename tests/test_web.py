@@ -1089,10 +1089,12 @@ class TestPhotoAccountSelection:
         )
         return photos, client_a, client_b
 
-    def test_ordered_clients_prefers_receiver(self, tmp_path: Path) -> None:
+    def test_ordered_clients_is_receiver_only(self, tmp_path: Path) -> None:
         photos, client_a, client_b = self._setup(tmp_path)
+        # Известная сессия → ТОЛЬКО аккаунт-получатель (чужой не привлекаем:
+        # тем же message_id он может вернуть фото ДРУГОЙ анкеты).
         ordered = photos._ordered_clients("dvai_2")
-        assert ordered == [client_b, client_a]
+        assert ordered == [client_b]
         legacy = photos._ordered_clients("")
         assert legacy == [client_a, client_b]
 
@@ -1134,8 +1136,12 @@ class TestPhotoAccountSelection:
         finally:
             photos.set_telegram_clients([])
 
-    def test_receiver_failed_then_fallback(self, tmp_path: Path) -> None:
-        """Если аккаунт-получатель не смог — пробуется чужой (не теряем фото)."""
+    def test_receiver_failed_no_foreign_fallback(self, tmp_path: Path) -> None:
+        """Если аккаунт-получатель не смог — чужой аккаунт НЕ привлекается.
+
+        Запрос того же message_id через чужой аккаунт может вернуть фото
+        ДРУГОЙ анкеты, поэтому лучше не показать фото, чем показать чужое.
+        """
         photos, client_a, client_b = self._setup(tmp_path)
         client_b.fail = True  # правильный аккаунт недоступен
         media = tmp_path / "media"
@@ -1147,9 +1153,10 @@ class TestPhotoAccountSelection:
                         1234060895, 503, 44, account_session="dvai_2",
                     )
                 )
-            assert path is not None
-            assert path == media / "44" / "503.dvai_2.jpg"
-            assert path.read_bytes() == b"dvai"
+            assert path is None
+            # Пробовали только получателя; чужой аккаунт не трогали
+            assert client_b.calls == [[503]]
+            assert client_a.calls == []
         finally:
             photos.set_telegram_clients([])
 

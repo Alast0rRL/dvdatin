@@ -340,10 +340,14 @@ class SyncDB:
         события чата; их номер указывает на КАРТОЧКУ анкеты, а не на само
         сообщение-реакцию, из-за чего лента съезжала на соседнюю анкету.
 
-        Фильтр по аккаунту-исполнителю: у каждого аккаунта свой чат с Leo в
-        ОДНОМ ``chat_id`` (свои диапазоны message id), поэтому сообщения двух
-        аккаунтов нельзя мешать. Строки с пустой сессией ('' — история до
-        миграции) показываются всегда, чтобы не терять прошлое.
+        Фильтр по аккаунту-исполнителю — СТРОГИЙ: у каждого аккаунта свой чат с
+        Leo в ОДНОМ ``chat_id`` (свои диапазоны message id), поэтому лента
+        показывает сообщения РОВНО одного аккаунта (строки без сессии не
+        подмешиваются — иначе соседний аккаунт «протекает» в ленту).
+
+        Порядок — по ``telegram_message_id`` (нативный порядок чата Telegram),
+        а не по времени сохранения: ``message_date`` у двух аккаунтов идёт из
+        разных устройств, а id — это и есть последовательность сообщений Leo.
 
         Включаем только непустые сообщения (текст или медиа). Пагинация:
         page=1 — последние (как в Telegram), внутри страницы ASC.
@@ -359,7 +363,7 @@ class SyncDB:
             where.append("chat_id = ?")
             params.append(chat_id)
         if account_session:
-            where.append("(account_session = ? OR account_session = '')")
+            where.append("account_session = ?")
             params.append(account_session)
         where.append(
             "(TRIM(COALESCE(text, '')) <> '' OR COALESCE(media_type, '') <> '')"
@@ -376,10 +380,10 @@ class SyncDB:
             f"""
             SELECT id, telegram_message_id, chat_id, sender_id, sender_name,
                    sender_username, text, message_date AS ts, media_type,
-                   is_outgoing
+                   is_outgoing, account_session
             FROM raw_messages
             WHERE {clause}
-            ORDER BY message_date DESC, id DESC
+            ORDER BY telegram_message_id DESC, id DESC
             LIMIT ? OFFSET ?
             """,
             tuple(params) + (per_page, (page - 1) * per_page),
@@ -417,7 +421,8 @@ class SyncDB:
         }
         if not outgoing:
             prof = self._profile_for_message(
-                r["chat_id"], r["telegram_message_id"]
+                r["chat_id"], r["telegram_message_id"],
+                r.get("account_session") or "",
             )
             if prof:
                 item["profile_id"] = prof["id"]
@@ -426,24 +431,33 @@ class SyncDB:
         return item
 
     def _profile_for_message(
-        self, chat_id: int, telegram_message_id: int,
+        self,
+        chat_id: int,
+        telegram_message_id: int,
+        account_session: str = "",
     ) -> dict[str, Any] | None:
-        """Анкета, к которой привязано сообщение (для фото и фильтра)."""
-        try:
-            return self._query_one(
-                """
-                SELECT p.id, p.name, ad.decision AS ai_decision
-                FROM profile_messages pm
-                JOIN profiles p ON p.id = pm.profile_id
-                LEFT JOIN ai_decisions ad ON ad.id = (
-                    SELECT id FROM ai_decisions
-                    WHERE profile_id = p.id ORDER BY evaluated_at DESC LIMIT 1
-                )
-                WHERE pm.telegram_message_id = ? AND pm.chat_id = ?
-                ORDER BY pm.created_at DESC LIMIT 1
-                """,
-                (telegram_message_id, chat_id),
+        """Анкета, к которой привязано сообщение (для фото и фильтра).
+
+        ``account_session`` (когда задан) ограничивает поиск тем же аккаунтом:
+        у аккаунтов свои пространства message id в одном чате.
+        """
+        sql = """
+            SELECT p.id, p.name, ad.decision AS ai_decision
+            FROM profile_messages pm
+            JOIN profiles p ON p.id = pm.profile_id
+            LEFT JOIN ai_decisions ad ON ad.id = (
+                SELECT id FROM ai_decisions
+                WHERE profile_id = p.id ORDER BY evaluated_at DESC LIMIT 1
             )
+            WHERE pm.telegram_message_id = ? AND pm.chat_id = ?
+        """
+        params: list[Any] = [telegram_message_id, chat_id]
+        if account_session:
+            sql += " AND (pm.account_session = ? OR pm.account_session = '')"
+            params.append(account_session)
+        sql += " ORDER BY pm.created_at DESC LIMIT 1"
+        try:
+            return self._query_one(sql, tuple(params))
         except Exception:
             return None
 
@@ -469,20 +483,34 @@ class SyncDB:
             return None
         return data if isinstance(data, dict) else None
 
-    def get_chat_signals(self) -> dict[str, Any]:
+    def get_chat_signals(self, account_session: str = "") -> dict[str, Any]:
         """Сигнатура для polling вкладки «Чат».
 
         Меняется при новой входящей (raw), новой отправке (sent) или
         новом авто-действии (auto_actions_log) — фронт сравнивает
         сигнатуру и перерисовывает ленту, не перезагружая страницу.
+
+        ``account_session``: ``max_raw`` считается ТОЛЬКО по этому аккаунту —
+        иначе активность соседнего аккаунта (свой чат с Leo в том же chat_id)
+        заставляла бы перерисовывать чужую ленту.
         """
         def _max(table: str, col: str) -> Any:
             return self._query_one(
                 f"SELECT MAX({col}) AS m FROM {table}"
             )["m"] or ""
 
+        if account_session:
+            row = self._query_one(
+                "SELECT MAX(id) AS m FROM raw_messages "
+                "WHERE account_session = ?",
+                (account_session,),
+            )
+            max_raw = (row or {}).get("m") or ""
+        else:
+            max_raw = _max("raw_messages", "id")
+
         return {
-            "max_raw": _max("raw_messages", "id"),
+            "max_raw": max_raw,
             "max_sent": _max("sent_messages", "id"),
             "max_auto": _max("auto_actions_log", "id"),
             "pending_captchas": len(self.get_pending_captchas(limit=999)),

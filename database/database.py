@@ -77,9 +77,11 @@ CREATE INDEX IF NOT EXISTS idx_pm_profile_id ON profile_messages(profile_id);
 CREATE INDEX IF NOT EXISTS idx_pm_telegram_message_id ON profile_messages(telegram_message_id);
 
 CREATE TABLE IF NOT EXISTS chat_context (
-    chat_id INTEGER PRIMARY KEY,
+    account_session TEXT NOT NULL DEFAULT '',
+    chat_id INTEGER NOT NULL,
     profile_message_id INTEGER NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account_session, chat_id)
 );
 
 CREATE TABLE IF NOT EXISTS filter_results (
@@ -300,6 +302,45 @@ class Database:
         # качаются ТЕМ аккаунтом, который реально видел сообщение (message_id в
         # диалоге с Leo у каждого аккаунта своя нумерация).
         await self._ensure_profile_messages_account_session()
+        # Контекст чата — СТРОГО на аккаунт: у аккаунтов свой чат с Leo в ОДНОМ
+        # chat_id (свои диапазоны message id), общий контекст связывал MEDIA_ONLY
+        # с карточкой другого аккаунта.
+        await self._ensure_chat_context_account_session()
+
+    async def _ensure_chat_context_account_session(self) -> None:
+        """Пересоздаёт chat_context с составным ключом (account_session, chat_id).
+
+        Старая схема (``chat_id PRIMARY KEY``) хранила ОДИН «текущий» профиль на
+        чат — при нескольких аккаунтах это путало анкеты разных аккаунтов.
+        SQLite не умеет менять PRIMARY KEY, поэтому пересобираем таблицу.
+        Историю не переносим ('' не совпадёт ни с одним аккаунтом; контекст
+        восстанавливается со следующей карточки).
+        """
+        cols = await self._connection.execute("PRAGMA table_info(chat_context)")
+        names = {row[1] for row in await cols.fetchall()}
+        if "account_session" in names:
+            return
+        try:
+            await self._connection.execute(
+                "ALTER TABLE chat_context RENAME TO chat_context_old"
+            )
+            await self._connection.execute(
+                """CREATE TABLE chat_context (
+                    account_session TEXT NOT NULL DEFAULT '',
+                    chat_id INTEGER NOT NULL,
+                    profile_message_id INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (account_session, chat_id)
+                )"""
+            )
+            await self._connection.execute("DROP TABLE chat_context_old")
+            await self._connection.commit()
+            logger.info(
+                "Миграция: chat_context пересоздан с ключом "
+                "(account_session, chat_id)"
+            )
+        except Exception as e:
+            logger.warning(f"chat_context migration: {e}")
 
     async def _ensure_auto_actions_log(self) -> None:
         """Добавляет журнал успешных авто-действий для старых БД.
@@ -623,26 +664,29 @@ class Database:
         try:
             await self._connection.execute(
                 "CREATE UNIQUE INDEX idx_raw_unique "
-                "ON raw_messages(chat_id, telegram_message_id, is_outgoing)"
+                "ON raw_messages(account_session, chat_id, "
+                "telegram_message_id, is_outgoing)"
             )
             await self._connection.commit()
         except aiosqlite.IntegrityError:
             logger.warning(
                 "raw_messages содержит дубликаты "
-                "(chat_id, telegram_message_id, is_outgoing); "
-                "оставляем только первую запись для каждой тройки."
+                "(account_session, chat_id, telegram_message_id, is_outgoing); "
+                "оставляем только первую запись для каждой четвёрки."
             )
             await self._connection.execute(
                 "DELETE FROM raw_messages "
                 "WHERE id NOT IN ("
                 "  SELECT MIN(id) FROM raw_messages "
-                "  GROUP BY chat_id, telegram_message_id, is_outgoing"
+                "  GROUP BY account_session, chat_id, "
+                "telegram_message_id, is_outgoing"
                 ")"
             )
             await self._connection.commit()
             await self._connection.execute(
                 "CREATE UNIQUE INDEX idx_raw_unique "
-                "ON raw_messages(chat_id, telegram_message_id, is_outgoing)"
+                "ON raw_messages(account_session, chat_id, "
+                "telegram_message_id, is_outgoing)"
             )
             await self._connection.commit()
 
@@ -967,45 +1011,64 @@ class Database:
         return self._row_to_dict(cursor, row)
 
     async def find_profile_by_message(
-        self, chat_id: int, telegram_message_id: int,
+        self,
+        chat_id: int,
+        telegram_message_id: int,
+        account_session: str | None = None,
     ) -> dict | None:
-        """Ищет профиль по telegram_message_id."""
-        cursor = await self._connection.execute(
+        """Ищет профиль по telegram_message_id.
+
+        ``account_session`` (когда задан) ограничивает поиск сообщениями ТОГО
+        же аккаунта: у аккаунтов своё пространство message id в одном чате,
+        и без фильтра один id мог резолвиться в анкету другого аккаунта.
+        """
+        sql = (
             """SELECT p.* FROM profiles p
             JOIN profile_messages pm ON pm.profile_id = p.id
-            WHERE pm.chat_id = ? AND pm.telegram_message_id = ?""",
-            (chat_id, telegram_message_id),
+            WHERE pm.chat_id = ? AND pm.telegram_message_id = ?"""
         )
+        params: list[object] = [chat_id, telegram_message_id]
+        if account_session:
+            sql += " AND (pm.account_session = ? OR pm.account_session = '')"
+            params.append(account_session)
+        cursor = await self._connection.execute(sql, tuple(params))
         row = await cursor.fetchone()
         if row is None:
             return None
         return self._row_to_dict(cursor, row)
 
     async def set_chat_profile_context(
-        self, chat_id: int, profile_message_id: int,
+        self,
+        chat_id: int,
+        profile_message_id: int,
+        account_session: str = "",
     ) -> None:
         """Сохраняет контекст чата: какое PROFILE-сообщение «текущее».
 
-        Позволяет MEDIA_ONLY восстановить привязку к профилю после
-        restart/reconnect, когда in-memory кэш пуст. ON CONFLICT обновляет
-        «текущий» профиль для чата (всегда только один).
+        Контекст строго на аккаунт (``account_session``): у аккаунтов свой чат с
+        Leo в одном ``chat_id``, общий контекст связывал MEDIA_ONLY с карточкой
+        другого аккаунта. ON CONFLICT обновляет «текущий» профиль аккаунта.
         """
         now = datetime.now(timezone.utc).isoformat()
         await self._connection.execute(
-            """INSERT INTO chat_context (chat_id, profile_message_id, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
+            """INSERT INTO chat_context
+            (account_session, chat_id, profile_message_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_session, chat_id) DO UPDATE SET
                 profile_message_id = excluded.profile_message_id,
                 updated_at = excluded.updated_at""",
-            (chat_id, profile_message_id, now),
+            (account_session or "", chat_id, profile_message_id, now),
         )
         await self._connection.commit()
 
-    async def get_chat_profile_context(self, chat_id: int) -> int | None:
-        """Возвращает profile_message_id «текущего» профиля чата или None."""
+    async def get_chat_profile_context(
+        self, chat_id: int, account_session: str = "",
+    ) -> int | None:
+        """Возвращает profile_message_id «текущего» профиля аккаунта или None."""
         cursor = await self._connection.execute(
-            "SELECT profile_message_id FROM chat_context WHERE chat_id = ?",
-            (chat_id,),
+            "SELECT profile_message_id FROM chat_context "
+            "WHERE account_session = ? AND chat_id = ?",
+            (account_session or "", chat_id),
         )
         row = await cursor.fetchone()
         if row is None:
@@ -1201,15 +1264,27 @@ class Database:
         return None
 
     async def resolve_profile_by_message(
-        self, profile_message_id: int,
+        self,
+        profile_message_id: int,
+        account_session: str | None = None,
     ) -> int | None:
         """Находит профиль по telegram_message_id его карточки (chat_context)."""
         try:
-            cursor = await self._connection.execute(
+            sql = (
                 "SELECT id FROM profiles "
-                "WHERE source_message_id = ? ORDER BY id DESC LIMIT 1",
-                (profile_message_id,),
+                "WHERE source_message_id = ? ORDER BY id DESC LIMIT 1"
             )
+            params: list[object] = [profile_message_id]
+            if account_session:
+                sql = (
+                    "SELECT p.id FROM profiles p "
+                    "JOIN profile_messages pm ON pm.profile_id = p.id "
+                    "WHERE p.source_message_id = ? "
+                    "AND (pm.account_session = ? OR pm.account_session = '') "
+                    "ORDER BY p.id DESC LIMIT 1"
+                )
+                params.append(account_session)
+            cursor = await self._connection.execute(sql, tuple(params))
             row = await cursor.fetchone()
         except Exception as e:
             logger.warning(f"resolve_profile_by_message: {e}")

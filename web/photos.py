@@ -72,17 +72,23 @@ def get_telegram_client():
 
 
 def _ordered_clients(account_session: str) -> list:
-    """Клиенты в порядке предпочтения: сначала — аккаунт-получатель.
+    """Клиенты для скачивания фото — СТРОГО аккаунт-получателя.
 
-    Для записей без account_session (старые БД) — исходный порядок.
+    Когда сессия известна и такой клиент есть, возвращаем ТОЛЬКО его: message_id
+    в диалоге с Leo у каждого аккаунта своя нумерация, и запрос того же id
+    через другой аккаунт может вернуть ФОТО ДРУГОЙ анкеты. Fallback на прочие
+    клиенты оставлен лишь для записей без сессии (старые БД/неизвестный аккаунт).
     """
     if not account_session:
         return list(_telegram_clients)
-    preferred: list = []
-    rest: list = []
-    for client, sess in zip(_telegram_clients, _telegram_sessions):
-        (preferred if sess == account_session else rest).append(client)
-    return preferred + rest
+    preferred = [
+        client
+        for client, sess in zip(_telegram_clients, _telegram_sessions)
+        if sess == account_session and client is not None
+    ]
+    if preferred:
+        return preferred
+    return list(_telegram_clients)
 
 
 def _safe_token(value: str) -> str:

@@ -261,11 +261,15 @@ class DvinchikCollector:
             config.sources.allowed_chat_ids
             or ([config.dvinchik.chat_id] if config.dvinchik.chat_id else [])
         )
-        self._pending_profiles: dict[int, int] = {}
+        # Парсинг строго на аккаунт: у аккаунтов свой чат с Leo в ОДНОМ chat_id
+        # (свои диапазоны message id), поэтому контекст анкеты/дедуп/лок чата
+        # ключуются парой (account_session, chat_id) — иначе MEDIA_ONLY одного
+        # аккаунта привязывался к карточке другого.
+        self._pending_profiles: dict[tuple[str, int], int] = {}
         self._stats = stats
         # C: per-chat блокировка для гарантии порядка PROFILE → MEDIA_ONLY
         # при конкурентных handlers (без глобальной блокировки).
-        self._chat_locks: dict[int, asyncio.Lock] = {}
+        self._chat_locks: dict[tuple[str, int], asyncio.Lock] = {}
         # D: raw_id, уже поставленные в очередь в этой сессии (live handler).
         # Исключает двойной enqueue между live worker и startup recovery (W3).
         # Set очищается после завершения recovery (steady-state live-сообщения
@@ -703,6 +707,7 @@ class DvinchikCollector:
                 msg_date=active.date.isoformat() if active.date else "",
                 msg=active,
                 raw_id=0,
+                account_session=self._auto_engine.account_session,
             )
             await self._process_message(task)
             return True
@@ -1239,6 +1244,7 @@ class DvinchikCollector:
                     msg_date=row["message_date"],
                     msg=None,
                     raw_id=raw_id,
+                    account_session=row.get("account_session") or "",
                 )
                 try:
                     await self._worker.enqueue(task)
@@ -1298,18 +1304,26 @@ class DvinchikCollector:
             )
             return
 
+        # Аккаунт-получатель: у каждого аккаунта свой чат с Leo в ОДНОМ chat_id
+        # (свои диапазоны message id). Все ключи (дедуп, контекст, лок) — на
+        # пару (account_session, chat_id).
+        account_session = self._session_for_client(
+            getattr(event, "client", None)
+        )
+
         # === DEDUP (in-memory, атомарно в asyncio) ===
         # Быстрый фильтр повторной доставки в рамках сессии. Проверка БЕЗ
         # добавления: сам факт обработки фиксируется только ПОСЛЕ успешного
         # RAW-save (см. ниже ``mark``), чтобы при сбое сохранения сообщение не
         # терялось до restart (MEDIUM-2). Авторитетная защита — UNIQUE
-        # (chat_id, telegram_message_id) в БД: save_raw_message делает
-        # INSERT OR IGNORE и возвращает None при дубликате (переживает
+        # (account_session, chat_id, telegram_message_id) в БД: save_raw_message
+        # делает INSERT OR IGNORE и возвращает None при дубликате (переживает
         # restart/reconnect, когда in-memory Dedup пуст).
-        if self._dedup.is_known((chat_id, event.message.id)):
+        if self._dedup.is_known((account_session, chat_id, event.message.id)):
             logger.debug(
                 f"Повторная доставка отброшена (in-memory dedup): "
-                f"chat_id={chat_id}, message_id={event.message.id}"
+                f"account={account_session}, chat_id={chat_id}, "
+                f"message_id={event.message.id}"
             )
             return
 
@@ -1334,16 +1348,12 @@ class DvinchikCollector:
         # выполняет save+enqueue; второй (напр. MEDIA_ONLY) дожидается и
         # становится в очередь строго ПОСЛЕ PROFILE. Блокировка только внутри
         # одного chat_id, другие чаты не затрагиваются.
-        lock = self._chat_locks.get(chat_id)
+        lock_key = (account_session, chat_id)
+        lock = self._chat_locks.get(lock_key)
         if lock is None:
             lock = asyncio.Lock()
-            self._chat_locks[chat_id] = lock
+            self._chat_locks[lock_key] = lock
         async with lock:
-            # Аккаунт-получатель: у каждого аккаунта свой чат с Leo в ОДНОМ
-            # chat_id (свои диапазоны message id), лента фильтруется по сессии.
-            account_session = self._session_for_client(
-                getattr(event, "client", None)
-            )
             # === RAW сохраняется ПЕРВЫМ — ДО любого network await ===
             # save_raw_message сам делает ограниченный retry при транзитных
             # сбоях БД. Если после retry сохранить не удалось — сообщение НЕ
@@ -1381,7 +1391,7 @@ class DvinchikCollector:
             # RAW-save. Если save упал (W4 исчерпал retry), dedup НЕ
             # помечается — при повторной доставке сообщение можно переобработать,
             # а не терять до restart.
-            self._dedup.mark((chat_id, event.message.id))
+            self._dedup.mark((account_session, chat_id, event.message.id))
 
             # Активная карточка для гейта «реакция в свою карточку»
             # (AutoActionEngine.is_stale_card). Помечаем ЗДЕСЬ, в хендлере, а
@@ -1449,6 +1459,7 @@ class DvinchikCollector:
                 msg_date=msg_date,
                 msg=msg,
                 raw_id=raw_id,
+                account_session=account_session,
             )
 
             if self._worker is not None:
@@ -1489,6 +1500,9 @@ class DvinchikCollector:
         sender_id = msg.sender_id if getattr(msg, "sender_id", None) else 0
         msg_date = msg.date.isoformat() if msg.date else datetime.now(timezone.utc).isoformat()
         now = datetime.now(timezone.utc).isoformat()
+        account_session = self._session_for_client(
+            getattr(event, "client", None)
+        )
 
         # === RAW сохраняется ПЕРВЫМ ===
         try:
@@ -1506,9 +1520,7 @@ class DvinchikCollector:
                 reply_to_message_id=None,
                 received_at=now,
                 is_outgoing=True,
-                account_session=self._session_for_client(
-                    getattr(event, "client", None)
-                ),
+                account_session=account_session,
             )
         except Exception as e:
             logger.error(f"Outgoing RAW save failed: {e}")
@@ -1524,11 +1536,16 @@ class DvinchikCollector:
 
         self._print_outgoing_message(chat_id, msg.id, text, msg_date)
 
-        await self._maybe_record_manual_review(chat_id, msg.id, text)
-        await self._maybe_record_sent_message(chat_id, text, msg)
+        await self._maybe_record_manual_review(
+            chat_id, msg.id, text, account_session,
+        )
+        await self._maybe_record_sent_message(
+            chat_id, text, msg, account_session,
+        )
 
     async def _maybe_record_sent_message(
         self, chat_id: int, text: str, msg: object,
+        account_session: str = "",
     ) -> None:
         """Stage 8.5: фиксирует РУЧНОЕ действие владельца при лайке.
 
@@ -1568,11 +1585,15 @@ class DvinchikCollector:
             action = "MESSAGE"
         profile_id: int | None = None
         try:
-            context = await self._db.get_chat_profile_context(chat_id)
+            context = await self._db.get_chat_profile_context(
+                chat_id, account_session,
+            )
             if context is None:
-                context = self._pending_profiles.get(chat_id)
+                context = self._pending_profiles.get((account_session, chat_id))
             if context is not None:
-                profile_id = await self._db.resolve_profile_by_message(context)
+                profile_id = await self._db.resolve_profile_by_message(
+                    context, account_session,
+                )
         except Exception as e:
             logger.warning(f"sent_message: не смогли привязать профиль: {e}")
         try:
@@ -1585,6 +1606,7 @@ class DvinchikCollector:
 
     async def _maybe_record_manual_review(
         self, chat_id: int, outgoing_tm_id: int, text: str,
+        account_session: str = "",
     ) -> None:
         """Фиксирует ручное решение владельца по активной REVIEW-анкете.
 
@@ -1599,9 +1621,11 @@ class DvinchikCollector:
             return
         if chat_id != self._dvinchik_chat_id:
             return
-        context = await self._db.get_chat_profile_context(chat_id)
+        context = await self._db.get_chat_profile_context(
+            chat_id, account_session,
+        )
         if context is None:
-            context = self._pending_profiles.get(chat_id)
+            context = self._pending_profiles.get((account_session, chat_id))
         if context is None:
             return
         try:
@@ -1760,22 +1784,27 @@ class DvinchikCollector:
 
                 if self._profile_service:
                     try:
-                        account_session = self._session_for_client(
-                            getattr(msg, "client", None) if msg is not None else None
+                        account_session = task.account_session or (
+                            self._session_for_client(
+                                getattr(msg, "client", None)
+                                if msg is not None else None
+                            )
                         )
                         profile = await self._profile_service.upsert_profile(
                             parsed, account_session=account_session,
                         )
 
                         # PROFILE-сообщение становится "контекстом" для
-                        # последующих MEDIA_ONLY того же чата. Фиксируем сразу
+                        # последующих MEDIA_ONLY ТОГО ЖЕ аккаунта. Фиксируем сразу
                         # после сохранения — независимо от вывода в консоль.
-                        self._pending_profiles[chat_id] = task.message_id
+                        self._pending_profiles[(account_session, chat_id)] = (
+                            task.message_id
+                        )
                         # Персистентный контекст: переживает restart/reconnect,
                         # когда in-memory кэш пуст (W2).
                         try:
                             await self._db.set_chat_profile_context(
-                                chat_id, task.message_id
+                                chat_id, task.message_id, account_session
                             )
                         except Exception as e:
                             logger.error(f"Ошибка сохранения контекста чата: {e}")
@@ -1919,11 +1948,14 @@ class DvinchikCollector:
                     self._stats.record_match()
 
             elif msg_type == MessageType.MEDIA_ONLY:
-                account_session = self._session_for_client(
-                    getattr(msg, "client", None) if msg is not None else None
-                )
                 await self._handle_media_only(
-                    chat_id, task.message_id, account_session=account_session,
+                    chat_id, task.message_id,
+                    account_session=task.account_session or (
+                        self._session_for_client(
+                            getattr(msg, "client", None)
+                            if msg is not None else None
+                        )
+                    ),
                 )
                 if self._stats:
                     self._stats.record_media_only()
@@ -2031,15 +2063,16 @@ class DvinchikCollector:
     ) -> None:
         """Обработка photo-only сообщений: привязка к ПРЕДЫДУЩЕЙ анкете.
 
-        Контекст (последнее PROFILE-сообщение чата) восстанавливается из БД
-        (переживает restart/reconnect), затем — из in-memory кэша. Найденный
+        Контекст (последнее PROFILE-сообщение ТОГО ЖЕ аккаунта) восстанавливается
+        из БД (переживает restart/reconnect), затем — из in-memory кэша. Найденный
         профиль связывается с медиа-сообщением через profile_messages
         (UNIQUE(profile_id, telegram_message_id) исключает дубли media).
         """
         # Сначала пытаемся восстановить профиль из БД, затем in-memory.
-        prev = await self._db.get_chat_profile_context(chat_id)
+        # Контекст СТРОГО на аккаунт: у аккаунтов свой чат с Leo в одном chat_id.
+        prev = await self._db.get_chat_profile_context(chat_id, account_session)
         if prev is None:
-            prev = self._pending_profiles.get(chat_id)
+            prev = self._pending_profiles.get((account_session, chat_id))
 
         if prev is None:
             logger.info(
@@ -2050,7 +2083,7 @@ class DvinchikCollector:
         if self._profile_service is not None:
             try:
                 profile = await self._profile_service.find_profile_by_message(
-                    chat_id, prev
+                    chat_id, prev, account_session,
                 )
                 if profile is not None:
                     await self._profile_service.link_message_to_profile(

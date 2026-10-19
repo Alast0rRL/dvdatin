@@ -713,8 +713,8 @@ tests/test_web.py::TestLogin::test_protected_route_redirects
 tests/test_web.py::TestLogin::test_protected_settings_redirects
 tests/test_web.py::TestPhotoAccountSelection::test_download_fallback_when_no_session
 tests/test_web.py::TestPhotoAccountSelection::test_download_uses_receiver_account
-tests/test_web.py::TestPhotoAccountSelection::test_ordered_clients_prefers_receiver
-tests/test_web.py::TestPhotoAccountSelection::test_receiver_failed_then_fallback
+tests/test_web.py::TestPhotoAccountSelection::test_ordered_clients_is_receiver_only
+tests/test_web.py::TestPhotoAccountSelection::test_receiver_failed_no_foreign_fallback
 tests/test_web.py::TestPhotoServingRoute::test_download_passes_receiver_account
 tests/test_web.py::TestPhotoServingRoute::test_photo_404_when_not_cached
 tests/test_web.py::TestPhotoServingRoute::test_photo_404_without_message_link
