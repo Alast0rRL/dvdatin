@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (752 total, no linter/formatter configured)
+# Run all tests (758 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -68,7 +68,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (27), test_auto_action (93), test_auto_action_audit (5), test_captcha_memory (11), test_collector (143), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (110) → **752 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (27), test_auto_action (97), test_auto_action_audit (5), test_captcha_memory (11), test_collector (145), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (110) → **758 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -112,6 +112,7 @@ Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)*
 
 - Идемпотентность авто-действий — по **конкретной карточке И виду действия** (`chat_id`+`telegram_message_id`+`action`), НЕ по `profile_id`/имени: `has_auto_action_for_message(chat_id, tm_id, action)` / `record_auto_action(..., tm_id)`. LIKE и MESSAGE — **независимые** действия (§30): на одну карточку может быть LIKE и MESSAGE, но каждый вид — не более одного раза. Повторная карточка той же личности (новый `telegram_message_id` в ленте) получает реакцию снова, чтобы лента не замирала при повторах Leo. `auto_actions_log` хранит `telegram_message_id` (partial unique index `chat_id`+`telegram_message_id`+`action` WHERE `telegram_message_id IS NOT NULL`), `UNIQUE(profile_id)` убран; `record_auto_action` обновляет статус профиля `LIKED`/`DISLIKED` только для LIKE/DISLIKE (MESSAGE статус НЕ меняет). Миграция старой схемы — полное пересоздание таблицы с переносом записей (SQLite не умеет DROP CONSTRAINT) / пересоздание unique-индекса.
 - **Уведомления владельцу НЕ дублируются**: реакция (`❤️`/`👎`) шлётся Leo на каждую карточку (feed не замирает), но пересылка владельцу (`_notify`/`_notify_needs_action`) выполняется ТОЛЬКО для первого авто-действия профиля — гейт `_has_prior_action(profile_id)` через `db.has_auto_action(profile_id)`. Иначе повтор одной анкеты заваливает владельца пересылками всей её истории («несколько анкет разом»). Ошибка БД при проверке → fail-open (уведомление всё равно уходит).
+- **Пересылка владельцу фильтруется по аккаунту (прод-баг 2026-10-19)**: `_profile_message_ids` берёт из `profile_messages` только id с `account_session` текущего аккаунта-исполнителя (строки с пустой сессией — legacy — оставляем). Причина: у каждого аккаунта СВОЁ пространство `telegram_message_id` в одном чате Leo; если одну анкету видели оба аккаунта (`dvai` ~739k, `dvai_2` ~30k), в БД накапливались id обоих, и `forward_messages(..., from_peer=Leo)` с чужим id резолвился Telethon'ом в ПОСТОРОННИЕ сообщения — владельцу переслало чужие переписки (id 739500 из `dvai` + 30297 из `dvai_2`). `AutoActionEngine.account_session` задаётся при создании (`_build_auto_engine`) и при `swap_client(..., account_session=...)` (смена аккаунта из Веба/`switch_auto_account`).
 - **Резолв ЛЕО-чата**: `AutoActionEngine.ensure_peer()` сканирует диалоги авто-аккаунта и кэширует сущность чата (ЛЕО-чат — `PeerUser`, у каждого аккаунта свой access_hash; без кэша `send_message` падает «Could not find the input entity»). Вызывается из `_send` и `start_auto_stream`. Если чата нет в диалогах — явный WARNING «открой Дайвинчика (Leo) с этого аккаунта» и действий нет.
 
 ## Manual Review (Stage 8)

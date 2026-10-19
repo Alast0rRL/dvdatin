@@ -102,6 +102,7 @@ class AutoActionEngine:
         chat_id: int,
         notify_client: TelegramClient | None = None,
         db: Database | None = None,
+        account_session: str | None = None,
     ) -> None:
         self._client = client
         self._config = config
@@ -116,6 +117,11 @@ class AutoActionEngine:
         # идёт с Бармалея на Меланхолика и обратно, независимо от того, какой
         # аккаунт — авто.
         self._notify_client = notify_client
+        # Аккаунт-исполнитель (session). Нужен, чтобы не пересылать владельцу
+        # сообщения анкеты из ЧУЖОГО пространства id: у каждого аккаунта свои
+        # номера сообщений в одном чате Leo, и id, сохранённые другим аккаунтом,
+        # при пересылке резолвятся в посторонние сообщения (прод-баг 2026-10-19).
+        self._account_session = account_session or ""
         self._notify_user_id: int | None = None
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
@@ -312,6 +318,7 @@ class AutoActionEngine:
         self,
         client: TelegramClient | None,
         notify_client: TelegramClient | None = None,
+        account_session: str | None = None,
     ) -> None:
         """Меняет аккаунт-исполнитель действий на лету (Веб-панель).
 
@@ -320,6 +327,8 @@ class AutoActionEngine:
         не обнуляются: они привязаны к chat_id и валидны на любом аккаунте.
         """
         self._client = client
+        if account_session is not None:
+            self._account_session = account_session
         self._peer = None
         self._notify_user_id = None
         self._last_action_at = 0.0
@@ -1022,6 +1031,13 @@ class AutoActionEngine:
         Если по profile_id нельзя получить доп. сообщения (нет БД / нет
         профиля / связан только сам fallback) — возвращаем fallback как есть,
         чтобы сохранить прежнее поведение.
+
+        Сообщения фильтруются по аккаунту-исполнителю (``account_session``):
+        у каждого аккаунта СВОЁ пространство ``telegram_message_id`` в одном
+        чате Leo, поэтому id, сохранённые ДРУГИМ аккаунтом, пересылать нельзя —
+        Telethon резолвит их в посторонние сообщения (прод-баг 2026-10-19:
+        владельцу переслало чужие переписки). Строки с пустой сессией
+        (legacy/неизвестно) не отбрасываем.
         """
         if profile_id is None or self._db is None:
             return fallback if fallback is not None else []
@@ -1030,6 +1046,13 @@ class AutoActionEngine:
         except Exception as e:
             logger.error(f"AutoAction: не удалось получить сообщения профиля: {e}")
             return fallback if fallback is not None else []
+        session = self._account_session
+        if session:
+            rows = [
+                row for row in rows
+                if not row.get("account_session")
+                or row.get("account_session") == session
+            ]
         if not rows:
             return fallback if fallback is not None else []
         msg_ids = [

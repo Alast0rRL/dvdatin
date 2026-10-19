@@ -364,6 +364,7 @@ class DvinchikCollector:
             chat_id=self._dvinchik_chat_id,
             notify_client=notify_client,
             db=self._db,
+            account_session=target_session,
         )
 
     def switch_auto_account(self, session: str) -> bool:
@@ -394,9 +395,13 @@ class DvinchikCollector:
         if self._auto_engine is None:
             self._auto_engine = self._build_auto_engine()
             if self._auto_engine is not None:
-                self._auto_engine.swap_client(client, notify_client)
+                self._auto_engine.swap_client(
+                    client, notify_client, account_session=session,
+                )
         else:
-            self._auto_engine.swap_client(client, notify_client)
+            self._auto_engine.swap_client(
+                client, notify_client, account_session=session,
+            )
 
         self._config.auto_actions.account_session = session
         try:

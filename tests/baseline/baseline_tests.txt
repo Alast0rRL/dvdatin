@@ -162,6 +162,10 @@ tests/test_auto_action.py::TestForwardAllPhotos::test_forwards_all_photos_for_li
 tests/test_auto_action.py::TestForwardAllPhotos::test_forwards_all_photos_for_review
 tests/test_auto_action.py::TestForwardAllPhotos::test_no_db_falls_back_to_single_message
 tests/test_auto_action.py::TestForwardAllPhotos::test_single_message_stays_single
+tests/test_auto_action.py::TestForwardCrossAccountIds::test_all_foreign_ids_fall_back_to_current_card
+tests/test_auto_action.py::TestForwardCrossAccountIds::test_empty_session_rows_kept
+tests/test_auto_action.py::TestForwardCrossAccountIds::test_filters_ids_from_other_account
+tests/test_auto_action.py::TestForwardCrossAccountIds::test_no_session_configured_keeps_all
 tests/test_auto_action.py::TestLikeAndMessageChain::test_button_text_is_full_button_row
 tests/test_auto_action.py::TestLikeAndMessageChain::test_composer_button_send_failure_drops_chain
 tests/test_auto_action.py::TestLikeAndMessageChain::test_composer_text_bypasses_rate_limit
@@ -273,9 +277,11 @@ tests/test_collector.py::TestCollectorStats::test_record_media_only
 tests/test_collector.py::TestCollectorStats::test_record_profile
 tests/test_collector.py::TestCollectorStats::test_record_unknown
 tests/test_collector.py::TestCollectorStats::test_uptime
+tests/test_collector.py::TestCollectorSwitchAccount::test_engine_keeps_account_session_for_id_filtering
 tests/test_collector.py::TestCollectorSwitchAccount::test_switch_account_changes_client
 tests/test_collector.py::TestCollectorSwitchAccount::test_switch_account_keeps_mode
 tests/test_collector.py::TestCollectorSwitchAccount::test_switch_account_unknown_session
+tests/test_collector.py::TestCollectorSwitchAccount::test_switch_account_updates_engine_session
 tests/test_collector.py::TestDedup::test_different_ids
 tests/test_collector.py::TestDedup::test_mark_then_known
 tests/test_collector.py::TestDedup::test_unknown_not_known

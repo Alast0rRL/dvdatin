@@ -64,6 +64,7 @@ def make_engine(
     chat_id: int = 1234060895,
     notify_client: AsyncMock | None = None,
     db: object | None = None,
+    account_session: str = "",
 ) -> AutoActionEngine:
     return AutoActionEngine(
         client=client if client is not None else make_client(),
@@ -72,6 +73,7 @@ def make_engine(
         chat_id=chat_id,
         notify_client=notify_client,
         db=db,
+        account_session=account_session,
     )
 
 
@@ -919,6 +921,108 @@ class TestForwardAllPhotos:
         assert result == "LIKE"
         client.forward_messages.assert_awaited_once_with(
             8525808108, 900, from_peer=1234060895
+        )
+
+
+class TestForwardCrossAccountIds:
+    """Не пересылать владельцу id из ЧУЖОГО пространства аккаунта.
+
+    У каждого аккаунта (dvai/dvai_2) свои ``telegram_message_id`` в одном чате
+    Leo. Профиль может быть замечен двумя аккаунтами, и ``profile_messages``
+    накапливает id обоих. Пересылка чужого id резолвится Telethon'ом в
+    посторонние сообщения (прод-баг 2026-10-19: переслало чужие переписки).
+    Поэтому id фильтруются по ``account_session`` текущего аккаунта-исполнителя.
+    """
+
+    def test_filters_ids_from_other_account(self) -> None:
+        client = make_client()
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=[
+            {"telegram_message_id": 739500, "account_session": "dvai"},
+            {"telegram_message_id": 30297, "account_session": "dvai_2"},
+            {"telegram_message_id": 30298, "account_session": "dvai_2"},
+        ])
+        db.has_auto_action = AsyncMock(return_value=False)
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+            account_session="dvai",
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=7,
+                message_id=739500, reasons=["ok"],
+            )
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 739500, from_peer=1234060895
+        )
+
+    def test_all_foreign_ids_fall_back_to_current_card(self) -> None:
+        """Все id — из чужого аккаунта → пересылаем только текущую карточку."""
+        client = make_client()
+        db = self.make_db([{"telegram_message_id": 30297, "account_session": "dvai_2"}])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+            account_session="dvai",
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(
+                AIDecision.LIKE, profile_id=7,
+                message_id=739500, reasons=["ok"],
+            )
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, 739500, from_peer=1234060895
+        )
+
+    def make_db(self, rows: list[dict]) -> AsyncMock:
+        db = MagicMock()
+        db.get_profile_messages = AsyncMock(return_value=rows)
+        db.has_auto_action = AsyncMock(return_value=False)
+        return db
+
+    def test_empty_session_rows_kept(self) -> None:
+        """Строки без сессии (legacy) не отбрасываются."""
+        client = make_client()
+        db = self.make_db([
+            {"telegram_message_id": 901},
+            {"telegram_message_id": 902, "account_session": "dvai"},
+        ])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+            account_session="dvai",
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=7, message_id=900, reasons=["ok"])
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, [901, 902, 900], from_peer=1234060895
+        )
+
+    def test_no_session_configured_keeps_all(self) -> None:
+        """Без настроенной сессии фильтрация не применяется (legacy)."""
+        client = make_client()
+        db = self.make_db([
+            {"telegram_message_id": 901, "account_session": "dvai_2"},
+            {"telegram_message_id": 902, "account_session": "dvai"},
+        ])
+        e = make_engine(
+            client=client,
+            config=make_auto_config(notify_chat_id=8525808108),
+            db=db,
+            account_session="",
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=7, message_id=900, reasons=["ok"])
+        )
+        client.forward_messages.assert_awaited_once_with(
+            8525808108, [901, 902, 900], from_peer=1234060895
         )
 
 

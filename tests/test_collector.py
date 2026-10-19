@@ -3727,3 +3727,16 @@ class TestCollectorSwitchAccount:
         # Переключение аккаунта не должно ронять режим движка.
         collector.switch_auto_account("dvai")
         assert collector.auto_engine().mode == Mode.SEMI_AUTO
+
+    def test_engine_keeps_account_session_for_id_filtering(self) -> None:
+        """Движок знает аккаунт-исполнитель, чтобы не слать чужие id."""
+        collector = self._make_collector()
+        assert collector.auto_engine()._account_session == "dvai_2"
+
+    def test_switch_account_updates_engine_session(self, tmp_path: Path) -> None:
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("auto_actions:\n  account_session: dvai_2\n", encoding="utf-8")
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+        collector.switch_auto_account("dvai")
+        assert collector.auto_engine()._account_session == "dvai"
