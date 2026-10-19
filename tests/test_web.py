@@ -1521,6 +1521,61 @@ def _card_html(page_html: str, profile_id: int) -> str:
     return page_html[start:end]
 
 
+class TestStreamErrorBanner:
+    """Красный баннер сбоя автопотока (бот не листает анкеты)."""
+
+    _PAYLOAD = {
+        "message": "Бот не может продолжить ленту анкет Дайвинчика",
+        "reason": "Leo ждёт текст в композере",
+        "snapshot": ["Leo: Отправь текст…"],
+        "at": "2026-10-19T10:00:00+00:00",
+    }
+
+    def _seed(self, db) -> None:
+        import json
+
+        asyncio.get_event_loop().run_until_complete(
+            db.set_state("stream_error", json.dumps(self._PAYLOAD, ensure_ascii=False))
+        )
+
+    def test_banner_on_index(self, client, sync_db) -> None:
+        _login(client)
+        _, _, db = sync_db
+        self._seed(db)
+        body = client.get("/").get_data(as_text=True)
+        assert "Бот не может продолжить ленту анкет" in body
+        assert 'id="stream-banner"' in body
+
+    def test_banner_in_feed_json(self, client, sync_db) -> None:
+        _login(client)
+        _, _, db = sync_db
+        self._seed(db)
+        data = client.get("/chat/feed?page=1").get_json()
+        assert "banner" in data
+        assert "Бот не может продолжить ленту анкет" in data["banner"]
+
+    def test_signature_changes_with_stream_error(self, client, sync_db) -> None:
+        _login(client)
+        _, _, db = sync_db
+        before = client.get("/chat/new-count").get_json()["signature"]
+        self._seed(db)
+        after = client.get("/chat/new-count").get_json()["signature"]
+        assert before != after
+
+    def test_banner_absent_without_error(self, client, sync_db) -> None:
+        _login(client)
+        data = client.get("/chat/feed?page=1").get_json()
+        assert "Бот не может продолжить ленту анкет" not in data.get("banner", "")
+
+    def test_sync_db_get_stream_error(self, sync_db) -> None:
+        _, _, db = sync_db
+        sync = sync_db[0]
+        assert sync.get_stream_error() is None
+        self._seed(db)
+        parsed = sync.get_stream_error()
+        assert parsed and parsed["reason"] == "Leo ждёт текст в композере"
+
+
 class TestChatFeedDedup:
     """Одно сообщение Telegram = одна строка ленты (регресс на 3 «👎»)."""
 

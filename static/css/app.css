@@ -266,6 +266,29 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     min-width: 0;
 }
 
+/* ── Баннер сбоя автопотока (бот не листает анкеты) ─────────────── */
+/* Та же колонка, что и лента: выровнен по центру, без «разъезжания». */
+#stream-banner {
+    width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 12px;
+}
+.stream-error {
+    margin-top: 14px;
+    padding: 12px 14px;
+    border: 2px solid var(--dislike);
+    border-radius: 12px;
+    background: var(--dislike-bg);
+    color: var(--dislike-fg);
+    font-size: 14px;
+    overflow-wrap: anywhere;
+}
+.stream-error__title { font-weight: 700; }
+.stream-error__reason,
+.stream-error__hint { margin-top: 5px; font-size: 13px; }
+.stream-error__hint { color: var(--text-soft); }
+
 /* Строка события: колонка времени + содержимое. */
 .row {
     display: grid;

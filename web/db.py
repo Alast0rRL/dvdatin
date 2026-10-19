@@ -826,6 +826,28 @@ class SyncDB:
             "decision": r.get("decision") or "",
         }
 
+    def get_app_state(self, key: str) -> str | None:
+        """Значение из app_state (None, если не задано)."""
+        row = self._query_one(
+            "SELECT value FROM app_state WHERE key = ?", (key,)
+        )
+        return row["value"] if row else None
+
+    def get_stream_error(self) -> dict[str, Any] | None:
+        """Последний сбой автопотока (JSON из app_state) или None.
+
+        Пишется коллектором, когда бот не смог продолжить ленту анкет
+        (см. ``STREAM_ERROR_STATE_KEY``). Используется для красного баннера.
+        """
+        raw = self.get_app_state("stream_error")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
     def get_chat_signals(self) -> dict[str, Any]:
         """Сигнатура для polling вкладки «Чат».
 
@@ -843,6 +865,7 @@ class SyncDB:
             "max_sent": _max("sent_messages", "id"),
             "max_auto": _max("auto_actions_log", "id"),
             "pending_captchas": len(self.get_pending_captchas(limit=999)),
+            "stream_error_at": (self.get_stream_error() or {}).get("at") or "",
         }
 
     def get_captcha_by_id(self, captcha_id: int) -> dict[str, Any] | None:

@@ -581,6 +581,59 @@ class TestAutoActionNotify:
         assert client.send_message.call_count == 1
 
 
+class TestComposerRecovery:
+    """Восстановление «зависшего» композера + служебное уведомление владельцу."""
+
+    def _engine(self, **cfg) -> AutoActionEngine:
+        client = make_client()
+        return make_engine(client=client, config=make_auto_config(**cfg))
+
+    def test_is_composer_prompt_detects_prompt(self) -> None:
+        assert AutoActionEngine.is_composer_prompt(
+            "Отправь текст, видео или голосовое(до 15сек)."
+        ) is True
+        assert AutoActionEngine.is_composer_prompt(
+            "Полина, 19, Санкт-Петербург"
+        ) is False
+
+    def test_recover_open_composer_sends_like_message(self) -> None:
+        """Leo ждёт текст — движок досылает «Берем)» и разблокирует ленту."""
+        e = self._engine()
+        ok = asyncio.get_event_loop().run_until_complete(
+            e.recover_open_composer("Отправь текст, видео или голосовое.")
+        )
+        assert ok is True
+        assert (1234060895, "Берем)") in [
+            c.args for c in e.client.send_message.call_args_list
+        ]
+
+    def test_recover_disabled_when_like_message_off(self) -> None:
+        e = self._engine(like_message_enabled=False)
+        asyncio.get_event_loop().run_until_complete(
+            e.recover_open_composer("Отправь текст, видео или голосовое")
+        )
+        e.client.send_message.assert_not_called()
+
+    def test_is_composer_prompt_marker_satisfies_all(self) -> None:
+        """Все маркеры композера распознаются."""
+        for marker in MESSAGE_PROMPT_MARKERS:
+            assert AutoActionEngine.is_composer_prompt(f"Leo: {marker}") is True
+
+    def test_notify_owner_sends_to_target(self) -> None:
+        client = make_client()
+        notify_client = AsyncMock()
+        notify_client.get_me = AsyncMock(return_value=MagicMock(id=1753676469))
+        e = make_engine(
+            client=client, notify_client=notify_client,
+            config=make_auto_config(notify_chat_id=0),
+        )
+        ok = asyncio.get_event_loop().run_until_complete(
+            e.notify_owner("сбой потока")
+        )
+        assert ok is True
+        client.send_message.assert_awaited_once_with(1753676469, "сбой потока")
+
+
 class TestFormatReason:
     def test_formats_filter_and_ai_reasons(self) -> None:
         text = AutoActionEngine._format_reason(

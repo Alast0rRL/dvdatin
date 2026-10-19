@@ -3436,6 +3436,97 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_start_stream_recovers_open_composer(self) -> None:
+        """Leo ждёт текст в «зависшем» композере (после рестарта) — бот сам
+        досылает «Берем)», чтобы разблокировать ленту (не сбой)."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        collector._db.get_state = AsyncMock(return_value=None)
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 710,
+                "Отправь текст, видео или голосовое(до 15сек).",
+            )
+            yield self._iter_msg(auto_client, 709, "Полина, 19, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        assert (1234060895, "Берем)") in [
+            c.args for c in auto_client.send_message.call_args_list
+        ]
+        # Композер закрыли — сбой не фиксируем.
+        collector._db.set_state.assert_not_called()
+
+    def test_start_stream_reports_stuck_when_composer_recovery_disabled(self) -> None:
+        """Leo ждёт текст, но восстановление выключено (like_message=False) —
+        это сбой: пишем app_state.stream_error и уведомляем владельца."""
+        import json
+
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(like_message_enabled=False),
+            None, auto_client, other_client,
+        )
+        collector._db.get_state = AsyncMock(return_value=None)
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 711,
+                "Отправь текст, видео или голосовое(до 15сек).",
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        collector._db.set_state.assert_awaited_once()
+        key, value = collector._db.set_state.call_args.args
+        assert key == "stream_error"
+        assert "композер" in json.loads(value)["reason"]
+        # Владельцу ушло уведомление (не в ЛЕО-чат).
+        targets = [c.args[0] for c in auto_client.send_message.call_args_list]
+        assert 1234060895 not in targets
+
+    def test_start_stream_clears_stream_error_when_continues(self) -> None:
+        """Лента снова пошла (активная анкета обработана) — отметку сбоя снимаем."""
+        from models.decision import AIDecision
+
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(),
+            self._make_decision(AIDecision.DISLIKE), auto_client, other_client,
+        )
+        collector._db.get_state = AsyncMock(
+            return_value='{"at": "2026-10-01T00:00:00+00:00", "reason": "x"}'
+        )
+        collector._db.delete_state = AsyncMock()
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(auto_client, 712, "Полина, 19, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        collector._db.delete_state.assert_awaited_once_with("stream_error")
+
     def test_start_stream_media_after_profile_keeps_it_active(self) -> None:
         """Медиа/фото БЕЗ текста после анкеты — та же карточка, анкета активна,
         реакция шлётся (фото относится к текущей анкете, а не смена состояния)."""

@@ -220,6 +220,10 @@
         return fetch('/chat/feed?page=' + page)
             .then(function (r) { return r.json(); })
             .then(function (data) {
+                var banner = document.getElementById('stream-banner');
+                if (banner && typeof data.banner === 'string') {
+                    banner.innerHTML = data.banner;
+                }
                 var oldPending = document.getElementById('pending');
                 if (oldPending) oldPending.remove();
                 if (data.pending) {

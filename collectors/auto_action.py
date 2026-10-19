@@ -571,6 +571,44 @@ class AutoActionEngine:
                 # Композер закрыт — отпускаем отложенную реакцию на карточку.
                 await self._flush_deferred()
 
+    @staticmethod
+    def is_composer_prompt(last_text: str) -> bool:
+        """Похоже ли последнее сообщение Leo на запрос текста (композер открыт).
+
+        Leo после нажатия кнопки-композера отвечает «Отправь текст, видео или
+        голосовое…». Такой текст означает, что лента стоит, пока владелец/бот не
+        пришлёт сообщение.
+        """
+        low = (last_text or "").lower()
+        return any(marker in low for marker in MESSAGE_PROMPT_MARKERS)
+
+    async def recover_open_composer(self, last_text: str) -> bool:
+        """Закрывает «зависший» композер Leo, если он ждёт текст.
+
+        Сценарий: цепочка LIKE_AND_MESSAGE была прервана (рестарт бота) — Leo
+        уже открыл композер («Отправь текст, видео или голосовое…») и ждёт
+        текст, а незавершённой цепочки в памяти нет, поэтому бот молча стоит и
+        лента не двигается. Если последнее сообщение Leo — именно запрос текста,
+        досылаем «Берем)» (``like_message.text``), чтобы закрыть композер.
+        Возврат True — текст отправлен (лента разблокирована).
+        """
+        if not self.enabled:
+            return False
+        if not self._config.like_message.enabled:
+            return False
+        low = (last_text or "").lower()
+        if not any(marker in low for marker in MESSAGE_PROMPT_MARKERS):
+            return False
+        try:
+            await self._send_composer_text(self._pick_message_text())
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось закрыть зависший композер: {e}")
+            return False
+        logger.info(
+            "AutoAction: зависший композер Leo закрыт сообщением «Берем)»"
+        )
+        return True
+
     def _has_open_composer(self) -> bool:
         """Открыт ли композер: есть цепочка, ждущая «Отправь текст…» от Leo."""
         return any(
@@ -921,6 +959,30 @@ class AutoActionEngine:
             )
         except Exception as e:
             logger.error(f"AutoAction: ошибка уведомления «нужно действие»: {e}")
+
+    async def notify_owner(self, text: str) -> bool:
+        """Шлёт владельцу служебное сообщение (напр. о сбое автопотока).
+
+        Получатель — тот же, что у обычных уведомлений
+        (``_resolve_notify_target``: явный ``notify_chat_id`` либо «другой»
+        аккаунт при ``notify_chat_id == 0``). Шлём с авто-аккаунта. Ошибки
+        доставки не роняют pipeline — только логируются.
+        """
+        client = self._client
+        if client is None or not text:
+            return False
+        target = await self._resolve_notify_target()
+        if target is None:
+            return False
+        try:
+            await client.send_message(target, text)
+            logger.info(
+                f"AutoAction: служебное уведомление отправлено в chat={target}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка служебного уведомления: {e}")
+            return False
 
     async def _resolve_notify_target(self) -> int | None:
         """Определяет chat_id получателя уведомления.

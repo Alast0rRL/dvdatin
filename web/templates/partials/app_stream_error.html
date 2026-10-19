@@ -1,0 +1,16 @@
+{# Красный баннер: бот не смог продолжить ленту анкет (сбой автопотока).
+   Пишется коллектором в app_state.stream_error, сюда попадает через
+   web/db.SyncDB.get_stream_error(). Обновляется polling'ом (chat.feed). #}
+{% if stream_error %}
+<div class="stream-error" role="alert">
+    <div class="stream-error__title">
+        ⚠️ {{ stream_error.message or 'Бот не может продолжить ленту анкет' }}
+    </div>
+    {% if stream_error.reason %}
+    <div class="stream-error__reason">Последнее в чате — {{ stream_error.reason }}</div>
+    {% endif %}
+    <div class="stream-error__hint">
+        Проверь чат с Leo — возможно, нужно нажать кнопку или ответить вручную.
+    </div>
+</div>
+{% endif %}

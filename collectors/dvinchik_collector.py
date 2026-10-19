@@ -66,6 +66,16 @@ VIEW_BUTTON_FRAGMENT: str = "Смотреть анкеты"
 #: «Моя анкета», «Я больше не хочу никого искать», Premium) НИКОГДА не жмём.
 MENU_VIEW_FRAGMENT: str = "1 🚀"
 
+#: Ключ app_state: последний сбой автопотока — бот не смог продолжить ленту
+#: анкет (ни активной анкеты, ни кнопки продолжения, ни капчи). Хранит JSON
+#: для баннера на сайте; владельцу шлётся уведомление в Telegram.
+STREAM_ERROR_STATE_KEY: str = "stream_error"
+#: Как часто повторно уведомлять владельцу о сбое (сек) — чтобы не спамить,
+#: если лента стоит долго.
+STREAM_ERROR_NOTIFY_COOLDOWN_SEC: float = 600.0
+#: Сколько последних сообщений чата Leo попадает в диагностический снимок.
+STREAM_ERROR_SNAPSHOT_LIMIT: int = 12
+
 #: Кнопка-отказ от Premium Leo («Пока без Premium»): после ❤️/👎 бот иногда
 #: присылает премиум-реклму с кнопками [⭐️Активировать, Пока без Premium].
 #: Без нажатия отказной кнопки лента встаёт (новые анкеты/капчи не идут).
@@ -448,19 +458,164 @@ class DvinchikCollector:
         try:
             await self._auto_engine.ensure_peer()
             if await self._process_active_profile_if_any():
+                await self._clear_stream_error()
                 return True
             if await self._press_view_button_if_needed():
+                await self._clear_stream_error()
                 return True
             if await self._press_match_show_if_needed():
+                await self._clear_stream_error()
                 return True
             if await self._press_premium_decline_if_needed():
+                await self._clear_stream_error()
                 return True
             if await self._press_menu_view_if_needed():
+                await self._clear_stream_error()
                 return True
-            return await self._handle_captcha()
+            if await self._handle_captcha():
+                await self._clear_stream_error()
+                return True
+            # Ни активной анкеты, ни кнопки продолжения, ни капчи. Последняя
+            # надежда — «зависший» композер Leo: после рестарта цепочка
+            # «Берем)» теряется, а Leo всё ещё ждёт текст, и лента стоит.
+            last_text = await self._last_incoming_text()
+            if await self._auto_engine.recover_open_composer(last_text):
+                await self._clear_stream_error()
+                return True
+            if self._auto_engine.is_composer_prompt(last_text):
+                # Leo ждёт текст, а закрыть композер не можем (like_message
+                # выключен) — это реальный сбой, владельца надо предупредить.
+                await self._report_stream_stuck(
+                    f"Leo ждёт текст в композере: «{last_text[:80]}»"
+                )
+                return False
+            # Ничего продолжать не нужно (нормальное состояние, не сбой).
+            return False
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
+            await self._report_stream_stuck(f"ошибка автопотока: {e}")
             return False
+
+    async def _stream_snapshot(
+        self, limit: int = STREAM_ERROR_SNAPSHOT_LIMIT
+    ) -> list[str]:
+        """Снимок последних сообщений чата Leo — для диагностики сбоя потока.
+
+        Идём от свежих к старым, затем разворачиваем: в конце списка — самое
+        свежее сообщение (его и показываем как «последнее в чате»).
+        """
+        client = self._auto_engine.client
+        if client is None:
+            return []
+        lines: list[str] = []
+        try:
+            async for msg in client.iter_messages(
+                self._dvinchik_chat_id, limit=limit
+            ):
+                text = (msg.text or "").strip()
+                if not text:
+                    continue
+                who = "мы" if getattr(msg, "out", False) else "Leo"
+                lines.append(f"{who}: {text[:120]}")
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось снять снимок чата: {e}")
+            return []
+        lines.reverse()
+        return lines
+
+    async def _last_incoming_text(self) -> str:
+        """Текст последнего сообщения в чате Leo ('' — нет/ошибка).
+
+        Используется, чтобы понять, не ждёт ли Leo текст в «зависшем»
+        композере (после рестарта цепочка «Берем)» теряется).
+        """
+        client = self._auto_engine.client
+        if client is None:
+            return ""
+        try:
+            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=1):
+                return (msg.text or "").strip()
+        except Exception as e:
+            logger.error(
+                f"AutoAction: не удалось прочитать последнее сообщение: {e}"
+            )
+        return ""
+
+    async def _report_stream_stuck(self, reason: str = "") -> None:
+        """Сообщает владельцу и на сайт, что бот не может продолжить ленту.
+
+        Пишет диагностический снимок в ``app_state`` (его показывает баннер на
+        сайте) и один раз в ``STREAM_ERROR_NOTIFY_COOLDOWN_SEC`` шлёт
+        уведомление владельцу в Telegram. Если в чате нет ни одного внятного
+        сообщения — ничего не сообщаем (ложное срабатывание на пустом старте).
+        """
+        if self._db is None:
+            return
+        snapshot = await self._stream_snapshot()
+        if not snapshot and not reason:
+            return
+        if not reason and snapshot:
+            reason = snapshot[-1]
+        now = datetime.now(timezone.utc)
+        payload = {
+            "message": "Бот не может продолжить ленту анкет Дайвинчика",
+            "reason": reason,
+            "snapshot": snapshot,
+            "at": now.isoformat(),
+        }
+        notify_needed = True
+        try:
+            prev_raw = await self._db.get_state(STREAM_ERROR_STATE_KEY)
+            if prev_raw:
+                try:
+                    prev_at = datetime.fromisoformat(
+                        str(json.loads(prev_raw).get("at") or "")
+                    )
+                    age = (now - prev_at).total_seconds()
+                    if 0 <= age < STREAM_ERROR_NOTIFY_COOLDOWN_SEC:
+                        notify_needed = False
+                except Exception:
+                    pass
+            await self._db.set_state(
+                STREAM_ERROR_STATE_KEY,
+                json.dumps(payload, ensure_ascii=False),
+            )
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось сохранить сбой потока: {e}")
+
+        logger.warning(
+            f"AutoAction: лента встала — {reason or 'причина неизвестна'}"
+        )
+        if notify_needed and self._auto_engine is not None:
+            await self._auto_engine.notify_owner(
+                self._format_stream_stuck_text(reason, snapshot)
+            )
+
+    async def _clear_stream_error(self) -> None:
+        """Сбрасывает отметку о сбое потока, когда лента снова пошла."""
+        if self._db is None:
+            return
+        try:
+            if await self._db.get_state(STREAM_ERROR_STATE_KEY):
+                await self._db.delete_state(STREAM_ERROR_STATE_KEY)
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось сбросить сбой потока: {e}")
+
+    @staticmethod
+    def _format_stream_stuck_text(reason: str, snapshot: list[str]) -> str:
+        """Текст уведомления владельцу о сбое потока."""
+        lines = ["⚠️ Бот не может продолжить ленту анкет (Дайвинчик)."]
+        if reason:
+            lines.append(f"Последнее в чате — {reason}")
+        if snapshot:
+            lines.append("")
+            lines.append("Последние сообщения:")
+            lines.extend(snapshot[-5:])
+        lines.append("")
+        lines.append(
+            "Проверь чат с Leo — возможно, нужно нажать кнопку или ответить вручную."
+        )
+        return "\n".join(lines)
 
     async def _process_active_profile_if_any(self) -> bool:
         """Обрабатывает уже показанную активную анкету, если она есть.

@@ -75,6 +75,7 @@ def _chat_signature(signals: dict[str, Any] | None) -> str:
             str(signals.get("max_auto") or ""),
             str(signals.get("max_captcha") or ""),
             str(signals.get("pending_captchas") or 0),
+            str(signals.get("stream_error_at") or ""),
         ]
     )
 
@@ -116,6 +117,7 @@ def index() -> str:
         account_session=account_session,
         filter_cfg=db.get_filter_config(config_path),
         preferences=_load_preferences(config_path.parent / "preferences.yaml"),
+        stream_error=db.get_stream_error(),
     )
 
 
@@ -133,6 +135,10 @@ def feed() -> tuple:
                 "pending": render_template(
                     "partials/app_captchas.html",
                     pending=[_with_buttons(c) for c in db.get_pending_captchas(limit=20)],
+                ),
+                "banner": render_template(
+                    "partials/app_stream_error.html",
+                    stream_error=db.get_stream_error(),
                 ),
                 "total": data.get("total", 0),
                 "page": data.get("page", 1),

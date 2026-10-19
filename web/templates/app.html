@@ -73,6 +73,11 @@
 {% endblock %}
 
 {% block content %}
+{# Баннер сбоя автопотока (бот не может листать анкеты). Обновляется из
+   /chat/feed (app.js) без перезагрузки страницы. #}
+<div id="stream-banner">
+    {% include "partials/app_stream_error.html" %}
+</div>
 <div class="app" id="app"
      data-sig="{{ signature }}" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
 

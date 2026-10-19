@@ -1,4 +1,4 @@
-﻿tests/test_action_policy.py::TestActionPolicyConfig::test_disable_only_ignores_like_gate
+tests/test_action_policy.py::TestActionPolicyConfig::test_disable_only_ignores_like_gate
 tests/test_action_policy.py::TestActionPolicyConfig::test_like_and_message_full_chain
 tests/test_action_policy.py::TestActionPolicyConfig::test_like_and_message_no_action_if_like_off
 tests/test_action_policy.py::TestActionPolicyConfig::test_like_and_message_no_action_without_message
@@ -37,6 +37,7 @@ tests/test_analytics.py::TestAnalyticsTotals::test_empty_database
 tests/test_analytics.py::TestAnalyticsTotals::test_human_stats
 tests/test_analytics.py::TestAnalyticsTotals::test_no_pending_reviews
 tests/test_analytics.py::TestAnalyticsTotals::test_overview
+tests/test_analytics.py::TestAppState::test_set_get_delete
 tests/test_analytics.py::TestDisagreementCalculation::test_disagreement_calculation
 tests/test_analytics.py::TestDisagreementSorting::test_sort_highest_score
 tests/test_analytics.py::TestDisagreementSorting::test_sort_lowest_confidence
@@ -93,7 +94,7 @@ tests/test_auto_action.py::TestAutoActionConfig::test_defaults
 tests/test_auto_action.py::TestAutoActionConfig::test_interval_positive
 tests/test_auto_action.py::TestAutoActionExec::test_dislike_sends_thumbsdown
 tests/test_auto_action.py::TestAutoActionExec::test_error_on_send_raises_auto_action_error
-tests/test_auto_action.py::TestAutoActionExec::test_like_sends_heart_with_message
+tests/test_auto_action.py::TestAutoActionExec::test_like_sends_composer_button_without_heart
 tests/test_auto_action.py::TestAutoActionExec::test_like_without_message_id_is_gated
 tests/test_auto_action.py::TestAutoActionExec::test_none_decision_skips
 tests/test_auto_action.py::TestAutoActionExec::test_review_notifies_owner_when_message_id_given
@@ -108,6 +109,13 @@ tests/test_auto_action.py::TestAutoActionIdempotency::test_like_then_dislike_is_
 tests/test_auto_action.py::TestAutoActionIdempotency::test_no_profile_id_still_allows_repeated_actions
 tests/test_auto_action.py::TestAutoActionIdempotency::test_same_profile_id_allows_repeated_actions
 tests/test_auto_action.py::TestAutoActionIdempotency::test_same_profile_id_allows_same_action_twice
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_compute_reset_before_and_after_7am
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_expired_limit_does_not_block
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_handle_rejection_aborts_chain
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_handle_rejection_notifies_once
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_like_limit_allows_dislike
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_like_limit_blocks_like
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_mark_persists_and_reports
 tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_goes_to_other_account
 tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_me_is_cached
 tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_skipped_without_notify_client
@@ -133,6 +141,11 @@ tests/test_auto_action.py::TestAutoActionStaleCard::test_stale_like_message_chai
 tests/test_auto_action.py::TestAutoActionStaleCard::test_stale_skip_beats_composer_defer
 tests/test_auto_action.py::TestAutoActionStaleCard::test_swap_client_resets_card_pointer
 tests/test_auto_action.py::TestAutoActionStaleCard::test_unknown_card_is_not_stale
+tests/test_auto_action.py::TestComposerRecovery::test_is_composer_prompt_detects_prompt
+tests/test_auto_action.py::TestComposerRecovery::test_is_composer_prompt_marker_satisfies_all
+tests/test_auto_action.py::TestComposerRecovery::test_notify_owner_sends_to_target
+tests/test_auto_action.py::TestComposerRecovery::test_recover_disabled_when_like_message_off
+tests/test_auto_action.py::TestComposerRecovery::test_recover_open_composer_sends_like_message
 tests/test_auto_action.py::TestFormatReason::test_evidence_quote_dropped_for_truncated_card
 tests/test_auto_action.py::TestFormatReason::test_evidence_quoted_from_full_card
 tests/test_auto_action.py::TestFormatReason::test_evidence_quoted_when_no_card_text_legacy
@@ -150,13 +163,13 @@ tests/test_auto_action.py::TestForwardAllPhotos::test_forwards_all_photos_for_re
 tests/test_auto_action.py::TestForwardAllPhotos::test_no_db_falls_back_to_single_message
 tests/test_auto_action.py::TestForwardAllPhotos::test_single_message_stays_single
 tests/test_auto_action.py::TestLikeAndMessageChain::test_button_text_is_full_button_row
-tests/test_auto_action.py::TestLikeAndMessageChain::test_composer_button_send_failure_keeps_ack_retry
+tests/test_auto_action.py::TestLikeAndMessageChain::test_composer_button_send_failure_drops_chain
 tests/test_auto_action.py::TestLikeAndMessageChain::test_composer_text_bypasses_rate_limit
 tests/test_auto_action.py::TestLikeAndMessageChain::test_deferred_flush_skipped_when_disabled
 tests/test_auto_action.py::TestLikeAndMessageChain::test_deferred_kept_while_composer_still_open
 tests/test_auto_action.py::TestLikeAndMessageChain::test_deferred_reaction_keeps_latest_card
 tests/test_auto_action.py::TestLikeAndMessageChain::test_full_chain_end_to_end
-tests/test_auto_action.py::TestLikeAndMessageChain::test_informative_like_sends_heart_and_composer_button
+tests/test_auto_action.py::TestLikeAndMessageChain::test_informative_like_sends_composer_button
 tests/test_auto_action.py::TestLikeAndMessageChain::test_like_message_disabled_sends_nothing
 tests/test_auto_action.py::TestLikeAndMessageChain::test_message_db_error_does_not_break
 tests/test_auto_action.py::TestLikeAndMessageChain::test_message_wrong_chat_does_not_advance
@@ -198,6 +211,8 @@ tests/test_collector.py::TestBacklogRecovery::test_several_backlog_recovered
 tests/test_collector.py::TestCallbackQueryCapture::test_callback_data_bytes_decoded
 tests/test_collector.py::TestCallbackQueryCapture::test_callback_logs_data
 tests/test_collector.py::TestCollectorActiveCard::test_foreign_chat_does_not_mark_card
+tests/test_collector.py::TestCollectorActiveCard::test_like_rejection_marks_likes_exhausted
+tests/test_collector.py::TestCollectorActiveCard::test_normal_message_does_not_exhaust_likes
 tests/test_collector.py::TestCollectorActiveCard::test_other_account_does_not_mark_card
 tests/test_collector.py::TestCollectorActiveCard::test_photo_only_message_does_not_mark_card
 tests/test_collector.py::TestCollectorActiveCard::test_profile_message_marks_active_card
@@ -207,7 +222,7 @@ tests/test_collector.py::TestCollectorAutoActions::test_filter_reject_no_action_
 tests/test_collector.py::TestCollectorAutoActions::test_filter_reject_sends_dislike_to_keep_stream_moving
 tests/test_collector.py::TestCollectorAutoActions::test_filter_review_sends_dislike_to_keep_stream_moving
 tests/test_collector.py::TestCollectorAutoActions::test_informative_like_starts_message_chain_on_auto_account
-tests/test_collector.py::TestCollectorAutoActions::test_like_decision_sends_heart_on_auto_account
+tests/test_collector.py::TestCollectorAutoActions::test_like_decision_sends_composer_button_on_auto_account
 tests/test_collector.py::TestCollectorAutoActions::test_live_ad_message_presses_view_button_on_separate_message
 tests/test_collector.py::TestCollectorAutoActions::test_log_failure_does_not_resend_action
 tests/test_collector.py::TestCollectorAutoActions::test_logged_profile_is_not_sent_twice
@@ -217,6 +232,7 @@ tests/test_collector.py::TestCollectorAutoActions::test_no_button_press_on_menu_
 tests/test_collector.py::TestCollectorAutoActions::test_non_informative_like_also_starts_message_chain
 tests/test_collector.py::TestCollectorAutoActions::test_observe_mode_no_action_even_if_enabled
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_captcha_memory_disabled_presses_last_button
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_clears_stream_error_when_continues
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_geo_captcha_fallback_presses_plain_button
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_known_captcha_idempotent
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_known_captcha_sends_stored_answer
@@ -238,6 +254,8 @@ tests/test_collector.py::TestCollectorAutoActions::test_start_stream_premium_pro
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_premium_promo_without_decline_does_nothing
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_presses_view_button_when_promo
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_processes_active_profile_without_resync
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_recovers_open_composer
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_reports_stuck_when_composer_recovery_disabled
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_unknown_captcha_fallback_presses_last_button
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_unknown_captcha_waits_for_owner
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_unrelated_card_does_not_press_show
@@ -517,8 +535,8 @@ tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2013\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u0430\u043d\u043a\u0442\u2014\u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
-tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431.-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
+tests/test_parser.py::TestCityNormalization::test_spb_variants[\u0441\u043f\u0431-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestCityNormalization::test_unknown_city
 tests/test_parser.py::TestCityNormalization::test_unknown_district_not_mapped_to_city
 tests/test_parser.py::TestCityNormalization::test_whitespace
@@ -570,6 +588,9 @@ tests/test_parser.py::TestParseProfile::test_wrong_age
 tests/test_parser.py::TestServiceMessages::test_service[\u0412\u0430\u043c \u043f\u043e\u0441\u0442\u0430\u0432\u0438\u043b\u0438 \u043b\u0430\u0439\u043a!]
 tests/test_parser.py::TestServiceMessages::test_service[\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u0435\u0439 \u043f\u0435\u0440\u0432\u044b\u043c!]
 tests/test_parser.py::TestServiceMessages::test_service[\u0423 \u0432\u0430\u0441 \u043e\u0431\u043e\u044e\u0434\u043d\u043e\u0435 \u0441\u043e\u0432\u043f\u0430\u0434\u0435\u043d\u0438\u0435!]
+tests/test_preferences.py::TestDecisionHardRules::test_hard_like_does_not_override_filter_reject
+tests/test_preferences.py::TestDecisionHardRules::test_hard_like_does_not_override_hard_negative
+tests/test_preferences.py::TestDecisionHardRules::test_hard_like_forces_like_on_short_profile
 tests/test_preferences.py::TestDecisionHardRules::test_like_factor_does_not_override_filter_reject
 tests/test_preferences.py::TestDecisionHardRules::test_like_factor_lifts_below_threshold_to_review
 tests/test_preferences.py::TestDecisionHardRules::test_no_prefs_no_hard_negative_is_review
@@ -587,7 +608,9 @@ tests/test_preferences.py::TestLowInfoSkipRule::test_low_info_skip_action_enable
 tests/test_preferences.py::TestPreferencesEngine::test_against_alcohol_not_skipped
 tests/test_preferences.py::TestPreferencesEngine::test_alcohol_still_skipped_without_negation
 tests/test_preferences.py::TestPreferencesEngine::test_disabled_engine_hits_nothing
+tests/test_preferences.py::TestPreferencesEngine::test_evaluate_forced_like
 tests/test_preferences.py::TestPreferencesEngine::test_evaluate_skip_and_like
+tests/test_preferences.py::TestPreferencesEngine::test_forced_like_negation_respected
 tests/test_preferences.py::TestPreferencesEngine::test_live_config_detects_piva
 tests/test_preferences.py::TestPreferencesEngine::test_no_text_no_rules
 tests/test_preferences.py::TestPreferencesEngine::test_non_smoker_non_drinker_not_skipped
@@ -639,9 +662,6 @@ tests/test_web.py::TestAppShell::test_root_renders_app
 tests/test_web.py::TestAppShell::test_settings_button_and_forms_in_drawer
 tests/test_web.py::TestAppShell::test_settings_values_loaded_into_drawer
 tests/test_web.py::TestAppShell::test_static_assets_are_cache_busted
-tests/test_web.py::TestCSRF::test_login_requires_csrf
-tests/test_web.py::TestCSRF::test_logout_requires_csrf
-tests/test_web.py::TestCSRF::test_settings_update_requires_csrf
 tests/test_web.py::TestCaptchaMemorySync::test_get_captcha_and_delete
 tests/test_web.py::TestCaptchaMemorySync::test_pending_and_known_roundtrip
 tests/test_web.py::TestCaptchas::test_answer_captcha_learns_and_forwards
@@ -651,8 +671,8 @@ tests/test_web.py::TestCaptchas::test_delete_captcha
 tests/test_web.py::TestCaptchas::test_pending_captchas_in_app
 tests/test_web.py::TestChatFeed::test_chat_feed_fragment
 tests/test_web.py::TestChatFeed::test_chat_new_count_signature
-tests/test_web.py::TestChatFeed::test_chat_page1_is_newest
 tests/test_web.py::TestChatFeed::test_chat_page_is_app
+tests/test_web.py::TestChatFeed::test_chat_page1_is_newest
 tests/test_web.py::TestChatFeed::test_chat_requires_login
 tests/test_web.py::TestChatFeed::test_page_has_signature_and_clean_js
 tests/test_web.py::TestChatFeed::test_pending_captcha_in_app_and_feed
@@ -667,6 +687,9 @@ tests/test_web.py::TestChatFeedDedup::test_orphan_annotation_still_shown
 tests/test_web.py::TestChatFeedDedup::test_outgoing_raw_row_is_our_action_not_leo
 tests/test_web.py::TestChatFeedDedup::test_pagination_walks_all_pages_without_duplicates
 tests/test_web.py::TestChatFeedDedup::test_reaction_shown_once_not_twice
+tests/test_web.py::TestCSRF::test_login_requires_csrf
+tests/test_web.py::TestCSRF::test_logout_requires_csrf
+tests/test_web.py::TestCSRF::test_settings_update_requires_csrf
 tests/test_web.py::TestLogin::test_login_page_renders
 tests/test_web.py::TestLogin::test_login_success
 tests/test_web.py::TestLogin::test_login_wrong_password
@@ -704,6 +727,11 @@ tests/test_web.py::TestSettings::test_update_filters
 tests/test_web.py::TestSettings::test_update_mode
 tests/test_web.py::TestSettings::test_update_mode_switches_live_engine
 tests/test_web.py::TestSettings::test_update_mode_without_collector
+tests/test_web.py::TestStreamErrorBanner::test_banner_absent_without_error
+tests/test_web.py::TestStreamErrorBanner::test_banner_in_feed_json
+tests/test_web.py::TestStreamErrorBanner::test_banner_on_index
+tests/test_web.py::TestStreamErrorBanner::test_signature_changes_with_stream_error
+tests/test_web.py::TestStreamErrorBanner::test_sync_db_get_stream_error
 tests/test_web.py::TestSyncDB::test_count_decisions
 tests/test_web.py::TestSyncDB::test_get_filter_config
 tests/test_web.py::TestSyncDB::test_get_mode
