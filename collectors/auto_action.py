@@ -10,7 +10,7 @@ import asyncio
 import random
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -827,10 +827,56 @@ class AutoActionEngine:
             raise AutoActionError(msg)
         try:
             await self.ensure_peer()
-            await self._client.send_message(self._peer or self._chat_id, text)
+            sent = await self._client.send_message(
+                self._peer or self._chat_id, text
+            )
         except Exception as e:
             logger.error(f"AutoAction: ошибка отправки {text!r}: {e}")
             raise AutoActionError(str(e)) from e
+        await self._persist_outgoing(sent, text)
+
+    async def _persist_outgoing(self, message: object, text: str) -> None:
+        """Сохраняет НАШЕ исходящее сообщение в raw_messages (is_outgoing=True).
+
+        Лента на сайте — прямое дублирование Telegram-чата, поэтому каждое наше
+        сообщение (👎/❤️/кнопки/«Берем)») должно быть в ``raw_messages`` с тем
+        же ``telegram_message_id``, что и в Telegram. Коллектор полагается на
+        эхо-событие Telethon (``NewMessage(outgoing=True)``), но оно приходит не
+        всегда (прод-замер: 311 действий за день, 7 сохранённых исходящих) —
+        наши реакции пропадали из ленты и порядок «карточка → реакция →
+        сообщение» разъезжался. Движок знает, что и с каким id отправил, поэтому
+        пишет это сам; дубликат с эхо-событием схлопывает UNIQUE-индекс
+        ``raw_messages``. Ошибки БД не роняют отправку (сообщение уже ушло).
+        """
+        if self._db is None:
+            return
+        tm_id = getattr(message, "id", None)
+        if not tm_id:
+            return
+        msg_date = getattr(message, "date", None)
+        try:
+            await self._db.save_raw_message(
+                telegram_message_id=tm_id,
+                chat_id=self._chat_id,
+                sender_id=getattr(message, "sender_id", 0) or 0,
+                sender_username="",
+                sender_name="",
+                message_date=(
+                    msg_date.isoformat()
+                    if msg_date
+                    else datetime.now(timezone.utc).isoformat()
+                ),
+                text=text,
+                raw_entities="[]",
+                reply_markup="[]",
+                media_type="",
+                reply_to_message_id=None,
+                received_at=datetime.now(timezone.utc).isoformat(),
+                is_outgoing=True,
+                account_session=self._account_session,
+            )
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось сохранить исходящее в RAW: {e}")
 
     async def _send_locked(self, text: str) -> None:
         """Отправляет текст под блокировкой движка с применением rate-limit."""

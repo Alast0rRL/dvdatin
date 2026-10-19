@@ -201,6 +201,86 @@ class TestAutoActionExec:
             )
 
 
+class TestOutgoingPersisted:
+    """Наши исходящие пишутся в raw_messages — лента = зеркало Telegram-чата.
+
+    Коллектор полагается на эхо-событие Telethon (``NewMessage(outgoing=True)``),
+    но оно приходит не всегда, из-за чего 👎/❤️/кнопки/«Берем)» пропадали из
+    ленты. Движок сам сохраняет отправленное (id известен из send_message).
+    """
+
+    def _client_with_message(self, tm_id: int = 4242) -> AsyncMock:
+        client = make_client()
+        msg = MagicMock()
+        msg.id = tm_id
+        msg.sender_id = 8525808108
+        msg.date = datetime(2026, 10, 19, 17, 28, 44)
+        client.send_message = AsyncMock(return_value=msg)
+        return client
+
+    def test_dislike_saved_as_outgoing(self) -> None:
+        db = MagicMock()
+        db.save_raw_message = AsyncMock(return_value=1)
+        client = self._client_with_message(4242)
+        e = make_engine(client=client, db=db, account_session="dvai_2")
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=1, message_id=900)
+        )
+        assert result == "DISLIKE"
+        db.save_raw_message.assert_awaited_once()
+        kw = db.save_raw_message.call_args.kwargs
+        assert kw["telegram_message_id"] == 4242
+        assert kw["is_outgoing"] is True
+        assert kw["account_session"] == "dvai_2"
+        assert kw["chat_id"] == 1234060895
+        assert kw["text"] == DISLIKE_TEXT
+
+    def test_button_press_saved_as_outgoing(self) -> None:
+        db = MagicMock()
+        db.save_raw_message = AsyncMock(return_value=1)
+        client = self._client_with_message(777)
+        e = make_engine(client=client, db=db, account_session="dvai_2")
+        ok = asyncio.get_event_loop().run_until_complete(
+            e.send_text("\U0001F680 Смотреть анкеты")
+        )
+        assert ok is True
+        kw = db.save_raw_message.call_args.kwargs
+        assert kw["telegram_message_id"] == 777
+        assert kw["is_outgoing"] is True
+
+    def test_no_db_does_not_break_send(self) -> None:
+        client = self._client_with_message(1)
+        e = make_engine(client=client)  # db=None
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE)
+        )
+        assert result == "DISLIKE"
+
+    def test_persist_error_does_not_break_send(self) -> None:
+        db = MagicMock()
+        db.save_raw_message = AsyncMock(side_effect=RuntimeError("db down"))
+        client = self._client_with_message(5)
+        e = make_engine(client=client, db=db)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE)
+        )
+        assert result == "DISLIKE"
+
+    def test_message_without_id_is_not_persisted(self) -> None:
+        db = MagicMock()
+        db.save_raw_message = AsyncMock(return_value=1)
+        client = make_client()
+        msg = MagicMock()
+        msg.id = None
+        client.send_message = AsyncMock(return_value=msg)
+        e = make_engine(client=client, db=db)
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE)
+        )
+        assert result == "DISLIKE"
+        db.save_raw_message.assert_not_awaited()
+
+
 class TestAutoActionRateLimit:
     def test_rate_limit_delays_between_actions(self) -> None:
         import time
