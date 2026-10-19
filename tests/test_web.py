@@ -707,14 +707,16 @@ class TestProfileInFeed:
         resp = client.get("/profiles/1")
         assert resp.status_code == 302
 
-    def test_review_buttons_only_for_review(self, client) -> None:
-        """❤️/👎 рисуются ТОЛЬКО для анкет, которые AI не решил (REVIEW)."""
+    def test_feed_has_no_action_buttons(self, client) -> None:
+        """Лента — дублирование чата: карточек с ❤️/👎 больше нет.
+
+        Анкета показывается теми же сообщениями, что и в Telegram (текст +
+        фото). Ручные кнопки REVIEW из ленты убраны вместе с карточками;
+        маршруты /chat/profile/<id>/<action> остаются рабочими (см. ниже).
+        """
         _login(client)
         data = client.get("/").get_data(as_text=True)
-        # Барби (id=2) — AI REVIEW → кнопки есть
-        assert "/chat/profile/2/LIKE" in data
-        assert "/chat/profile/2/DISLIKE" in data
-        # Алиса (id=1) AI LIKE + APPROVE и Варвара (id=3) AI DISLIKE — без кнопок
+        assert "/chat/profile/2/LIKE" not in data
         assert "/chat/profile/1/LIKE" not in data
         assert "/chat/profile/3/LIKE" not in data
 
@@ -1576,259 +1578,171 @@ class TestStreamErrorBanner:
         assert parsed and parsed["reason"] == "Leo ждёт текст в композере"
 
 
-class TestChatFeedDedup:
-    """Одно сообщение Telegram = одна строка ленты (регресс на 3 «👎»)."""
+class TestChatFeedMirror:
+    """Лента = прямое дублирование Telegram-чата с Leo.
 
-    def _seed_dislike_flow(self, db, *, card_tm: int, reaction_tm: int,
-                           profile_id: int, ts: str = "2025-03-01T10:00:00") -> None:
-        """Один реальный цикл: карточка анкеты → отправленный 👎.
+    ОДНО сообщение = ОДНА строка (входящее Leo / наше исходящее). Аннотации
+    ``sent_messages``/``auto_actions_log`` в ленту НЕ подмешиваются: их
+    ``telegram_message_id`` указывает на карточку анкеты, а не на само
+    сообщение-реакцию, из-за чего лента съезжала на соседнюю анкету.
+    """
 
-        Ровно то, что пишет коллектор: карточка от Leo в raw_messages,
-        исходящий 👎 тоже в raw_messages (перехватчик исходящих) И его же
-        аннотация в sent_messages. Раньше это давало три строки ленты на
-        одну анкету — карточка, голый «👎» и «👎 DISLIKE вручную».
-        """
+    def _seed(self, db, *, card_tm: int, reaction_tm: int,
+              account_session: str = "") -> None:
         loop = asyncio.get_event_loop()
 
         async def _seed() -> None:
             await db.save_raw_message(
-                telegram_message_id=card_tm, chat_id=1234060895, sender_id=1234060895,
-                sender_username="", sender_name="Leo", message_date=ts,
-                text="Варвара, 20, Сургут", raw_entities="[]", reply_markup="[]",
-                media_type="photo", received_at=ts,
+                telegram_message_id=card_tm, chat_id=1234060895,
+                sender_id=1234060895, sender_username="", sender_name="Leo",
+                message_date="2025-03-01T10:00:00", text="Варвара, 20, Сургут",
+                raw_entities="[]", reply_markup="[]", media_type="",
+                received_at="2025-03-01T10:00:00",
+                account_session=account_session,
             )
-            # Исходящий 👎 — с is_outgoing=True (иначе это выглядит как
-            # сообщение от Leo).
             await db.save_raw_message(
                 telegram_message_id=reaction_tm, chat_id=1234060895,
                 sender_id=1753676469, sender_username="", sender_name="",
-                message_date=ts, text="👎", raw_entities="[]", reply_markup="[]",
-                media_type="", received_at=ts, is_outgoing=True,
-            )
-            await db.record_sent_message(
-                "👎", 1234060895, reaction_tm, source="manual",
-                action="DISLIKE", profile_id=profile_id,
+                message_date="2025-03-01T10:00:00", text="👎", raw_entities="[]",
+                reply_markup="[]", media_type="",
+                received_at="2025-03-01T10:00:00", is_outgoing=True,
+                account_session=account_session,
             )
 
         loop.run_until_complete(_seed())
 
-    def test_reaction_shown_once_not_twice(self, sync_db) -> None:
-        """Отправленный 👎 = ОДНА строка ленты, а не две (raw + sent)."""
+    def test_incoming_and_outgoing_are_separate_rows(self, sync_db) -> None:
         sync, _, db = sync_db
-        self._seed_dislike_flow(db, card_tm=7001, reaction_tm=7002, profile_id=3)
-
-        items = sync.get_chat_feed(page=1, per_page=50)["items"]
-        by_tm = {}
-        for i in items:
-            by_tm.setdefault(i["telegram_message_id"], []).append(i)
-
-        assert len(by_tm[7002]) == 1, f"👎 должен быть один раз: {by_tm[7002]}"
-        row = by_tm[7002][0]
-        assert row["direction"] == "out" and row["kind"] == "action"
-        assert row["action"] == "DISLIKE"
-        assert row["manual"] is True
-        assert "👎 DISLIKE" in row["action_label"]
-
-    def test_outgoing_raw_row_is_our_action_not_leo(self, sync_db) -> None:
-        """Наш исходящий не рисуется как сообщение от Leo.
-
-        Регресс: коллектор логирует весь чат, поэтому отправленный 👎 лежал
-        в raw_messages и лента показывала его слева с подписью «Leo».
-        """
-        sync, _, db = sync_db
-        self._seed_dislike_flow(db, card_tm=7011, reaction_tm=7012, profile_id=3)
-
-        items = sync.get_chat_feed(page=1, per_page=50)["items"]
-        ours = [i for i in items if i["telegram_message_id"] == 7012]
-        assert ours and ours[0]["direction"] == "out"
-        assert ours[0]["sender"] == "Я"
-
-        card = [i for i in items if i["telegram_message_id"] == 7011]
-        assert card and card[0]["direction"] == "in" and card[0]["sender"] == "Leo"
-
-    def test_no_duplicate_telegram_message_ids(self, sync_db) -> None:
-        """Ни одно сообщение Telegram не встречается в ленте дважды."""
-        sync, _, db = sync_db
-        for i in range(6):
-            self._seed_dislike_flow(
-                db, card_tm=7100 + i * 2, reaction_tm=7101 + i * 2,
-                profile_id=3, ts=f"2025-03-02T10:0{i}:00",
-            )
-
-        items = sync.get_chat_feed(page=1, per_page=100)["items"]
-        tms = [i["telegram_message_id"] for i in items]
-        assert len(tms) == len(set(tms)), "в ленте есть дубли telegram_message_id"
-        # Фикстура даёт 3 анкеты; добавили 6 карточек + 6 реакций = 15 строк.
-        # Без склейки было бы 21 (каждый 👎 считался дважды).
-        assert len(items) == 15, f"ожидали 15 строк, получили {len(items)}"
-
-    def test_ai_badge_hidden_when_profile_already_acted(self, client, sync_db) -> None:
-        """Бейдж AI в карточке скрыт, если по анкете уже есть строка действия.
-
-        Три «👎» на одну анкету (бейдж в карточке + голый эмодзи + «DISLIKE
-        вручную») сводились к двум строкам; чтобы вторая строка не читалась
-        как повтор, вердикт AI из карточки убираем — действие рядом и есть
-        вердикт. Атрибут data-decision для фильтра остаётся всегда.
-        """
-        sync, _, db = sync_db
-        self._seed_dislike_flow(db, card_tm=7201, reaction_tm=7202, profile_id=3)
-
-        _login(client)
-        html = client.get("/").get_data(as_text=True)
-        card = _card_html(html, 3)
-
-        assert 'data-decision="DISLIKE"' in card, "фильтр по решению должен работать"
-        assert "👎 DISLIKE</span>" not in card, "бейдж AI не должен дублировать действие"
-        # Ровно один 👎 DISLIKE на всю страницу — в строке действия.
-        assert html.count("👎 DISLIKE") == 1, "в ленте больше одного «👎 DISLIKE»"
-
-    def test_ai_badge_kept_when_no_action_yet(self, client, sync_db) -> None:
-        """Если действия по анкете ещё нет — вердикт AI остаётся в карточке."""
-        _login(client)
-        html = client.get("/").get_data(as_text=True)
-        # Варвара (id=3) = AI DISLIKE, действий в тестовой БД нет.
-        assert "👎 DISLIKE" in _card_html(html, 3)
-
-    def test_empty_media_only_message_not_rendered_twice(self, client, sync_db) -> None:
-        """Фото без текста (MEDIA_ONLY) не дублирует карточку анкеты.
-
-        Leo шлёт карточку и следом отдельное фото; оба сообщения linked в
-        profile_messages, из-за чего анкета рисовалась в ленте дважды.
-        """
-        sync, _, db = sync_db
-        loop = asyncio.get_event_loop()
-        ts = "2025-03-03T10:00:00"
-
-        async def _seed() -> None:
-            await db.link_profile_message(
-                profile_id=3, telegram_message_id=7302, chat_id=1234060895,
-                created_at=ts, account_session="dvai",
-            )
-            await db.save_raw_message(
-                telegram_message_id=7302, chat_id=1234060895, sender_id=1234060895,
-                sender_username="", sender_name="Leo", message_date=ts, text="",
-                raw_entities="[]", reply_markup="[]", media_type="photo",
-                received_at=ts,
-            )
-
-        loop.run_until_complete(_seed())
-
-        _login(client)
-        html = client.get("/").get_data(as_text=True)
-        # Одна строка на анкету, не две.
-        assert html.count('id="profile-3"') == 1
+        self._seed(db, card_tm=8001, reaction_tm=8002)
         rows = sync.get_chat_feed(page=1, per_page=50)["items"]
-        assert [i["telegram_message_id"] for i in rows].count(7302) == 0
+        by = {
+            i["telegram_message_id"]: i for i in rows
+            if i["telegram_message_id"] in (8001, 8002)
+        }
+        assert by[8001]["direction"] == "in" and by[8001]["sender"] == "Leo"
+        assert by[8002]["direction"] == "out" and by[8002]["sender"] == "Я"
+        assert by[8002]["text"] == "👎"
 
-    def test_feed_total_counts_messages_not_annotations(self, sync_db) -> None:
-        """Пагинация считает сообщения, а не записи в трёх таблицах.
-
-        Регресс: total складывал COUNT трёх таблиц, поэтому один 👎
-        (raw + sent) занимал в пагинации два места.
-        """
+    def test_annotation_does_not_create_extra_row(self, sync_db) -> None:
+        """Аннотация исходящего не добавляет вторую строку (только чат)."""
         sync, _, db = sync_db
-        before = sync.get_chat_feed(page=1, per_page=50)["total"]
-        self._seed_dislike_flow(db, card_tm=7401, reaction_tm=7402, profile_id=3)
-        after = sync.get_chat_feed(page=1, per_page=50)["total"]
-        # +2 сообщения (карточка и 👎), а не +3 записей.
-        assert after - before == 2, f"{before} -> {after}"
-
-    def test_orphan_annotation_still_shown(self, sync_db) -> None:
-        """Аннотация без сырой записи не теряется (RAW не сохранился)."""
-        sync, _, db = sync_db
+        self._seed(db, card_tm=8001, reaction_tm=8002)
         loop = asyncio.get_event_loop()
-
-        async def _seed() -> None:
-            await db.record_sent_message(
-                "👎", 1234060895, 7502, source="manual", action="DISLIKE",
+        loop.run_until_complete(
+            db.record_sent_message(
+                "👎", 1234060895, 8002, source="manual", action="DISLIKE",
                 profile_id=3,
             )
-
-        loop.run_until_complete(_seed())
+        )
         rows = sync.get_chat_feed(page=1, per_page=50)["items"]
-        orphan = [i for i in rows if i["telegram_message_id"] == 7502]
-        assert len(orphan) == 1
-        assert orphan[0]["kind"] == "action" and orphan[0]["manual"] is True
+        out = [i for i in rows if i["telegram_message_id"] == 8002]
+        assert len(out) == 1, "аннотация не должна добавлять вторую строку"
 
-    def test_annotation_id_colliding_with_incoming_not_merged(self, sync_db) -> None:
-        """Номер входящего Leo и номер нашего исходящего — разные сообщения.
+    def test_annotation_without_raw_not_shown(self, sync_db) -> None:
+        """Аннотация без сырого сообщения в ленту не попадает (только чат)."""
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.record_sent_message(
+                "👎", 1234060895, 8902, source="manual", action="DISLIKE",
+                profile_id=3,
+            )
+        )
+        rows = sync.get_chat_feed(page=1, per_page=50)["items"]
+        assert all(i["telegram_message_id"] != 8902 for i in rows)
 
-        У каждого аккаунта Telegram свой диапазон message id в одном чате, так
-        что номер нашего ❤️ может совпасть с номером карточки Leo. На реальной
-        базе это не rarity: диапазоны полностью пересекаются (входящие
-        22757..723077, исходящие 22871..723078), а уникальный индекс
-        ``idx_raw_unique(chat_id, telegram_message_id)`` не даёт сохранить
-        оба — исходящее сырьё молча отбрасывалось, и в ленте оставалась одна
-        строка. Именно поэтому все 153 авто-действия не имеют сырой пары.
-
-        Лента обязана показывать ОБЕ строки: карточка Leo и наше действие —
-        это два разных сообщения, просто с одинаковым номером.
-        """
+    def test_same_tm_in_and_out_both_shown(self, sync_db) -> None:
+        """Входящее и исходящее с одним номером — два разных сообщения."""
         sync, _, db = sync_db
         loop = asyncio.get_event_loop()
         ts = "2025-03-04T10:00:00"
 
         async def _seed() -> None:
-            # Карточка от Leo с id 9001...
             await db.save_raw_message(
-                telegram_message_id=9001, chat_id=1234060895, sender_id=1234060895,
-                sender_username="", sender_name="Leo", message_date=ts,
-                text="Лиза, 21, Казань", raw_entities="[]", reply_markup="[]",
-                media_type="photo", received_at=ts,
+                telegram_message_id=9001, chat_id=1234060895,
+                sender_id=1234060895, sender_username="", sender_name="Leo",
+                message_date=ts, text="Лиза, 21, Казань", raw_entities="[]",
+                reply_markup="[]", media_type="", received_at=ts,
             )
-            # ...и наше ❤️ с ТЕМ ЖЕ номером. Сырое исходящее отбросится по
-            # UNIQUE — как на реальной базе, — но аннотация сохранится.
             await db.save_raw_message(
-                telegram_message_id=9001, chat_id=1234060895, sender_id=1753676469,
-                sender_username="", sender_name="", message_date=ts, text="❤️",
-                raw_entities="[]", reply_markup="[]", media_type="",
-                received_at=ts, is_outgoing=True,
-            )
-            await db.record_auto_action(
-                profile_id=3, action="LIKE", decision="LIKE", chat_id=1234060895,
-                telegram_message_id=9001,
+                telegram_message_id=9001, chat_id=1234060895,
+                sender_id=1753676469, sender_username="", sender_name="",
+                message_date=ts, text="❤️", raw_entities="[]", reply_markup="[]",
+                media_type="", received_at=ts, is_outgoing=True,
             )
 
         loop.run_until_complete(_seed())
+        rows = [
+            i for i in sync.get_chat_feed(page=1, per_page=50)["items"]
+            if i["telegram_message_id"] == 9001
+        ]
+        assert len(rows) == 2, "ожидали 2 разных сообщения с одним номером"
+        assert {i["direction"] for i in rows} == {"in", "out"}
+
+    def test_photo_message_maps_to_profile(self, sync_db) -> None:
+        """Фото-сообщение отдаётся фото и знает свою анкету (для фильтра)."""
+        sync, _, _ = sync_db
         rows = sync.get_chat_feed(page=1, per_page=50)["items"]
-        same_tm = [i for i in rows if i["telegram_message_id"] == 9001]
-        assert len(same_tm) == 2, f"ожидали 2 разных сообщения, получили {len(same_tm)}"
-        by_dir = {i["direction"]: i for i in same_tm}
-        assert set(by_dir) == {"in", "out"}
-        # Карточка Leo осталась карточкой и не получила наше действие.
-        assert by_dir["in"]["kind"] == "raw" and by_dir["in"]["action"] == ""
-        assert by_dir["out"]["kind"] == "action" and by_dir["out"]["action"] == "LIKE"
-        assert by_dir["out"]["sender"] == "Я" and by_dir["out"]["manual"] is False
+        photo = [i for i in rows if i["telegram_message_id"] == 111][0]
+        assert photo["media_type"] == "photo"
+        assert photo["kind"] == "photo"
+        assert photo["profile_id"] == 1
+        assert photo["decision"] == "LIKE"
+
+    def test_total_counts_raw_messages(self, sync_db) -> None:
+        sync, _, db = sync_db
+        before = sync.get_chat_feed(page=1, per_page=50)["total"]
+        self._seed(db, card_tm=8201, reaction_tm=8202)
+        after = sync.get_chat_feed(page=1, per_page=50)["total"]
+        assert after - before == 2, "карточка и реакция — два сообщения"
+
+    def test_empty_message_skipped(self, sync_db) -> None:
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(
+            db.save_raw_message(
+                telegram_message_id=8301, chat_id=1234060895,
+                sender_id=1234060895, sender_username="", sender_name="Leo",
+                message_date="2025-03-03T10:00:00", text="",
+                raw_entities="[]", reply_markup="[]", media_type="",
+                received_at="2025-03-03T10:00:00",
+            )
+        )
+        rows = sync.get_chat_feed(page=1, per_page=50)["items"]
+        assert all(i["telegram_message_id"] != 8301 for i in rows)
+
+    def test_account_session_filters_other_account(self, sync_db) -> None:
+        """Лента показывает только выбранный аккаунт (+ legacy с пустой сессией)."""
+        sync, _, db = sync_db
+        self._seed(db, card_tm=8401, reaction_tm=8402, account_session="dvai")
+        self._seed(db, card_tm=8411, reaction_tm=8412, account_session="dvai_2")
+        rows = sync.get_chat_feed(
+            page=1, per_page=50, account_session="dvai"
+        )["items"]
+        tms = {i["telegram_message_id"] for i in rows}
+        assert 8401 in tms and 8402 in tms
+        assert 8411 not in tms and 8412 not in tms
 
     def test_pagination_walks_all_pages_without_duplicates(self, sync_db) -> None:
-        """Постраничный обход всей ленты даёт каждое сообщение ровно раз.
-
-        Ключ ленты — объединение четырёх ветвей, и если брать «последние N»
-        из каждой таблицы отдельно, окна не совпадают: на реальной базе это
-        давало 578 повторов на соседних страницах.
-        """
+        """Постраничный обход даёт каждое сообщение ровно один раз."""
         sync, _, db = sync_db
         loop = asyncio.get_event_loop()
 
         async def _seed() -> None:
-            for i in range(12):
-                ts = f"2025-03-05T10:{i:02d}:00"
+            for k in range(12):
+                ts = f"2025-03-05T10:{k:02d}:00"
                 await db.save_raw_message(
-                    telegram_message_id=8000 + i, chat_id=1234060895,
+                    telegram_message_id=9300 + k, chat_id=1234060895,
                     sender_id=1234060895, sender_username="", sender_name="Leo",
-                    message_date=ts, text=f"Карточка {i}", raw_entities="[]",
-                    reply_markup="[]", media_type="photo", received_at=ts,
+                    message_date=ts, text=f"MSG-{k}", raw_entities="[]",
+                    reply_markup="[]", media_type="", received_at=ts,
                 )
                 await db.save_raw_message(
-                    telegram_message_id=8500 + i, chat_id=1234060895,
+                    telegram_message_id=9400 + k, chat_id=1234060895,
                     sender_id=1753676469, sender_username="", sender_name="",
                     message_date=ts, text="👎", raw_entities="[]",
                     reply_markup="[]", media_type="", received_at=ts,
                     is_outgoing=True,
-                )
-                await db.record_sent_message(
-                    "👎", 1234060895, 8500 + i, source="manual",
-                    action="DISLIKE", profile_id=3,
                 )
 
         loop.run_until_complete(_seed())
@@ -1850,52 +1764,8 @@ class TestChatFeedDedup:
             rows += items
             page += 1
 
-        # 12 карточек + 12 реакций; фикстура добавляет ещё 3 анкеты.
         assert len(rows) == len(seen) == total
         assert sum(1 for i in rows if i["direction"] == "out") == 12
-
-    def test_badge_hidden_when_annotation_has_no_profile_id(self, client, sync_db) -> None:
-        """Бейдж скрыт и когда в аннотации нет profile_id.
-
-        Часть ручных отправок пишется с profile_id = NULL (на реальной базе
-        165 из 597 — профиль не удалось резолвить в момент записи). Leo держит
-        одну активную карточку, поэтому реакция приходит сразу за ней.
-        """
-        sync, _, db = sync_db
-        loop = asyncio.get_event_loop()
-        # Время карточки — «сейчас»: record_sent_message ставит sent_at = now(),
-        # и признак «реакция почти сразу после карточки» работает по времени.
-        ts = datetime.now(timezone.utc).isoformat()
-
-        async def _seed() -> None:
-            await db.save_raw_message(
-                telegram_message_id=9101, chat_id=1234060895, sender_id=1234060895,
-                sender_username="", sender_name="Leo", message_date=ts,
-                text="Лена, 22, Пермь", raw_entities="[]", reply_markup="[]",
-                media_type="photo", received_at=ts,
-            )
-            await db.link_profile_message(
-                profile_id=3, telegram_message_id=9101, chat_id=1234060895,
-                created_at=ts, account_session="dvai",
-            )
-            await db.save_raw_message(
-                telegram_message_id=9102, chat_id=1234060895, sender_id=1753676469,
-                sender_username="", sender_name="", message_date=ts, text="👎",
-                raw_entities="[]", reply_markup="[]", media_type="",
-                received_at=ts, is_outgoing=True,
-            )
-            await db.record_sent_message(
-                "👎", 1234060895, 9102, source="manual", action="DISLIKE",
-            )
-
-        loop.run_until_complete(_seed())
-
-        _login(client)
-        html = client.get("/").get_data(as_text=True)
-        card = _card_html(html, 3)
-        assert 'data-decision="DISLIKE"' in card
-        assert "👎 DISLIKE</span>" not in card, "бейдж должен быть скрыт"
-
 
 # ── Debug console (Stage 9) ───────────────────────────────────────
 

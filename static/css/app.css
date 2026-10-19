@@ -302,7 +302,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     border-radius: 10px;
 }
 .row:hover { border-color: var(--row-hover-line); }
-.row--action { background: var(--bg-row-out); }
+.row--action,
+.row--out { background: var(--bg-row-out); }
 .row--captcha { border-color: var(--review-line); }
 
 .row__time {

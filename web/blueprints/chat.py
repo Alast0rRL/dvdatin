@@ -100,10 +100,12 @@ def index() -> str:
     db = _get_db()
     config_path = _get_config_path()
 
-    data = db.get_chat_feed(page=1, per_page=FEED_PER_PAGE)
+    accounts, account_session = _get_accounts(config_path)
+    data = db.get_chat_feed(
+        page=1, per_page=FEED_PER_PAGE, account_session=account_session
+    )
     signals = db.get_chat_signals()
     pending = [_with_buttons(c) for c in db.get_pending_captchas(limit=20)]
-    accounts, account_session = _get_accounts(config_path)
 
     return render_template(
         "app.html",
@@ -163,8 +165,11 @@ def debug() -> tuple:
 def feed() -> tuple:
     """Фрагменты ленты и капч для in-place обновления (polling)."""
     db = _get_db()
+    _, account_session = _get_accounts(_get_config_path())
     page = request.args.get("page", 1, type=int)
-    data = db.get_chat_feed(page=page, per_page=FEED_PER_PAGE)
+    data = db.get_chat_feed(
+        page=page, per_page=FEED_PER_PAGE, account_session=account_session
+    )
     return (
         json.dumps(
             {

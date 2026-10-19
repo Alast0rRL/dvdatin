@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS raw_messages (
     reply_to_message_id INTEGER,
     received_at TEXT NOT NULL,
     processed_at TEXT,
-    is_outgoing INTEGER DEFAULT 0
+    is_outgoing INTEGER DEFAULT 0,
+    account_session TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS profiles (
@@ -271,15 +272,21 @@ class Database:
         таблицу, поэтому недостающие колонки добавляем здесь (backward
         compatible — существующие данные не трогаются).
         """
-        # C1/C2: уникальность исходного Telegram-сообщения. Авторитетная
-        # защита от повторной доставки (restart/reconnect/telethon catch_up).
-        await self._ensure_raw_unique_index()
+        # C1/C2: уникальность исходного Telegram-сообщения считается ЗДЕСЬ
+        # (после is_outgoing) — индекс включает направление, см. ниже.
         # W3: флаг обработки RAW для startup-backlog recovery.
         await self._ensure_raw_processed_column()
         # Кнопки сообщения (reply_markup) — read-only разведка слоя действий.
         await self._ensure_raw_reply_markup_column()
 
+        # is_outgoing ДОЛЖЕН существовать до уникального индекса: индекс
+        # теперь (chat_id, telegram_message_id, is_outgoing) — входящее Leo и
+        # наше исходящее могут иметь один и тот же номер (у аккаунтов свои
+        # диапазоны message id в одном чате), и без направления наши 👎/❤️
+        # молча терялись на INSERT OR IGNORE.
         await self._ensure_raw_is_outgoing_column()
+        await self._ensure_raw_account_session_column()
+        await self._ensure_raw_unique_index()
         await self._ensure_auto_actions_log()
         # Аналитика лайков (Stage 8.5): таблицы ответов/исходящих и текст
         # действия MESSAGE в авто-журнале (пустая строка = текста не было).
@@ -601,36 +608,60 @@ class Database:
             logger.info("Миграция: profile_messages.account_session добавлен")
 
     async def _ensure_raw_unique_index(self) -> None:
-        """Создаёт UNIQUE-индекс на (chat_id, telegram_message_id).
+        """Уникальный индекс RAW по ``(chat_id, telegram_message_id, is_outgoing)``.
 
-        Если в таблице уже есть дубликаты (из старой версии без защиты),
-        они сворачиваются — оставляем самую раннюю запись для каждой пары.
-        Без индекса INSERT OR IGNORE не сработает как защита.
+        Направление в ключе обязательно: у каждого аккаунта СВОЙ диапазон
+        message id в одном чате Leo, поэтому номер нашего исходящего может
+        совпасть с номером входящего. Старый индекс без направления молча
+        отбрасывал наши исходящие (``INSERT OR IGNORE``) — сырые записи всех
+        реакций терялись. Индекс пересоздаём при старте: ``CREATE ... IF NOT
+        EXISTS`` не обновляет уже существующее определение, поэтому сначала
+        ``DROP``. Дубликаты по ключу схлопываются (оставляем первую запись).
         """
+        await self._connection.execute("DROP INDEX IF EXISTS idx_raw_unique")
+        await self._connection.commit()
         try:
             await self._connection.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_unique "
-                "ON raw_messages(chat_id, telegram_message_id)"
+                "CREATE UNIQUE INDEX idx_raw_unique "
+                "ON raw_messages(chat_id, telegram_message_id, is_outgoing)"
             )
             await self._connection.commit()
         except aiosqlite.IntegrityError:
             logger.warning(
-                "raw_messages содержит дубликаты (chat_id, telegram_message_id); "
-                "оставляем только первую запись для каждой пары."
+                "raw_messages содержит дубликаты "
+                "(chat_id, telegram_message_id, is_outgoing); "
+                "оставляем только первую запись для каждой тройки."
             )
             await self._connection.execute(
                 "DELETE FROM raw_messages "
                 "WHERE id NOT IN ("
                 "  SELECT MIN(id) FROM raw_messages "
-                "  GROUP BY chat_id, telegram_message_id"
+                "  GROUP BY chat_id, telegram_message_id, is_outgoing"
                 ")"
             )
             await self._connection.commit()
             await self._connection.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_unique "
-                "ON raw_messages(chat_id, telegram_message_id)"
+                "CREATE UNIQUE INDEX idx_raw_unique "
+                "ON raw_messages(chat_id, telegram_message_id, is_outgoing)"
             )
             await self._connection.commit()
+
+    async def _ensure_raw_account_session_column(self) -> None:
+        """Добавляет raw_messages.account_session (аккаунт-получатель чата).
+
+        Лента чата фильтруется по выбранному аккаунту-исполнителю: сообщения
+        обоих аккаунтов лежат в одном chat_id и без сессии перемешиваются по
+        времени. Для истории колонка пуста ('' = неизвестно).
+        """
+        cursor = await self._connection.execute("PRAGMA table_info(raw_messages)")
+        rows = await cursor.fetchall()
+        columns = {row[1] for row in rows}
+        if "account_session" not in columns:
+            await self._connection.execute(
+                "ALTER TABLE raw_messages ADD COLUMN account_session TEXT DEFAULT ''"
+            )
+            await self._connection.commit()
+            logger.info("Миграция: raw_messages.account_session добавлен")
 
     async def _ensure_raw_processed_column(self) -> None:
         """Добавляет processed_at и помечает исторические RAW как обработанные.
@@ -759,6 +790,7 @@ class Database:
         reply_to_message_id: int | None = None,
         received_at: str = "",
         is_outgoing: bool = False,
+        account_session: str = "",
         retry_attempts: int = _RAW_SAVE_MAX_RETRIES,
     ) -> int | None:
         """Сохраняет сырое сообщение в БД с ограниченным retry при транзитных сбоях.
@@ -786,13 +818,14 @@ class Database:
                     """INSERT OR IGNORE INTO raw_messages
                     (telegram_message_id, chat_id, sender_id, sender_username,
                      sender_name, message_date, text, raw_entities, reply_markup,
-                     media_type, reply_to_message_id, received_at, is_outgoing)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     media_type, reply_to_message_id, received_at, is_outgoing,
+                     account_session)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         telegram_message_id, chat_id, sender_id, sender_username,
                         sender_name, message_date, text, raw_entities,
                         reply_markup, media_type, reply_to_message_id, received_at,
-                        1 if is_outgoing else 0,
+                        1 if is_outgoing else 0, account_session,
                     ),
                 )
                 await self._connection.commit()

@@ -1339,6 +1339,11 @@ class DvinchikCollector:
             lock = asyncio.Lock()
             self._chat_locks[chat_id] = lock
         async with lock:
+            # Аккаунт-получатель: у каждого аккаунта свой чат с Leo в ОДНОМ
+            # chat_id (свои диапазоны message id), лента фильтруется по сессии.
+            account_session = self._session_for_client(
+                getattr(event, "client", None)
+            )
             # === RAW сохраняется ПЕРВЫМ — ДО любого network await ===
             # save_raw_message сам делает ограниченный retry при транзитных
             # сбоях БД. Если после retry сохранить не удалось — сообщение НЕ
@@ -1357,6 +1362,7 @@ class DvinchikCollector:
                     media_type=media_type,
                     reply_to_message_id=reply_to,
                     received_at=now,
+                    account_session=account_session,
                 )
             except Exception as e:
                 logger.error(
@@ -1467,10 +1473,9 @@ class DvinchikCollector:
         цель — ground truth для реверса механики LIKE: что именно отправляет
         пользователь.
 
-        Исходящие НЕ отдельные события ленты: веб склеивает их с аннотациями
-        ``sent_messages``/``auto_actions_log`` по ``telegram_message_id``, чтобы
-        один отправленный 👎 не показывался в ленте дважды (и не выглядел как
-        сообщение от Leo).
+        Исходящие — полноценные события ленты: веб показывает их отдельной
+        строкой (``is_outgoing``), а не как сообщение от Leo. ``sent_messages`` /
+        ``auto_actions_log`` в ленту НЕ подмешиваются — это журналы действий.
         """
         chat_id = event.chat_id
         if chat_id != self._dvinchik_chat_id:
@@ -1501,6 +1506,9 @@ class DvinchikCollector:
                 reply_to_message_id=None,
                 received_at=now,
                 is_outgoing=True,
+                account_session=self._session_for_client(
+                    getattr(event, "client", None)
+                ),
             )
         except Exception as e:
             logger.error(f"Outgoing RAW save failed: {e}")
