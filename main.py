@@ -201,6 +201,8 @@ async def main() -> None:
         stats=stats,
         config_path=CONFIG_PATH,
         manual_review=manual_review,
+        # Имена сессий ТОЛЬКО вошедших аккаунтов, параллельно clients.
+        client_sessions=client_sessions,
     )
     collector.register()
 

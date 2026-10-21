@@ -79,6 +79,10 @@ STREAM_ERROR_SNAPSHOT_LIMIT: int = 12
 #: (``<account_session>:<message_id>``) — чтобы уведомлять владельца один раз.
 MATCH_STOP_STATE_KEY: str = "match_stop_card"
 
+#: Штатные сообщения Leo, которые парсер не относит ни к одному типу, но
+#: которые приходят на КАЖДОЙ анкете: в лог — DEBUG, а не WARNING.
+ROUTINE_LEO_TEXTS: frozenset[str] = frozenset({"✨\U0001F50D"})  # ✨🔍
+
 #: Сверка ленты с Telegram (``sync_chat_history``): сколько последних сообщений
 #: чата Leo читать у каждого аккаунта, как часто и какой «возраст» сообщения
 #: оставлять живому хендлеру (моложе — не трогаем, иначе отнимем его у pipeline).
@@ -250,6 +254,7 @@ class DvinchikCollector:
         worker: DvinchikRawWorker | None = None,
         config_path: Path = Path("config/config.yaml"),
         manual_review: object | None = None,
+        client_sessions: list[str] | None = None,
     ) -> None:
         # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
         # регистрируются на каждом клиенте. Один и тот же message из одного
@@ -260,9 +265,17 @@ class DvinchikCollector:
             [client] if not isinstance(client, list) else list(client)
         )
         self._client = self._clients[0]
+        # Имя сессии каждого клиента (параллельно self._clients). main.py
+        # передаёт его явно: в clients попадают ТОЛЬКО авторизованные аккаунты,
+        # и если, например, первый не вошёл, позиция клиента перестаёт
+        # совпадать с позицией в telegram.accounts — раньше второй аккаунт
+        # получал имя первого (сообщения и действия уходили не тому аккаунту).
+        self._config = config
+        self._client_sessions: list[str] = self._resolve_client_sessions(
+            client_sessions
+        )
         self._db = db
         self._dedup: Dedup = Dedup()
-        self._config = config
         self._parser = DvinchikParser(config.filters)
         self._dvinchik_chat_id = config.dvinchik.chat_id
         self._allowed_chat_ids = set(
@@ -341,27 +354,18 @@ class DvinchikCollector:
     def _build_auto_engine(self) -> AutoActionEngine:
         """Строит AutoActionEngine для сессии из config.auto_actions.
 
-        Ищет индекс аккаунта с session == account_session и берёт
-        соответствующий client (accounts/clients параллельны).
-        Для авто-уведомлений ищет «другой» аккаунт (session != account_session)
-        — на него пересылается карточка анкеты с причиной (Бармалей↔Меланхолик).
+        Клиент — по имени сессии ``auto_actions.account_session``; для
+        авто-уведомлений — «другой» аккаунт (на него пересылается карточка
+        анкеты с причиной, Бармалей↔Меланхолик). См. ``_clients_for_session``.
         """
         mode = self._config.project.mode
         auto_cfg = self._config.auto_actions
         target_session = auto_cfg.account_session
 
-        client = None
-        notify_client = None
-        if target_session:
-            for i, acc in enumerate(self._config.telegram.accounts):
-                if i >= len(self._clients):
-                    break
-                if acc.session == target_session:
-                    client = self._clients[i]
-                elif notify_client is None:
-                    # Первый аккаунт, не являющийся авто-аккаунтом, — получатель
-                    # авто-уведомлений (для notify_chat_id == 0).
-                    notify_client = self._clients[i]
+        client, notify_client = (
+            self._clients_for_session(target_session)
+            if target_session else (None, None)
+        )
 
         if auto_cfg.enabled and client is None:
             logger.warning(
@@ -382,21 +386,11 @@ class DvinchikCollector:
     def switch_auto_account(self, session: str) -> bool:
         """Переключает аккаунт-исполнитель авто-действий на лету (Веб-панель).
 
-        Ищет аккаунт с ``acc.session == session`` среди accounts/clients
-        (они параллельны), переуказывает живому движку новый client и
-        сохраняет выбор в config.yaml (переживает restart).
+        Ищет клиент по имени сессии (``_clients_for_session``), переуказывает
+        живому движку новый client и сохраняет выбор в config.yaml (переживает
+        restart).
         """
-        client = None
-        notify_client = None
-        for i, acc in enumerate(self._config.telegram.accounts):
-            if i >= len(self._clients):
-                break
-            if acc.session == session:
-                client = self._clients[i]
-            elif notify_client is None:
-                # Первый аккаунт, не являющийся авто-аккаунтом, — получатель
-                # авто-уведомлений (для notify_chat_id == 0).
-                notify_client = self._clients[i]
+        client, notify_client = self._clients_for_session(session)
 
         if client is None:
             logger.warning(
@@ -423,24 +417,54 @@ class DvinchikCollector:
             logger.error(f"Не удалось сохранить авто-аккаунт в config.yaml: {e}")
         return True
 
+    def _resolve_client_sessions(
+        self, client_sessions: list[str] | None,
+    ) -> list[str]:
+        """Имена сессий, параллельные ``self._clients``.
+
+        Явный список из main.py (имена, с которыми реально создавались
+        клиенты) — главный источник. Без него (тесты/отладка) — прежняя
+        эвристика по позиции в ``telegram.accounts``: ``acc.session`` или
+        дефолт ``dvai``/``dvai_{idx}``, как в main.py.
+        """
+        if client_sessions is not None and len(client_sessions) == len(
+            self._clients
+        ):
+            return list(client_sessions)
+        accounts = self._config.telegram.accounts or []
+        sessions: list[str] = []
+        for i in range(len(self._clients)):
+            if i < len(accounts) and accounts[i].session:
+                sessions.append(accounts[i].session)
+            else:
+                sessions.append("dvai" if len(accounts) == 1 else f"dvai_{i}")
+        return sessions
+
+    def _clients_for_session(
+        self, session: str,
+    ) -> tuple[TelegramClient | None, TelegramClient | None]:
+        """(клиент сессии ``session``, первый ДРУГОЙ клиент — для уведомлений)."""
+        client = None
+        notify_client = None
+        for c, name in zip(self._clients, self._client_sessions):
+            if name == session and client is None:
+                client = c
+            elif notify_client is None:
+                notify_client = c
+        return client, notify_client
+
     def _session_for_client(self, client: object) -> str:
         """Возвращает session-имя аккаунта, которому принадлежит client.
 
-        accounts/clients параллельны (main.py строит их в одном порядке),
-        поэтому сессия находится по индексу. Значение обязано совпадать с тем,
-        что main.py передаёт в ``create_client(session_name=...)`` (
-        acc.session или дефолт ``dvai``/``dvai_{idx}``) — по нему
-        веб-панель выбирает клиент для скачивания фото. '' — если client
+        По нему ключуются ``raw_messages.account_session``, дедуп и контекст
+        анкеты, а веб выбирает клиент для скачивания фото. '' — если client
         не найден (например, backlog-рекавери без живого msg).
         """
         if client is None:
             return ''
-        accounts = self._config.telegram.accounts
-        for i, c in enumerate(self._clients):
+        for c, name in zip(self._clients, self._client_sessions):
             if c is client:
-                if i < len(accounts) and accounts[i].session:
-                    return accounts[i].session
-                return "dvai" if len(accounts or []) == 1 else f"dvai_{i}"
+                return name
         return ''
 
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
@@ -999,6 +1023,15 @@ class DvinchikCollector:
         except Exception as e:
             logger.error(f"AutoAction: ошибка нажатия кнопки Premium-промо: {e}")
             return False
+
+    @staticmethod
+    def _is_routine_leo_text(text: str) -> bool:
+        """Штатное служебное сообщение Leo, не требующее внимания в логе."""
+        stripped = (text or "").strip()
+        return (
+            stripped in ROUTINE_LEO_TEXTS
+            or AutoActionEngine.is_composer_prompt(stripped)
+        )
 
     def _is_match_card(self, msg: object) -> bool:
         """Карточка «Ты понравился N девушке, показать её?» (N — любое).
@@ -2081,7 +2114,15 @@ class DvinchikCollector:
                     self._stats.record_media_only()
 
             elif msg_type == MessageType.UNKNOWN:
-                logger.warning(
+                # Штатные служебные сообщения Leo (✨🔍 перед каждой анкетой,
+                # «Отправь текст…» композера) — не проблема: в WARNING они
+                # приходили на КАЖДОЙ анкете и топили настоящие ошибки в логе
+                # и debug-консоли. Обработка (кнопки, цепочка «Берем)») та же.
+                log_unknown = (
+                    logger.debug if self._is_routine_leo_text(text)
+                    else logger.warning
+                )
+                log_unknown(
                     f"Unknown message format: message_id={task.message_id}, "
                     f"preview={text[:100]}"
                 )

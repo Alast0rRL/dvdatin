@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (740 total, no linter/formatter configured)
+# Run all tests (745 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -34,6 +34,8 @@ python -m pytest tests/test_ai.py -v
 - **`idx_raw_unique` включает аккаунт и направление**: `UNIQUE(account_session, chat_id, telegram_message_id, is_outgoing)`. Пространства id входящих и исходящих пересекаются, и у аккаунтов свои пространства; старый `UNIQUE(chat_id, telegram_message_id)` **молча отбрасывал** наши исходящие на `INSERT OR IGNORE` (сырые записи всех реакций). Индекс пересоздаётся при старте (`DROP` + `CREATE`); `account_session` и `is_outgoing` мигрируются ДО индекса в `Database.connect()`.
 - **Лента — только чат Leo**: роуты передают `chat_id=_leo_chat_id(config_path)` в `get_chat_feed`/`get_chat_signals` (из `dvinchik.chat_id`). В `raw_messages` есть legacy-сообщения групп с бо́льшими id — без фильтра они перемешивались с анкетами (регресс-тест `test_feed_shows_only_leo_chat`).
 - **Альбом анкеты — одна строка**: `SyncDB._group_albums` склеивает фото без текста той же анкеты (`profile_id`) в `photos` предыдущей входящей строки; шаблон рисует `item.photos`. Склейка идёт в хронологическом порядке, ПОТОМ лента разворачивается (свежее сверху) — не менять порядок этих шагов, иначе подпись отвалится от альбома (`test_album_whole_in_newest_first_feed`). Страница открывается сверху.
+- **Имя сессии клиента — из `main.py`, не по позиции** (`DvinchikCollector(..., client_sessions=...)`, `_resolve_client_sessions`, `_clients_for_session`): в `clients` попадают только вошедшие аккаунты, поэтому позиция клиента может не совпадать с позицией в `telegram.accounts`. Раньше при невошедшем первом аккаунте второй получал его имя (сообщения и действия — не тому аккаунту). Без `client_sessions` (тесты) — прежняя эвристика по `telegram.accounts` (`TestClientSessions`).
+- **Штатные сообщения Leo (`✨🔍`, «Отправь текст…») пишутся в лог как DEBUG**, а не WARNING «Unknown message format» (`ROUTINE_LEO_TEXTS`, `_is_routine_leo_text`); классификация и обработка не меняются.
 - **Пустые сообщения в ленте не показываются** (нет текста и медиа — кнопки меню). Фото-сообщение рисуется миниатюрой: `profile_id` резолвится через `profile_messages` (маршрут `photos.serve_photo`).
 - **Карточек/бейджей/форм в ленте нет** — анкета показывается теми же сообщениями, что в Telegram. `data-decision`/`data-name` остаются скрытыми атрибутами строк для клиентского фильтра/поиска. Ручные маршруты `/chat/profile/<id>/<action>` и блок «Капчи ждут ответа» остаются рабочими.
 - **Тема**: палитра — CSS-переменные (`:root` тёмная, `[data-theme="light"]` светлая), переключатель `#theme-toggle` в топбаре + `localStorage`, применение до первой отрисовки — `web/templates/partials/theme_boot.html` (подключён в `base.html` и `login.html`). За пределами палитр сырых цветов в `app.css` быть не должно (`TestTheme`), иначе в светлой теме тёмные пятна.
@@ -73,7 +75,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (102), test_auto_action_audit (5), test_captcha_memory (11), test_collector (151), test_control_bot (17), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_web (119) → **740 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (102), test_auto_action_audit (5), test_captcha_memory (11), test_collector (156), test_control_bot (17), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_web (119) → **745 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 

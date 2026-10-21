@@ -3867,3 +3867,64 @@ class TestHistorySync:
             collector.sync_chat_history()
         )
         assert added == 1
+
+
+class TestClientSessions:
+    """Имя сессии клиента — из main.py, а не по позиции в telegram.accounts."""
+
+    def _config(self) -> AppConfig:
+        data = make_config().model_dump()
+        data["telegram"] = {
+            "accounts": [
+                {"api_id": 38219721, "api_hash": "a" * 32, "session": "dvai"},
+                {"api_id": 36266816, "api_hash": "b" * 32, "session": "dvai_2"},
+            ]
+        }
+        data["project"] = {"mode": "SEMI_AUTO"}
+        data["auto_actions"] = {"enabled": True, "account_session": "dvai_2"}
+        return AppConfig(**data)
+
+    def test_first_account_not_authorized(self) -> None:
+        """Вошёл только dvai_2: он остаётся dvai_2 и исполняет действия.
+
+        Регресс: clients=[dvai_2] сопоставлялся с accounts[0] = dvai —
+        сообщения писались чужому аккаунту, а авто-движок не находил клиент.
+        """
+        only = AsyncMock()
+        collector = DvinchikCollector(
+            [only], make_db_mock(), self._config(), client_sessions=["dvai_2"],
+        )
+        assert collector._session_for_client(only) == "dvai_2"
+        assert collector.auto_engine().client is only
+        assert collector.auto_engine().enabled is True
+
+    def test_switch_account_by_session_name(self) -> None:
+        a, b = AsyncMock(), AsyncMock()
+        collector = DvinchikCollector(
+            [a, b], make_db_mock(), self._config(),
+            client_sessions=["dvai", "dvai_2"],
+        )
+        with patch.object(AppConfig, "persist_account_session"):
+            assert collector.switch_auto_account("dvai") is True
+        assert collector.auto_engine().client is a
+        assert collector._session_for_client(b) == "dvai_2"
+
+    def test_without_explicit_sessions_falls_back_to_accounts(self) -> None:
+        a, b = AsyncMock(), AsyncMock()
+        collector = DvinchikCollector([a, b], make_db_mock(), self._config())
+        assert collector._session_for_client(a) == "dvai"
+        assert collector._session_for_client(b) == "dvai_2"
+
+
+class TestRoutineLeoTexts:
+    """Штатные сообщения Leo не засоряют лог WARNING'ами."""
+
+    def test_routine_texts(self) -> None:
+        assert DvinchikCollector._is_routine_leo_text("✨🔍")
+        assert DvinchikCollector._is_routine_leo_text(
+            "Отправь текст, видео или голосовое(до 15сек)."
+        )
+
+    def test_real_unknown_still_warns(self) -> None:
+        assert not DvinchikCollector._is_routine_leo_text("Что-то новое от Leo")
+        assert not DvinchikCollector._is_routine_leo_text("")
