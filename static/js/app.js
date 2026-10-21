@@ -173,12 +173,10 @@
     }
 
     /* ── Лента ───────────────────────────────────────────────────── */
-    function atBottom() {
-        return window.innerHeight + window.scrollY >= document.body.offsetHeight - 260;
-    }
-
-    function scrollToBottom() {
-        window.scrollTo({top: document.body.offsetHeight, behavior: 'smooth'});
+    /* Свежие сообщения — СВЕРХУ (сразу под панелью управления). «У верха» —
+       значит, пользователь смотрит на свежее и новые строки можно показать. */
+    function atTop() {
+        return window.scrollY < 200;
     }
 
     /* Сколько страниц ленты сейчас показано (1 = только свежие). Храним в
@@ -205,28 +203,11 @@
     }
     localizeTimes(feed);
 
-    /* Как в Telegram: открываемся на самом свежем (внизу). Раньше страница
-       открывалась сверху — на самом старом из загруженного, и казалось, что
-       сайт «отстал» от чата. Фото грузятся лениво и меняют высоту, поэтому
-       докручиваем ещё раз после загрузки страницы. */
+    /* Открываемся сверху — на самом свежем (лента идёт от новых к старым).
+       Браузер не должен восстанавливать прежнюю позицию прокрутки. */
     if (feed) {
-        // Браузер сам восстанавливает прежнюю позицию (обычно — верх) уже
-        // ПОСЛЕ нашего скролла, а ленивые фото потом меняют высоту. Поэтому
-        // держимся низа, пока пользователь сам не начал листать.
         if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
-        var stickBottom = true;
-        var stopStick = function () { stickBottom = false; };
-        ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(function (ev) {
-            window.addEventListener(ev, stopStick, {passive: true, once: true});
-        });
-        var jumpBottom = function () {
-            if (stickBottom) window.scrollTo(0, document.documentElement.scrollHeight);
-        };
-        feed.addEventListener('load', jumpBottom, true);  // догрузка фото
-        window.addEventListener('load', jumpBottom);
-        jumpBottom();
-        setTimeout(jumpBottom, 300);
-        setTimeout(function () { stickBottom = false; }, 8000);
+        window.scrollTo(0, 0);
     }
 
     function fetchPage(page) {
@@ -255,18 +236,16 @@
         btn.addEventListener('click', function () {
             var next = parseInt(btn.dataset.page || '2', 10);
             if (!next || isNaN(next)) return;
-            var before = document.body.offsetHeight;
             fetchPage(next)
                 .then(function (data) {
-                    // Страница 1 = свежие, дальше — более ранние → вставляем сверху.
-                    feed.insertAdjacentHTML('afterbegin', data.feed);
+                    // Страница 1 = свежие, дальше — более ранние → дописываем вниз.
+                    feed.insertAdjacentHTML('beforeend', data.feed);
                     localizeTimes(feed);
                     setLoadedPages(next);
                     setLoadMoreState(next, data.total_pages || 1);
                     bindSuggestions(feed);
                     sweepBrokenImages(feed);
                     applyFilter();
-                    window.scrollTo(0, window.scrollY + (document.body.offsetHeight - before));
                 })
                 .catch(function () { /* следующая попытка */ });
         });
@@ -276,9 +255,9 @@
     /* Полная перерисовка ВСЕХ загруженных страниц. Раньше polling заменял
        ленту только первой страницей — вся подгруженная история исчезала, а
        позиция скролла сбрасывалась («лента съезжает»). Теперь тянем страницы
-       1..N и склеиваем: сверху — самые старые. */
+       1..N одним срезом: сверху — самые свежие. */
     function refreshFeed() {
-        var wasAtBottom = atBottom();
+        var wasAtTop = atTop();
         var before = document.body.offsetHeight;
         var n = loadedPages();
         // Один срез на все загруженные страницы: параллельные запросы по
@@ -308,11 +287,11 @@
                 bindSuggestions(document);
                 sweepBrokenImages(feed);
                 applyFilter();
-                if (wasAtBottom) {
-                    scrollToBottom();
+                if (wasAtTop) {
+                    window.scrollTo(0, 0);
                 } else {
-                    // Пользователь читает историю — держим позицию по дельте
-                    // высоты, чтобы новые сообщения снизу не дёргали вид.
+                    // Пользователь читает историю ниже — новые строки встают
+                    // СВЕРХУ и сдвигают её; держим позицию по дельте высоты.
                     window.scrollTo(
                         0, window.scrollY + (document.body.offsetHeight - before)
                     );

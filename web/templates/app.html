@@ -104,17 +104,17 @@
     </div>
 
     {# ── Список событий: одна колонка, каждая строка — отдельное событие ── #}
-    {# Более ранние сообщения — над лентой (они и вставляются сверху; свежие — внизу, как в TG). #}
+    {# Свежие — СВЕРХУ, сразу под панелью управления; более ранние догружаются вниз. #}
+    <div class="feed" id="feed">
+        {% include "partials/app_feed.html" %}
+    </div>
+
     <div class="feed-more" id="feed-more">
         {% if total_pages > 1 %}
         <button type="button" class="btn btn--ghost" id="load-older" data-page="{{ page + 1 }}">
             Показать более ранние
         </button>
         {% endif %}
-    </div>
-
-    <div class="feed" id="feed">
-        {% include "partials/app_feed.html" %}
     </div>
 </div>
 

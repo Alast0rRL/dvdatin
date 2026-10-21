@@ -1506,12 +1506,14 @@ class TestChatFeed:
         page1 = sync.get_chat_feed(page=1, per_page=10)
         texts = [i["text"] for i in page1["items"]]
         assert texts, "лента не пуста"
-        assert texts[-1] == "MSG-59", "на 1-й странице должно быть самое свежее"
+        # Свежие СВЕРХУ (сразу под панелью управления), более ранние ниже.
+        assert texts[0] == "MSG-59", "на 1-й странице самое свежее — первым"
+        assert texts == [f"MSG-{i}" for i in range(59, 49, -1)]
         assert "MSG-0" not in texts
 
         page2 = sync.get_chat_feed(page=2, per_page=10)
         texts2 = [i["text"] for i in page2["items"]]
-        assert texts2[-1] == "MSG-49", "2-я страница — предыдущие"
+        assert texts2[0] == "MSG-49", "2-я страница — предыдущие, тоже от новых к старым"
         assert page1["total"] == page2["total"]
 
     def test_pending_captcha_in_app_and_feed(self, client, sync_db) -> None:
@@ -1630,6 +1632,48 @@ class TestFeedAlbums:
         out = SyncDB._group_albums(items)
         assert [i["telegram_message_id"] for i in out] == [10, 11, 14]
         assert out[1]["photos"] == [11, 12, 13]
+
+    def test_album_whole_in_newest_first_feed(self, sync_db) -> None:
+        """Лента от новых к старым, а альбом — одна строка: фото по порядку,
+        подпись при них; наш 👎 выше анкеты (он позже), старое — ниже."""
+        sync, _, db = sync_db
+        loop = asyncio.get_event_loop()
+
+        async def _seed() -> None:
+            pid = await db.insert_profile(
+                name="суслик", age=18, raw_city="питер",
+                normalized_city="Санкт-Петербург", description="",
+                fingerprint="fp-suslik", source_chat_id=1234060895,
+                source_message_id=34787, first_seen_at="2025-03-01T10:00:00",
+                last_seen_at="2025-03-01T10:00:00", status="NEW",
+            )
+            rows = [
+                (34786, "✨🔍", "", False),
+                (34787, "суслик, 18, питер", "photo", False),
+                (34788, "", "photo", False),
+                (34789, "", "photo", False),
+                (34790, "👎", "", True),
+            ]
+            for tm, text, media, out in rows:
+                ts = f"2025-03-01T10:00:{tm - 34780:02d}"
+                if media:
+                    await db.link_profile_message(
+                        profile_id=pid, telegram_message_id=tm,
+                        chat_id=1234060895, created_at=ts,
+                    )
+                await db.save_raw_message(
+                    telegram_message_id=tm, chat_id=1234060895,
+                    sender_id=1 if out else 1234060895, sender_username="",
+                    sender_name="", message_date=ts, text=text,
+                    raw_entities="[]", reply_markup="[]", media_type=media,
+                    received_at=ts, is_outgoing=out,
+                )
+
+        loop.run_until_complete(_seed())
+        items = sync.get_chat_feed(page=1, per_page=40)["items"]
+        # Верх ленты — свежее (ниже — более ранние анкеты из фикстуры).
+        assert [i["text"] for i in items[:3]] == ["👎", "суслик, 18, питер", "✨🔍"]
+        assert items[1]["photos"] == [34787, 34788, 34789]
 
     def test_other_profile_photo_not_merged(self) -> None:
         """Фото чужой анкеты / после нашего сообщения — отдельная строка."""

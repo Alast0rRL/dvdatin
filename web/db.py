@@ -350,7 +350,7 @@ class SyncDB:
         разных устройств, а id — это и есть последовательность сообщений Leo.
 
         Включаем только непустые сообщения (текст или медиа). Пагинация:
-        page=1 — последние (как в Telegram), внутри страницы ASC.
+        page=1 — последние; на странице свежие СВЕРХУ (под панелью управления).
 
         Возвращает {items, total, page, total_pages}.
         """
@@ -388,9 +388,14 @@ class SyncDB:
             """,
             tuple(params) + (per_page, (page - 1) * per_page),
         )
-        rows.reverse()  # на странице сверху старые, снизу новые
+        # Альбомы склеиваются в хронологическом порядке (подпись — у ПЕРВОГО
+        # фото альбома), затем лента разворачивается: свежие СВЕРХУ — сразу под
+        # панелью управления, более ранние ниже.
+        rows.reverse()
+        items = self._group_albums([self._feed_item(r) for r in rows])
+        items.reverse()
         return {
-            "items": self._group_albums([self._feed_item(r) for r in rows]),
+            "items": items,
             "total": total,
             "page": page,
             "total_pages": max(1, (total + per_page - 1) // per_page),
