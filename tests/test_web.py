@@ -77,11 +77,14 @@ async def _seed_test_data(db: Database) -> None:
         scoring_version="deterministic-v2",
         evaluated_at="2025-01-01T00:00:02",
     )
-    await db.save_human_decision(
-        profile_id=pid1, ai_decision_id=ad1_id,
-        decision="APPROVE", agreement="AGREEMENT",
-        created_at="2025-01-01T00:00:03",
+    # Ручное решение (пишет веб: кнопки «лайк/дизлайк» на сайте).
+    await db._connection.execute(
+        "INSERT INTO human_decisions "
+        "(profile_id, ai_decision_id, decision, agreement, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (pid1, ad1_id, "APPROVE", "AGREEMENT", "2025-01-01T00:00:03"),
     )
+    await db._connection.commit()
 
     # Профиль 2: REVIEW (pending)
     pid2 = await db.insert_profile(

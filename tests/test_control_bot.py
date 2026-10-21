@@ -206,3 +206,44 @@ class TestControlBotRouter:
         asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
         out = ev.respond.call_args.args[0]
         assert "Кариша" in out and "4" in out
+
+
+class TestControlBotPrivacy:
+    """Бот слушает только входящую личку и не пишет переписку в лог."""
+
+    def test_registers_incoming_private_only(self) -> None:
+        bot, client, collector = make_bot()
+        bot.register()
+        builder = client.add_event_handler.call_args_list[0].args[1]
+        assert builder.incoming is True
+        private, group = MagicMock(is_private=True), MagicMock(is_private=False)
+        assert builder.func(private) and not builder.func(group)
+
+    def test_non_command_text_ignored_and_not_logged(self) -> None:
+        """Пересланная анкета / обычное сообщение: ни ответа, ни текста в логе."""
+        from loguru import logger
+
+        bot, client, collector = make_bot()
+        ev = _event(sender_id=8525808108, text="Аня, 18, СПб — личное сообщение")
+        seen: list[str] = []
+        sink = logger.add(lambda m: seen.append(str(m)), level="DEBUG")
+        try:
+            asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        finally:
+            logger.remove(sink)
+        ev.respond.assert_not_awaited()
+        ev.client.send_message.assert_not_awaited()
+        assert not any("личное сообщение" in line for line in seen)
+
+    def test_command_logged_without_arguments(self) -> None:
+        from loguru import logger
+
+        bot, client, collector = make_bot()
+        ev = _event(sender_id=8525808108, text="/mode on")
+        seen: list[str] = []
+        sink = logger.add(lambda m: seen.append(str(m)), level="INFO")
+        try:
+            asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        finally:
+            logger.remove(sink)
+        assert any("'/mode'" in line for line in seen)

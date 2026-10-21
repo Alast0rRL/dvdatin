@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (782 total, no linter/formatter configured)
+# Run all tests (740 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -73,7 +73,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (31), test_auto_action (102), test_auto_action_audit (5), test_captcha_memory (11), test_collector (151), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (119) → **782 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (102), test_auto_action_audit (5), test_captcha_memory (11), test_collector (151), test_control_bot (17), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_web (119) → **740 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 
@@ -87,8 +87,7 @@ filters:
 - **Human decisions append-only**: `human_decisions` history is never UPDATE/DELETE. `UNIQUE(ai_decision_id)` — one review per AI evaluation. Latest human decision by `created_at`.
 - **`get_profile_by_id` returns dict** (not `Profile` object) — in `_render_profile` use `profile['id']`, not `profile.id`.
 - **DB thread leak in tests**: any test that opens a `Database` must close it (fixture teardown). A leaked aiosqlite thread prevents the pytest process from exiting (hang).
-- **Agreement rate** = AGREEMENT/(AGREEMENT+DISAGREEMENT); SKIP excluded from denominator; `null` (not 0%) when denominator = 0. Call it "AI/Human Agreement Rate", never "AI accuracy".
-- **Stage 6 Telegram-free layers**: `ReviewService`, `AnalyticsService`, `review_export.py` never import Telethon. Only `telegram/review_bot.py` consumes Telethon.
+- **ReviewBot / ReviewService / AnalyticsService удалены** (2026-10-21): бот рецензий отвечал на `/stats`, `/review`… любому пользователю Telegram. Не возвращать. Ручные решения — `manual_review` (журнал) и кнопки сайта (`human_decisions`).
 - **Decision != Action (§30)**: `DecisionService`/`AIDecision` — только LIKE/REVIEW/DISLIKE, Telegram-free. Telegram-действия — `models/action.py` (`ActionPolicy`: NO_ACTION/LIKE_AND_MESSAGE/DISLIKE_ONLY — **LIKE_ONLY удалён**: обычного лайка без сообщения больше нет) + `services/action_policy.py` (`ActionPolicyResolver`), которые тоже Telegram-free; их потребляет `AutoActionEngine`. Не смешивать Decision и Action.
 - **`AIDecisionResult.informative/meaningful_words`**: проставляются из `ScoringResult` в `DecisionService.evaluate_profile`; коллектор передаёт `decision.informative` в `maybe_act` (в политику уже не влияет: LIKE всегда LIKE_AND_MESSAGE).
 
@@ -137,7 +136,7 @@ Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)*
   1. Авто-«Берем)» (цепочка LIKE_AND_MESSAGE) — текст пишется в `auto_actions_log.message_text` при `action='MESSAGE'` (из `like_message.text`; `record_auto_action(..., message_text=...)`). Колонка добавлена миграцией `_ensure_auto_actions_message_text`.
   2. Ручные действия владельца — фиксируются в `sent_messages` (`source='manual'`) с классификацией `action`: «❤️»→**LIKE** (сам лайкнул), «👎»→**DISLIKE**, остальные тексты→**MESSAGE**. Запись — в `_handle_outgoing_message` → `_maybe_record_sent_message`. Исходящие с авто-аккаунта пропускаются ТОЛЬКО когда авто-действия реально включены (`auto_engine.enabled`, SEMI_AUTO/AUTO) — они уже в `auto_actions_log`; в OBSERVE авто ничего не шлёт, поэтому любой исходящий (в т.ч. с авто-аккаунта) = ручное действие владельца и записывается. Кнопки/навигация Leo отсекаются через `is_manual_message_excluded` (`MANUAL_MESSAGE_EXCLUDE` + `MANUAL_MESSAGE_EXCLUDE_FRAGMENTS` + нумерованные кнопки меню «1 🚀»/«1 👍» по regex, тексты короче 2 символов). Профиль привязывается по «текущей» анкете чата (`get_chat_profile_context`/`_pending_profiles` → `Database.resolve_profile_by_message`).
 - **Сигнал ответа** — взаимный лайк: MATCH-сообщение «Начинай общаться 👉 [Имя]» → `Database.record_match_response(name, chat_id, tm_id, telegram_username=...)`. Привязка к профилю по имени (`_resolve_profile_by_name`): регистронезависимо по-настоящему (Python `lower`), приоритет — профили со свежими записями `auto_actions_log`∪`sent_messages`. Дубликаты на карточку отсекаются UNIQUE-индексом `(chat_id, telegram_message_id)` (INSERT OR IGNORE). Заодно проставляет `responded=1` в `like_outcomes`.
-- **Отчёты** (Telegram-free, `AnalyticsService` + `Database`): `get_message_response_stats()` — по каждому тексту `sent` (уникальных профилей) / `responded` / `rate`; `get_top_liked_profiles(limit)` — топ по лайкам (из `like_outcomes`, авто∪ручные) + ответили ли + последнее сообщение при лайке. Команды ControlBot `/msgs` и `/top` (+ inline-кнопки «💬 Сообщения»/«💖 Топ лайков»).
+- **Отчёты** (Telegram-free, `Database`): `get_message_response_stats()` — по каждому тексту `sent` (уникальных профилей) / `responded` / `rate`; `get_top_liked_profiles(limit)` — топ по лайкам (из `like_outcomes`, авто∪ручные) + ответили ли + последнее сообщение при лайке. Команды ControlBot `/msgs` и `/top` (+ inline-кнопки «💬 Сообщения»/«💖 Топ лайков»).
 - **Правила**: аналитика read-only и не влияет на действия (LIKE/MESSAGE всё равно шлются); ошибки БД в записи ответов/исходящих не ломают pipeline (RAW уже сохранён).
 
 ## Debug Console (Stage 9)
@@ -151,7 +150,7 @@ Currently at **Stage 8 (deterministic scoring)** + **Stage 8.5 (like analytics)*
 ## Control Panel (Stage 7.5)
 
 - Live in `telegram/control_bot.py`: `ControlBot(client, config, collector, db)`.
-- Commands `/status /mode on|off /stream /recent /msgs /top /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (оба аккаунта-оператора: Бармалей `8525808108` + melancholic `1753676469`).
+- Commands `/status /mode on|off /stream /recent /msgs /top /help` + inline-кнопки; принимаются ТОЛЬКО от `control.allowed_user_ids` (оба аккаунта-оператора: Бармалей `8525808108` + melancholic `1753676469`). **Только ВХОДЯЩИЕ ЛИЧНЫЕ сообщения, начинающиеся с `/`** (`events.NewMessage(incoming=True, func=is_private)`); не-команды игнорируются без записи в лог, логируется только имя команды — иначе бот отвечал на `/status` в любом чате владельца, а вся его переписка (и пересланные анкеты) попадала в лог и debug-консоль сайта (`TestControlBotPrivacy`).
 - Регистрируется на ВСЕХ `telegram.accounts` (в `main.py` — цикл по `clients`); `config.control.enabled` гейтит регистрацию. Ответ шлётся с того же аккаунта, что получил команду (`event.client`).
 - Runtime-переключение: `collector.set_mode(Mode)` → обновляет `AutoActionEngine.mode` на лету (гатег `enabled` пересчитывается) + `AppConfig.persist_mode()` записывает `project.mode` в `config.yaml` (переживает restart). `AutoActionEngine.mode` — сеттер.
 - **Runtime-переключение аккаунта**: `collector.switch_auto_account(session)` → `AutoActionEngine.swap_client(client, notify_client)` (сброс peer-кэша и rate-limiter) + `AppConfig.persist_account_session()` в `config.yaml`. Веб-путь — `/settings/account` → `web.actions.set_account_sync` → тот же `switch_auto_account` + `start_auto_stream()` на новом клиенте. UI — выпадающий список аккаунтов в `/settings`.

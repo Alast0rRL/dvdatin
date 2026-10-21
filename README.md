@@ -14,7 +14,7 @@
 - **Детерминированный скоринг (Stage 8)**: `Profile.text` → `profile_normalizer` → `feature_extractor` (правила H01–H09 / P01–P04; персональная калибровка в `config/preferences.yaml`) → `score_engine` → `decision_service` → **LIKE / REVIEW / DISLIKE**. Без LLM/CLIP/сети: один и тот же текст всегда даёт один и тот же результат. `DecisionService.evaluate()` считается для **всех** результатов фильтра. Хард-негатив H01 («Не ищет отношения») срабатывает только на однозначные формулировки («ищу друга», «не ищу отношения», «просто ищу общение») — «можно пообщаться/погулять» это обычная открытость, а не отказ от отношений. Решение на основе **информативности** (`informative + clean → LIKE`): достаточно значимых слов (≥10) ИЛИ найден позитивный признак; черновые/короткие, но чистые анкеты → REVIEW. `like_threshold`/`review_threshold` остались в конфиге, но для решения инертны.
 - **Правило «мало инфы»** (`config/preferences.yaml`, секция `low_info`): по умолчанию `action: review` — пустая анкета ждёт ручного решения владельца. Если задано `action: skip` — неинформативная анкета (мало значимых слов + нет признаков) даёт **DISLIKE** (авто-👎, лента Leo не замирает), причина `LOW_INFO_SKIP:words=<N>`. Это единственное место, где «мало информации» становится отрицательным решением (иначе действует инвариант «без hard-negative не DISLIKE»). На информативные анкеты правило не влияет (они по-прежнему → LIKE).
 - **Слой предпочтений (SKIP/LIKE)** (`app/preferences.py`): персональные правила в `config/preferences.yaml` (gitignored). SKIP → жёсткий DISLIKE; LIKE-фактор поднимает DISLIKE → REVIEW (анкета не теряется). Инвариант `NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE`: missing/unknown информация → REVIEW, никогда DISLIKE.
-- **Human Review (Stage 6)**: очередь профилей с AI-решением, ручная оценка APPROVE / REJECT / SKIP, метрика **AI/Human Agreement Rate** = AGREEMENT/(AGREEMENT+DISAGREEMENT) (SKIP исключён; `null` при нулевом знаменателе). Telegram-UI (`telegram/review_bot.py`): `/review`, `/profile`, `/stats`, `/ai_stats`, `/disagreements`. CSV-экспорт: `python main.py --export-review`.
+- **Human Review (Stage 6) — удалён (2026-10-21)**: Telegram-бот рецензий (`telegram/review_bot.py`: `/review`, `/profile`, `/stats`, `/ai_stats`, `/disagreements`), `ReviewService`, `AnalyticsService` и `--export-review` убраны — бот отвечал на команды ЛЮБОМУ пользователю Telegram (без проверки отправителя), а функцию заменили ручная проверка REVIEW-анкет (`manual_review`) и ControlBot. Таблица `human_decisions` осталась: в неё пишут ручные кнопки на сайте.
 - **Авто-действия (Stage 7, SEMI_AUTO)** (`collectors/auto_action.py`): Decision != Action (§30): `DecisionService` возвращает только LIKE/REVIEW/DISLIKE, а что слать в Telegram решает `ActionPolicyResolver` (`models/action.py`). LIKE → **только** цепочку «Берем)» ❤️→💌📹🎤→«Берем)» (LIKE_AND_MESSAGE): обычного лайка без сообщения больше нет — политика LIKE_ONLY удалена (голое ❤️ оставляло анкету без продолжения диалога); если выключен `like` или `like_message` — лайк не отправляется вовсе; DISLIKE → `👎`; rate-limit `interval_sec` (по умолчанию **2 с** — Leo принимает реакцию только пока карточка на экране); **гейт «реакция в свою карточку»** (`note_card`/`is_stale_card` → `"STALE"`): карточка помечается в хендлере по порядку прихода, и устаревшая карточка **не** получает реакцию вовсе (при `interval_sec = 10 с` промехали 54 из 60 действий); идемпотентность **по карточке + виду действия** (`chat_id`+`telegram_message_id`+`action` — LIKE и MESSAGE независимы); фильтровые не-PASS тоже получают `👎` (лента Leo не замирает); автопродолжение ленты **Карточка взаимного лайка** («Ты понравился N девушке, показать её?», кнопки [«1. Показать.», «2. Не хочу больше никого смотреть.»]): **поиск ОСТАНАВЛИВАЕТСЯ** (N — любое): бот не жмёт ни «Показать», ни «Не хочу…», переводит режим в `OBSERVE` (сохраняется в `config.yaml`), снимает незакрытые цепочки «Берем)», ставит баннер на сайте (`stream_error`) и один раз на карточку уведомляет владельца (`app_state.match_stop_card`); продолжить — `/mode on` или режим на сайте (`_stop_on_match_card_if_needed()`; карточка актуальна, пока после неё нет нашего исходящего); кнопкой «🚀 Смотреть анкеты»; **Premium-промо после реакции** (Stage 7.7): после ❤️/👎 Leo присылает рекламу [⭐️Активировать, Пока без Premium] — бот идемпотентно нажимает отказную кнопку («Активировать» никогда), чтобы лента не встала. **Главное меню Leo (Stage 7.8)**: при исчерпании ленты бот шлёт меню «1. Смотреть анкеты. / 2. Моя анкета. …» с reply-клавиатурой `["1 🚀", "2", "3", "4"]` — кнопки-промо «🚀 Смотреть анкеты» там НЕТ, и лента вставала намертво (прод 2026-10-01, `msg=25309`, авто-аккаунт `dvai_2`); `_press_menu_view_if_needed()` жмёт «1 🚀» — только если самая свежая карточка с кнопками это меню, остальные кнопки («Моя анкета», «не искать», Premium) не жмём никогда. **Кнопки карточки лайка бывают двух видов** — [«1. Показать.», «2. Не хочу…»] и [«1 👍», «2 💤»]: `_is_match_show_button` матчит «показать» **и по 👍**, отказную отсекает по «не хочу»/💤 (без этого лента вставала и на карточке взаимного лайка). **Память капч (Stage 7.6)**: капчи/проверки Leo (сделки/подписки/подтверждения/гео-запросы — маркеры `CAPTCHA_MARKERS` + ≥2 reply-кнопки) — `_handle_captcha`: выученный ответ (`captcha_memory` по сигнатуре `captcha_signature(text)`) отправляется автоматически; **неизвестная капча выводится в блоке «⚠️ Капчи ждут ответ» над лентой главного экрана и наугад не нажимается** (ждёт ответа владельца; опционально `fallback_press_last` = старое поведение с последней обычной кнопкой; `captcha.enabled=false` — вообще без памяти). **Уведомления владельцу не дублируются**: реакция шлётся на каждую карточку, но пересылка владельцу — только для первого авто-действия профиля (`db.has_auto_action(profile_id)`), иначе повтор анкеты заваливал бы его историей. Гейт: режим `project.mode ∈ {SEMI_AUTO, AUTO}` + `auto_actions.enabled` + найден клиент по `account_session`. OBSERVE → действий нет.
 - **Пересылка владельцу не тянет чужие чаты** (`_profile_message_ids`, прод-баг 2026-10-19): пересылаются только сообщения анкеты с `account_session` ТЕКУЩЕГО аккаунта-исполнителя. У каждого аккаунта своё пространство `telegram_message_id` в одном чате Leo; если анкету видели оба аккаунта, в `profile_messages` накапливались id обоих, и `forward_messages(from_peer=Leo)` с чужим id резолвился в посторонние сообщения — владельцу переслало чужие переписки. Строки с пустой сессией (legacy) не отбрасываются.
 - **Manual Review (Stage 8)** (`services/manual_review.py`): когда скоринг выдаёт REVIEW, бот **не действует сам** — пересылает карточку владельцу и ждёт его ручного решения. Исходящее `❤️`/`👎` владельца перехватывается и записывается в файл `data/reviews/review_log.json`/`.md` (только для активных REVIEW-анкет).
@@ -42,7 +42,6 @@ Telegram (RAW)
    → ActionPolicyResolver(decision, informative) → LIKE_AND_MESSAGE / DISLIKE_ONLY / NO_ACTION
    → AutoActionEngine.maybe_act(policy)  # только SEMI_AUTO/AUTO (❤️/👎/«Берем)»/REVIEW-уведомление)
    → AutoActionEngine.step_pending(text)  # цепочка «Берем)»: 💌 📹 🎤 → «Отправь текст…» → «Берем)»
-   → ReviewBot                            # человеческая рецензия (APPROVE/REJECT/SKIP)
 ```
 
 ### Компоненты
@@ -51,8 +50,8 @@ Telegram (RAW)
 |---|---|---|---|
 | **Collector** | сбор и сохранение | `dvinchik_collector`, `raw_worker`, `raw_queue`, `dedup`, `city_normalizer`, `stats`, `auto_action` | ✅ Telethon |
 | **Scoring (детерминированный)** | решение | `filter_engine`, `filter_service`, `profile_normalizer`, `feature_extractor`, `score_engine`, `decision_service`, `app/preferences` | ❌ Telegram-free |
-| **Review + Analytics** | ручная рецензия и аналитика | `review_service`, `analytics_service`, `review_export`, `manual_review` | ❌ Telegram-free |
-| **Telegram UI** | вывод и управление | `review_bot`, `control_bot` | ✅ Telethon |
+| **Manual review + экспорт** | ручные решения по REVIEW-анкетам, экспорт анализа | `manual_review`, `analysis_export` | ❌ Telegram-free |
+| **Telegram UI** | вывод и управление | `control_bot` | ✅ Telethon |
 | **Web UI (Stage 9)** | веб-интерфейс | `web/` (Flask, SyncDB, фото-кэш), `static/`, шаблоны | ⚠️ только фото по запросу |
 
 > Единственные слои с Telethon: `collectors/dvinchik_collector.py`, `collectors/auto_action.py`, `telegram/`. Всё остальное — чистая логика (Profile/str/Config), тестируется без живого Telegram.
@@ -61,7 +60,7 @@ Telegram (RAW)
 
 ```
 dvdatin/
-├── main.py                      # Точка входа: конфиг, сборка стека, цикл, --export-review/--export-analysis/--clear-db
+├── main.py                      # Точка входа: конфиг, сборка стека, цикл, --export-analysis/--clear-db
 ├── run.bat                      # Запуск на Windows (chcp 65001, UTF-8)
 ├── requirements.txt / requirements-dev.txt
 ├── AGENTS.md / Roadmap.md / README.md
@@ -73,7 +72,7 @@ dvdatin/
 ├── app/                         # config.py (Pydantic), preferences.py, logging.py, banner.py
 ├── core/types.py                # Mode (OBSERVE/SEMI_AUTO/AUTO), LogLevel
 ├── database/database.py         # SQLite + aiosqlite (все таблицы, PRAGMA, миграции)
-├── telegram/                    # client.py (Telethon), review_bot.py, control_bot.py
+├── telegram/                    # client.py (Telethon), control_bot.py
 ├── models/                      # raw.py, profile.py, filter.py, features.py, decision.py, human_decision.py
 ├── services/                    # Telegram-free бизнес-логика (см. таблицу выше)
 ├── collectors/                  # см. таблицу выше
@@ -193,7 +192,6 @@ cp config/config.example.yaml config/config.yaml
 cp config/preferences.example.yaml config/preferences.yaml   # по желанию
 
 python main.py                 # или run.bat на Windows
-python main.py --export-review # CSV-экспорт рецензий
 python -m pytest tests/ -v     # 722 тестов
 ```
 
@@ -317,7 +315,6 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 
 - **Весь LLM/CLIP-стек**: `services/llm_service.py`, `services/clip_service.py`, `services/ai_scoring_service.py`, `services/remote_llm_client.py`, `services/remote_clip_client.py`, `models/ai.py`, `collectors/media_analyzer.py`, `collectors/anti_block.py`, `tests/e2e_ai.py`, `tests/test_ai_scoring.py`. Ubuntu AI Server больше не используется. Актуальный runbook — `deploy/DEPLOY.md` (сервер `144.31.118.3:2200`, ssh-ключ `homekey`). `deploy/README.md` и `deploy/dvai.service` — справочные артефакты старой инфраструктуры.
 - **Пустые плейсхолдер-пакеты**: `dialogs/`, `filters/`, `managers/`, `prompts/`, `utils/`.
-- **Тест-онли аналитика**: `get_score_distribution`, `get_ai_breakdown`, `get_filter_breakdown`, `get_scoring_version_breakdown` (AnalyticsService теперь `AnalyticsService(db)`).
 - **Мёртвый код**: `update_profile_status`, `get_profiles_last_filter`, `reasons_flat()`, `get_analytics_logger()`/`ANALYTICS_LOG`, `_has_action_buttons`, `_deny`, `_cmd_start`, `AutoActionEngine.start_stream`.
 - **Конфиг-ключи**: `ai.enabled`, `ai.backend`, `ai.remote.*`, `ai.scoring.*`, `ai.clip.*`, `ai.llm.*`, `ai.decision.weights`, `ai.decision.min_confidence`, `dvinchik.enabled`, `auto_actions.start_command`, `limits.*`, `ImagesConfig`.
 - **Модели/поля**: `MessageType.OTHER`, `MessageGroup`, `FeatureType.NEUTRAL`, `Feature.value`, `Feature.source`, `ExtractionResult.neutral_features`, `AIDecisionResult.hard_negatives/positive_factors/unknown`, `ScoringConfig`, `DecisionConfig.min_confidence`.

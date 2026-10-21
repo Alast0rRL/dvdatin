@@ -158,6 +158,11 @@ class TestExportAnalysis:
         assert rows[0]["responded"] == "1"
 
 
+async def _count_profiles(db) -> int:
+    cur = await db._connection.execute("SELECT COUNT(*) FROM profiles")
+    return (await cur.fetchone())[0]
+
+
 # ── Очистка БД ────────────────────────────────────────────────────────
 
 class TestClearDatabase:
@@ -167,14 +172,14 @@ class TestClearDatabase:
         run(tmp_db.record_auto_action(
             pid, "LIKE", "LIKE", 1234060895, telegram_message_id=114,
         ))
-        assert run(tmp_db.count_profiles()) == 1
+        assert run(_count_profiles(tmp_db)) == 1
 
         backup_dir = tmp_path / "backups"
         backup = run(clear_database(tmp_db, backup_dir))
 
         assert backup.exists()
         assert backup.name.startswith("database_")
-        assert run(tmp_db.count_profiles()) == 0
+        assert run(_count_profiles(tmp_db)) == 0
         # Все таблицы пусты.
         for table in [
             "profiles", "ai_decisions", "filter_results",

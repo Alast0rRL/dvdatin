@@ -53,7 +53,7 @@ Server **удалены из кодовой базы** (см. README → «Со�
 - [x] Stage 3: Filter Engine (возраст/город/полнота), история в БД, интеграция в коллектор.
 - (удалено) Stage 4 / 4.1–4.3: LLM (Ollama) + CLIP + Ubuntu AI Server + remote-клиенты — выпилено при упрощении кодовой базы.
 - [x] Stage 5: Decision Engine `models/decision.py`, `DecisionService`, `ai_decisions` (детерминированные пороги/правила).
-- [x] Stage 6: Human Review & Analytics — `human_decisions`, ReviewService, AnalyticsService (Agreement Rate), Telegram UI, CSV-export.
+- [x] Stage 6: Human Review & Analytics — `human_decisions`, ReviewService, AnalyticsService (Agreement Rate), Telegram UI, CSV-export. **Удалён 2026-10-21** (ReviewBot отвечал любому пользователю; заменён `manual_review` + ControlBot).
 - [x] Preferences layer (SKIP/LIKE) — `config/preferences.yaml`, `app/preferences.py` (детерминированные правила).
 - [x] Stage 7 (SEMI_AUTO): `AutoActionEngine` — `❤️`/`👎` на авто-аккаунте, rate-limit, идемпотентность по `telegram_message_id`, поток через кнопку «Смотреть анкеты», обход капч Leo.
 - [x] Stage 7.5: `ControlBot` — `/status /mode on|off /stream /recent /help`, runtime-переключение режима.
@@ -93,8 +93,8 @@ Server **удалены из кодовой базы** (см. README → «Со�
 # Все тесты
 python -m pytest tests/ -v
 
-# Только Stage 6 (Human Review & Analytics)
-python -m pytest tests/test_human_review.py tests/test_analytics.py tests/test_review_ui.py -v
+# Аналитика лайков (Stage 8.5)
+python -m pytest tests/test_analytics.py -v
 
 # Только детерминированный скоринг (Stage 8)
 python -m pytest tests/test_deterministic_scoring.py tests/test_decision.py tests/test_preferences.py -v

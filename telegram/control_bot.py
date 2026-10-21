@@ -56,7 +56,13 @@ class ControlBot:
         Используем единый роутер вместо нескольких pattern-хендлеров,
         чтобы избежать конфликтов event-обработчиков на одном клиенте.
         """
-        self._client.add_event_handler(self._on_message, events.NewMessage())
+        # Только ВХОДЯЩИЕ ЛИЧНЫЕ сообщения: иначе бот отвечал на «/status»,
+        # набранный владельцем в любом чате (группе, переписке с другом), а в
+        # лог — и в debug-консоль сайта — попадала вся его переписка.
+        self._client.add_event_handler(
+            self._on_message,
+            events.NewMessage(incoming=True, func=lambda e: e.is_private),
+        )
         self._client.add_event_handler(self._on_callback, events.CallbackQuery())
         logger.info("ControlBot registered: /status /mode /stream /recent /help")
 
@@ -67,10 +73,12 @@ class ControlBot:
         if not self._is_authorized(event.sender_id):
             return
         text = (event.message.text or "").strip()
-        if not text:
+        # Не команда (пересланная анкета, обычное сообщение) — молча мимо:
+        # текст переписки в лог не пишем.
+        if not text.startswith("/"):
             return
-        logger.info(f"ControlBot command from {event.sender_id}: {text!r}")
         parts = text.split()
+        logger.info(f"ControlBot command from {event.sender_id}: {parts[0]!r}")
         cmd = parts[0].lower()
         if cmd == "/status" or cmd == "/start":
             await self._send_status(event)

@@ -228,8 +228,8 @@ class ControlConfig(BaseModel):
     """Настройки управляющего Telegram-бота (Stage 7.5).
 
     ``allowed_user_ids`` — только этим user_id разрешено отправлять команды
-    (по умолчанию собственный account-id оператора 8525808108). Реальный
-    бот-клиент — тот же ``telegram.accounts[0]``, что и у ReviewBot.
+    (по умолчанию собственный account-id оператора 8525808108).
+    ControlBot регистрируется на всех ``telegram.accounts``.
     """
 
     enabled: bool = False

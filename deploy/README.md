@@ -70,9 +70,9 @@ sudo journalctl -u dvai -f
 ./deploy/run.sh
 ```
 
-Экспорт review-датасета в CSV (без Telegram):
+Экспорт анализа всех анкет в CSV (без Telegram):
 ```bash
-./venv/bin/python main.py --export-review
+./venv/bin/python main.py --export-analysis
 ```
 
 ## 5. Soak test (OBSERVE, ничего автоматически не делает)
@@ -91,7 +91,6 @@ sudo journalctl -u dvai -f
 | Память / CPU / GPU | `htop`, `nvidia-smi` |
 | Повторная обработка | сравнить `raw_messages.id` до/после restart (W3 не дублирует) |
 | MEDIA | `SELECT COUNT(*) FROM profile_messages WHERE telegram_message_id IN (SELECT id FROM raw_messages WHERE media_type<>'');` |
-| Human review | `/review` в Telegram (ReviewBot) |
 
 Сверка тестов после soak (regression):
 ```bash

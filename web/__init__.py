@@ -4,7 +4,7 @@
 #   Browser → Flask Web UI → существующие services → SQLite
 #
 # Flask НЕ содержит бизнес-логики. Все решения принимаются
-# DecisionService / FilterEngine / ReviewService — Flask только
+# DecisionService / FilterEngine — Flask только
 # отображает результаты и передаёт команды.
 
 from __future__ import annotations

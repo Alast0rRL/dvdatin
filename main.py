@@ -28,35 +28,12 @@ from services.filter_engine import FilterEngine
 from services.filter_service import FilterService
 from services.profile_service import ProfileService
 from services.decision_service import DecisionService
-from services.review_service import ReviewService
-from services.analytics_service import AnalyticsService
-from services.review_export import EXPORTS_DIR, export_review_csv
-from services.analysis_export import export_analysis_csv, clear_database
+from services.analysis_export import EXPORTS_DIR, export_analysis_csv, clear_database
 from services.manual_review import ManualReviewRecorder
-from telegram.review_bot import ReviewBot
 from telegram.control_bot import ControlBot
 from telegram.client import authorize, create_client
 
 CONFIG_PATH = Path("config/config.yaml")
-
-
-async def export_review() -> None:
-    """Экспортирует review dataset в CSV и завершает работу.
-
-    Не требует Telegram-авторизации.
-    """
-    config = AppConfig.load(CONFIG_PATH)
-    setup_logging(config)
-    db = Database()
-    await db.connect()
-    try:
-        path = await export_review_csv(db, EXPORTS_DIR)
-        print(f"Экспорт завершён: {path}")
-    except RuntimeError as e:
-        logger.error(f"Экспорт не выполнен: {e}")
-        print(f"Ошибка: {e}")
-    finally:
-        await db.close()
 
 
 async def export_analysis() -> None:
@@ -203,16 +180,6 @@ async def main() -> None:
         preferences=preferences,
     )
 
-    # Human Review + Analytics (Stage 6)
-    review_service = ReviewService(db, profile_service)
-    analytics_service = AnalyticsService(db)
-    review_bot = ReviewBot(
-        clients[0], config,
-        review_service=review_service,
-        analytics_service=analytics_service,
-    )
-    review_bot.register()
-
     # Stage 8: ручные решения владельца по REVIEW-анкетам (журнал в файле).
     mr_cfg = config.manual_review
     manual_review = ManualReviewRecorder(
@@ -353,8 +320,6 @@ async def main() -> None:
 if __name__ == "__main__":
     if "--export-analysis" in sys.argv:
         asyncio.run(export_analysis())
-    elif "--export-review" in sys.argv:
-        asyncio.run(export_review())
     elif "--clear-db" in sys.argv:
         asyncio.run(clear_db())
     else:
