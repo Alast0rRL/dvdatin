@@ -349,6 +349,20 @@
         return (state && state.generated_at) ? ' снимок ' + state.generated_at : '';
     }
 
+    /* Лимит ❤️ — на аккаунт: {session: unix-ts}. Истёкшие не показываем. */
+    function fmtLikeLimits(limits) {
+        if (!limits || typeof limits !== 'object') return limits || '—';
+        var now = Date.now() / 1000;
+        var parts = Object.keys(limits).filter(function (k) {
+            return parseFloat(limits[k]) > now;
+        }).map(function (k) {
+            var d = new Date(parseFloat(limits[k]) * 1000);
+            return (k || 'общий') + ' ' + ('0' + d.getHours()).slice(-2) + ':' +
+                ('0' + d.getMinutes()).slice(-2);
+        });
+        return parts.length ? parts.join(', ') : '—';
+    }
+
     function renderDebugState(state) {
         if (!debugStateBox) return;
         state = state || {};
@@ -358,7 +372,7 @@
         var lines = [
             'режим: ' + (state.mode || '—') + '   аккаунт: ' + (state.account_session || '—'),
             'сбой потока: ' + (err ? (err.reason || err.message || 'да') + ' @ ' + (err.at || '') : 'нет'),
-            '❤️ лимит до: ' + (state.likes_exhausted_until || '—'),
+            '❤️ лимит до: ' + fmtLikeLimits(state.likes_exhausted_until),
             'счётчики: raw=' + (counts.raw_messages || 0) +
                 ' sent=' + (counts.sent_messages || 0) +
                 ' auto=' + (counts.auto_actions || 0) +

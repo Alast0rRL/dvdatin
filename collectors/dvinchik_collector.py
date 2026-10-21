@@ -2010,7 +2010,24 @@ class DvinchikCollector:
                         # Лайки исчерпаны до ближайших 07:00: движок перестаёт
                         # слать ❤️ (👎 продолжает), снимает цепочки «Берем)» и
                         # один раз уведомляет владельца. Состояние — в БД.
-                        if self._auto_engine is not None:
+                        # Лимит — свойство аккаунта: отказ, пришедший на
+                        # ДРУГОЙ аккаунт (ручные лайки владельца), лимит
+                        # исполнителя не трогает.
+                        engine_session = (
+                            self._auto_engine.account_session
+                            if self._auto_engine is not None else ""
+                        )
+                        if (
+                            self._auto_engine is not None
+                            and task.account_session
+                            and engine_session
+                            and task.account_session != engine_session
+                        ):
+                            logger.info(
+                                f"Leo: лимит ❤️ на {task.account_session} — "
+                                f"исполнитель {engine_session} не затронут"
+                            )
+                        elif self._auto_engine is not None:
                             try:
                                 await self._auto_engine.handle_like_rejection(chat_id)
                             except Exception as e:

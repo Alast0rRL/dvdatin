@@ -622,7 +622,14 @@ class SyncDB:
         """Служебные значения ``app_state`` (сбои, лимиты) для панели отладки."""
         return {
             "stream_error": self.get_stream_error(),
-            "likes_exhausted_until": self.get_app_state("likes_exhausted_until") or "",
+            # Лимит ❤️ — на аккаунт: {"dvai_2": "<ts>", …} (legacy-ключ — "").
+            "likes_exhausted_until": {
+                (r["key"].partition(":")[2] or ""): r["value"]
+                for r in self._query(
+                    "SELECT key, value FROM app_state "
+                    "WHERE key LIKE 'likes_exhausted_until%'"
+                )
+            },
         }
 
     def get_captcha_by_id(self, captcha_id: int) -> dict[str, Any] | None:

@@ -102,7 +102,7 @@ dvdatin/
 | `sent_messages` | Ручные действия владельца (Stage 8.5, `source='manual'`): `action` LIKE («❤️» — сам лайкнул) / DISLIKE («👎») / MESSAGE (текст) |
 | `like_outcomes` | Результат на КАЖДЫЙ лайк (Stage 8.5): `message_text` (содержание сообщения, '' если без текста) + `responded` (0/1 — лайкнула в ответ); бэкфилл из `auto_actions_log`/`sent_messages`; `UNIQUE(source, chat_id, like_tm_id)` |
 | `captcha_memory` | Память капч (Stage 7.6): текст капчи Leo по сигнатуре (нормализованный текст) с выученным ответом владельца (`answer`); `NULL` = ждёт ответа на сайте; `used_count` — сколько раз ответ применялся |
-| `app_state` | Рантайм key/value, переживающий рестарт (Stage 8.5.2/8.6): `likes_exhausted_until` — timestamp, до которого дневной лимит ❤️ исчерпан; `stream_error` — JSON-снимок сбоя автопотока (бот не может листать анкеты) для баннера на сайте |
+| `app_state` | Рантайм key/value, переживающий рестарт (Stage 8.5.2/8.6): `likes_exhausted_until:<account_session>` — (лимит у каждого аккаунта свой) timestamp, до которого дневной лимит ❤️ исчерпан; `stream_error` — JSON-снимок сбоя автопотока (бот не может листать анкеты) для баннера на сайте |
 | `human_decisions` | Решения человека (APPROVE/REJECT/SKIP, append-only, `UNIQUE(ai_decision_id)`) |
 
 ### Конфиг (config.yaml)

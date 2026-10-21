@@ -1552,6 +1552,31 @@ class TestAutoActionLikeLimit:
         db.delete_state = AsyncMock()
         return db
 
+    def test_limit_key_is_per_account(self) -> None:
+        """Лимит хранится на аккаунт: dvai_2 исчерпан — dvai нет."""
+        db = self._make_db(None)
+        e = make_engine(db=db, account_session="dvai_2")
+        asyncio.get_event_loop().run_until_complete(e.mark_likes_exhausted())
+        assert db.set_state.await_args.args[0] == f"{LIKE_LIMIT_STATE_KEY}:dvai_2"
+
+    def test_swap_account_drops_foreign_limit(self) -> None:
+        """Регресс (прод 2026-10-21): после переключения на dvai лайки
+        не шли, потому что лимит dvai_2 был общим ключом на оба аккаунта."""
+        states = {f"{LIKE_LIMIT_STATE_KEY}:dvai_2": str(time.time() + 3600)}
+        db = self._make_db()
+        db.get_state = AsyncMock(side_effect=lambda k: states.get(k))
+        client = make_client()
+        e = make_engine(client=client, db=db, account_session="dvai_2")
+        loop = asyncio.get_event_loop()
+        assert loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, message_id=900, informative=True)
+        ) == "LIKE_LIMIT"
+
+        e.swap_client(make_client(), account_session="dvai")
+        assert loop.run_until_complete(
+            e.maybe_act(AIDecision.LIKE, message_id=901, informative=True)
+        ) == "LIKE"
+
     def test_like_limit_blocks_like(self) -> None:
         db = self._make_db(str(time.time() + 3600))
         client = make_client()

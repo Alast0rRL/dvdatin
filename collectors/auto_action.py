@@ -50,7 +50,9 @@ MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
 
 # Дневной лимит ❤️ у Leo: когда он отвечает «Слишком много ❤️ за сегодня»,
 # лайки исчерпаны до ближайших 07:00 (см. _compute_like_limit_reset). Состояние
-# хранится в app_state и переживает рестарт.
+# хранится в app_state и переживает рестарт. Лимит у КАЖДОГО аккаунта свой:
+# ключ ``likes_exhausted_until:<account_session>`` (без сессии — общий ключ).
+# Раньше ключ был один на всех — лимит dvai_2 блокировал лайки и на dvai.
 LIKE_LIMIT_STATE_KEY: str = "likes_exhausted_until"
 #: Час локального времени, когда сбрасывается дневной лимит лайков.
 LIKE_LIMIT_RESET_HOUR: int = 7
@@ -230,6 +232,12 @@ class AutoActionEngine:
             reset += timedelta(days=1)
         return reset.timestamp()
 
+    def like_limit_key(self) -> str:
+        """Ключ app_state лимита ❤️ текущего аккаунта-исполнителя."""
+        if self._account_session:
+            return f"{LIKE_LIMIT_STATE_KEY}:{self._account_session}"
+        return LIKE_LIMIT_STATE_KEY
+
     async def _ensure_like_limit_loaded(self) -> None:
         """Один раз подгружает состояние лимита ❤️ из БД (переживает рестарт)."""
         if self._like_limit_loaded:
@@ -238,7 +246,7 @@ class AutoActionEngine:
         if self._db is None:
             return
         try:
-            raw = await self._db.get_state(LIKE_LIMIT_STATE_KEY)
+            raw = await self._db.get_state(self.like_limit_key())
             if raw:
                 self._likes_exhausted_until = float(raw)
         except Exception as e:
@@ -258,7 +266,7 @@ class AutoActionEngine:
         self._like_limit_loaded = True
         if self._db is not None:
             try:
-                await self._db.set_state(LIKE_LIMIT_STATE_KEY, str(reset))
+                await self._db.set_state(self.like_limit_key(), str(reset))
             except Exception as e:
                 logger.error(f"AutoAction: не удалось сохранить лимит ❤️: {e}")
 
@@ -330,6 +338,10 @@ class AutoActionEngine:
         """
         self._client = client
         if account_session is not None:
+            if account_session != self._account_session:
+                # Лимит ❤️ у аккаунтов свой — состояние нового подгрузим из БД.
+                self._likes_exhausted_until = 0.0
+                self._like_limit_loaded = False
             self._account_session = account_session
         self._peer = None
         self._notify_user_id = None

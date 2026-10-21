@@ -327,6 +327,23 @@ class TestCollectorActiveCard:
         assert collector.mode is Mode.SEMI_AUTO
         engine.notify_owner.assert_not_awaited()
 
+    def test_like_rejection_on_other_account_keeps_executor_limit(self) -> None:
+        """«Слишком много ❤️» на dvai (ручные лайки) не трогает лимит dvai_2."""
+        collector, client, engine = self._collector()
+        engine._account_session = "dvai_2"
+        event = make_event(
+            text="Слишком много ❤️ за сегодня.", msg_id=741300,
+        )
+        event.client = client
+        with patch.object(
+            collector, "_session_for_client", return_value="dvai",
+        ):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        assert engine.likes_exhausted() is False
+
     def test_normal_message_does_not_exhaust_likes(self) -> None:
         collector, client, engine = self._collector()
         event = make_event(text="Лайк отправлен, ждем ответа.", msg_id=733500)
