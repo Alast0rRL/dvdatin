@@ -239,6 +239,20 @@ CREATE TABLE IF NOT EXISTS app_state (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- photo_ratings: быстрая разметка внешности на сайте (/rate). Владелец
+-- листает фото анкет (без текста) и отмечает «нравится / нет / пропустить».
+-- Это обучающие метки для модели «твой вкус по фото», на действия бота не
+-- влияют. Одна оценка на анкету (повторная перезаписывает, «отменить» удаляет).
+-- rating: LIKE | DISLIKE | SKIP (SKIP — фото не годится для оценки).
+CREATE TABLE IF NOT EXISTS photo_ratings (
+    profile_id INTEGER PRIMARY KEY,
+    rating TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_photo_ratings_rating ON photo_ratings(rating);
 """
 
 

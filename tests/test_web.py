@@ -2034,3 +2034,133 @@ class TestReasonLabels:
             "Ваша сильная метка интереса: политех",
             "Курит: курю",
         ]
+
+
+class TestPhotoRating:
+    """Страница быстрой разметки внешности (/rate) — метки для фото-модели."""
+
+    @staticmethod
+    def _csrf(client) -> str:
+        with client.session_transaction() as sess:
+            return sess.get("_csrf_token", "")
+
+    def _next(self, client, **params) -> dict:
+        query = "&".join(f"{k}={v}" for k, v in params.items())
+        resp = client.get(f"/rate/next?{query}")
+        assert resp.status_code == 200
+        return json.loads(resp.get_data(as_text=True))
+
+    def test_requires_login(self, client) -> None:
+        for url in ("/rate", "/rate/next"):
+            resp = client.get(url)
+            assert resp.status_code == 302
+            assert "/login" in resp.headers.get("Location", "")
+
+    def test_page_and_link_from_main_screen(self, client) -> None:
+        _login(client)
+        html = client.get("/rate").get_data(as_text=True)
+        assert 'id="rate"' in html
+        assert "js/rate.js" in html
+        assert 'data-rate="LIKE"' in html and 'data-rate="DISLIKE"' in html
+        main = client.get("/").get_data(as_text=True)
+        assert 'id="rate-open"' in main and 'href="/rate"' in main
+
+    def test_next_returns_profiles_with_photo_urls(self, client) -> None:
+        _login(client)
+        data = self._next(client, limit=10)
+        pids = {i["profile_id"] for i in data["items"]}
+        assert pids == {1, 2, 3}
+        item = next(i for i in data["items"] if i["profile_id"] == 1)
+        assert item["photos"] == ["/photos/1/111.jpg"]
+        assert data["stats"]["total"] == 3
+        assert data["stats"]["rated"] == 0
+
+    def test_rate_saves_and_removes_from_queue(self, client, sync_db) -> None:
+        sync, _, _ = sync_db
+        _login(client)
+        resp = client.post("/rate/1", data={"rating": "LIKE", "csrf_token": self._csrf(client)})
+        assert resp.status_code == 200
+        stats = json.loads(resp.get_data(as_text=True))["stats"]
+        assert stats["LIKE"] == 1 and stats["rated"] == 1
+        assert 1 not in {i["profile_id"] for i in self._next(client, limit=10)["items"]}
+        # Повторная оценка перезаписывает прежнюю, а не дублирует.
+        client.post("/rate/1", data={"rating": "DISLIKE", "csrf_token": self._csrf(client)})
+        stats = sync.get_photo_rating_stats()
+        assert stats["LIKE"] == 0 and stats["DISLIKE"] == 1 and stats["rated"] == 1
+
+    def test_undo_returns_profile_to_queue(self, client, sync_db) -> None:
+        sync, _, _ = sync_db
+        _login(client)
+        token = self._csrf(client)
+        client.post("/rate/2", data={"rating": "SKIP", "csrf_token": token})
+        resp = client.post("/rate/2/undo", data={"csrf_token": token})
+        assert resp.status_code == 200
+        assert sync.get_photo_rating_stats()["rated"] == 0
+        assert 2 in {i["profile_id"] for i in self._next(client, limit=10)["items"]}
+
+    def test_rejects_bad_rating_and_missing_csrf(self, client, sync_db) -> None:
+        sync, _, _ = sync_db
+        _login(client)
+        assert client.post("/rate/1", data={"rating": "MAYBE",
+                                            "csrf_token": self._csrf(client)}).status_code == 400
+        assert client.post("/rate/1", data={"rating": "LIKE"}).status_code == 403
+        assert sync.get_photo_rating_stats()["rated"] == 0
+
+    def test_exclude_param_skips_queued_profiles(self, client) -> None:
+        _login(client)
+        data = self._next(client, limit=10, exclude="1,2")
+        assert {i["profile_id"] for i in data["items"]} == {3}
+
+    def test_cached_photos_come_first(self, sync_db) -> None:
+        sync, _, _ = sync_db
+        order = [i["profile_id"] for i in sync.get_rating_queue(limit=10)]
+        for pid in order:
+            first = sync.get_rating_queue(limit=1, prefer={pid})[0]["profile_id"]
+            assert first == pid
+
+    def test_photos_only_from_one_account(self, sync_db) -> None:
+        """Фото анкеты — с одного аккаунта (последний показ): у аккаунтов свои
+        id сообщений, смешивать нельзя."""
+        sync, _, db = sync_db
+
+        async def _seed() -> None:
+            for tm_id, sess in ((90, "dvai_2"), (91, "dvai_2")):
+                await db.link_profile_message(
+                    profile_id=1, telegram_message_id=tm_id, chat_id=1234060895,
+                    created_at="2025-01-05T00:00:00", account_session=sess,
+                )
+                await db.save_raw_message(
+                    telegram_message_id=tm_id, chat_id=1234060895, sender_id=100,
+                    sender_username="", sender_name="Leo",
+                    message_date="2025-01-05T00:00:00", text="", raw_entities="[]",
+                    reply_markup="[]", media_type="photo",
+                    received_at="2025-01-05T00:00:00",
+                )
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        photos = sync._rating_photos(1)
+        # Последний показ — dvai (tm 111 > 91): берём только его фото.
+        assert [p["message_id"] for p in photos] == [111]
+        assert {p["account_session"] for p in photos} == {"dvai"}
+
+    def test_photos_only_from_last_showing(self, sync_db) -> None:
+        """Повторный показ анкеты не дублирует фото: берём только последний
+        альбом (номера сообщений подряд)."""
+        sync, _, db = sync_db
+
+        async def _seed() -> None:
+            for tm_id in (200, 201, 202):  # второй показ анкеты 1, альбом из 3 фото
+                await db.link_profile_message(
+                    profile_id=1, telegram_message_id=tm_id, chat_id=1234060895,
+                    created_at="2025-01-06T00:00:00", account_session="dvai",
+                )
+                await db.save_raw_message(
+                    telegram_message_id=tm_id, chat_id=1234060895, sender_id=100,
+                    sender_username="", sender_name="Leo",
+                    message_date="2025-01-06T00:00:00", text="", raw_entities="[]",
+                    reply_markup="[]", media_type="photo",
+                    received_at="2025-01-06T00:00:00",
+                )
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        assert [p["message_id"] for p in sync._rating_photos(1)] == [200, 201, 202]

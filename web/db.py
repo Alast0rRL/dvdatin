@@ -687,3 +687,115 @@ class SyncDB:
         return self._execute_rowcount(
             "DELETE FROM captcha_memory WHERE id = ?", (int(captcha_id),)
         )
+
+    # ── Разметка внешности (/rate) ────────────────────────────────
+
+    #: Допустимые оценки фото.
+    PHOTO_RATINGS = ("LIKE", "DISLIKE", "SKIP")
+
+    #: Сколько фото анкеты показываем на странице разметки.
+    RATE_MAX_PHOTOS = 4
+
+    # Фото анкеты — сообщения из profile_messages, которые в raw_messages
+    # помечены как фото. Только с известным аккаунтом-получателем: фото
+    # качается строго им (иначе чужой message_id → фото другой анкеты).
+    _RATE_PHOTO_SQL = """
+        FROM profile_messages pm
+        WHERE pm.account_session <> ''
+          AND EXISTS (
+              SELECT 1 FROM raw_messages rm
+              WHERE rm.chat_id = pm.chat_id
+                AND rm.telegram_message_id = pm.telegram_message_id
+                AND rm.is_outgoing = 0
+                AND rm.media_type = 'photo'
+          )
+    """
+
+    def save_photo_rating(self, profile_id: int, rating: str) -> None:
+        """Оценка внешности анкеты; повторная перезаписывает прежнюю."""
+        if rating not in self.PHOTO_RATINGS:
+            raise ValueError(f"неизвестная оценка {rating!r}")
+        self._execute(
+            "INSERT OR REPLACE INTO photo_ratings (profile_id, rating, created_at) "
+            "VALUES (?, ?, ?)",
+            (int(profile_id), rating, datetime.now(timezone.utc).isoformat()),
+        )
+
+    def delete_photo_rating(self, profile_id: int) -> int:
+        """Отмена оценки (кнопка «Назад»)."""
+        return self._execute_rowcount(
+            "DELETE FROM photo_ratings WHERE profile_id = ?", (int(profile_id),)
+        )
+
+    def get_photo_rating_stats(self) -> dict[str, int]:
+        """Сколько оценено (по видам) и сколько анкет с фото всего."""
+        stats = {r: 0 for r in self.PHOTO_RATINGS}
+        for row in self._query(
+            "SELECT rating, COUNT(*) AS cnt FROM photo_ratings GROUP BY rating"
+        ):
+            stats[row["rating"]] = row["cnt"]
+        total = self._query_one(
+            "SELECT COUNT(DISTINCT pm.profile_id) AS cnt " + self._RATE_PHOTO_SQL
+        )
+        stats["rated"] = sum(stats[r] for r in self.PHOTO_RATINGS)
+        stats["total"] = total["cnt"] if total else 0
+        return stats
+
+    def get_rating_queue(
+        self,
+        limit: int = 3,
+        exclude: list[int] | None = None,
+        prefer: set[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Следующие неоценённые анкеты с фото.
+
+        Порядок — перемешанный, но стабильный (хэш id): разметка не зависит
+        от того, в каком порядке Leo показывал анкеты. ``prefer`` — анкеты,
+        чьи фото уже лежат в кэше на диске: их показываем первыми, чтобы не
+        дёргать Telegram на каждой оценке. ``exclude`` — уже стоящие в
+        очереди браузера.
+        """
+        exclude = [int(x) for x in (exclude or [])][:200]
+        ex_sql = ""
+        params: list[Any] = []
+        if exclude:
+            ex_sql = f" AND pm.profile_id NOT IN ({','.join('?' * len(exclude))})"
+            params += exclude
+        rows = self._query(
+            "SELECT DISTINCT pm.profile_id AS pid " + self._RATE_PHOTO_SQL
+            + " AND pm.profile_id NOT IN (SELECT profile_id FROM photo_ratings)"
+            + ex_sql
+            + " ORDER BY (pm.profile_id * 2654435761) % 1000003",
+            tuple(params),
+        )
+        pids = [r["pid"] for r in rows]
+        if prefer:
+            pids.sort(key=lambda p: p not in prefer)  # стабильная сортировка
+        out: list[dict[str, Any]] = []
+        for pid in pids[: max(1, int(limit))]:
+            out.append({"profile_id": pid, "photos": self._rating_photos(pid)})
+        return out
+
+    #: Альбом одного показа анкеты — сообщения с номерами подряд; больший
+    #: разрыв означает предыдущий показ (Leo показывает анкету повторно, и
+    #: фото дублировались бы).
+    RATE_ALBUM_GAP = 2
+
+    def _rating_photos(self, profile_id: int) -> list[dict[str, Any]]:
+        """Фото ПОСЛЕДНЕГО показа анкеты с одного аккаунта, до RATE_MAX_PHOTOS."""
+        rows = self._query(
+            "SELECT pm.telegram_message_id AS message_id, pm.account_session "
+            + self._RATE_PHOTO_SQL
+            + " AND pm.profile_id = ? ORDER BY pm.telegram_message_id",
+            (int(profile_id),),
+        )
+        if not rows:
+            return []
+        session_name = rows[-1]["account_session"]
+        same = [r for r in rows if r["account_session"] == session_name]
+        start = len(same) - 1
+        while start > 0 and (
+            same[start]["message_id"] - same[start - 1]["message_id"] <= self.RATE_ALBUM_GAP
+        ):
+            start -= 1
+        return same[start:][-self.RATE_MAX_PHOTOS:]
