@@ -75,6 +75,16 @@ STREAM_ERROR_STATE_KEY: str = "stream_error"
 STREAM_ERROR_NOTIFY_COOLDOWN_SEC: float = 600.0
 #: Сколько последних сообщений чата Leo попадает в диагностический снимок.
 STREAM_ERROR_SNAPSHOT_LIMIT: int = 12
+#: Ключ app_state: карточка «Ты понравился…», на которой остановлен поиск
+#: (``<account_session>:<message_id>``) — чтобы уведомлять владельца один раз.
+MATCH_STOP_STATE_KEY: str = "match_stop_card"
+
+#: Сверка ленты с Telegram (``sync_chat_history``): сколько последних сообщений
+#: чата Leo читать у каждого аккаунта, как часто и какой «возраст» сообщения
+#: оставлять живому хендлеру (моложе — не трогаем, иначе отнимем его у pipeline).
+HISTORY_SYNC_LIMIT: int = 100
+HISTORY_SYNC_INTERVAL_SEC: float = 60.0
+HISTORY_SYNC_MIN_AGE_SEC: float = 120.0
 
 #: Кнопка-отказ от Premium Leo («Пока без Premium»): после ❤️/👎 бот иногда
 #: присылает премиум-реклму с кнопками [⭐️Активировать, Пока без Premium].
@@ -83,11 +93,9 @@ STREAM_ERROR_SNAPSHOT_LIMIT: int = 12
 PREMIUM_DECLINE_FRAGMENT: str = "без premium"
 
 #: Карточка взаимного лайка Leo: «Ты понравился 3 девушке, показать её?» с
-#: кнопками [«1. Показать.», «2. Не хочу больше никого смотреть.»]. Без нажатия
-#: бот ждёт выбора и ЛЕНТА ОСТАНАВЛИВАЕТСЯ (анкеты больше не приходят), пока
-#: владелец вручную не нажмёт «Показать». Поэтому авто-аккаунт жмёт «Показать»
-#: сам — как и view-кнопку, идемпотентно (по карточке + виду действия).
-#: Отказную кнопку («Не хочу больше никого смотреть») НИКОГДА не жмём.
+#: кнопками [«1. Показать.», «2. Не хочу больше никого смотреть.»]. Бот НЕ
+#: жмёт ни одну кнопку: такая карточка ОСТАНАВЛИВАЕТ поиск (режим → OBSERVE,
+#: см. ``_stop_on_match_card_if_needed``) — владелец разбирает лайки сам.
 MATCH_CARD_FRAGMENT: str = "понравил"
 MATCH_SHOW_FRAGMENT: str = "показать"
 MATCH_SHOW_SKIP_FRAGMENT: str = "не хочу"
@@ -466,13 +474,14 @@ class DvinchikCollector:
             return False
         try:
             await self._auto_engine.ensure_peer()
+            # Карточка «Ты понравился…» — первым делом: поиск останавливается,
+            # пока владелец не разберёт лайки сам (никаких кнопок не жмём).
+            if await self._stop_on_match_card_if_needed():
+                return False
             if await self._process_active_profile_if_any():
                 await self._clear_stream_error()
                 return True
             if await self._press_view_button_if_needed():
-                await self._clear_stream_error()
-                return True
-            if await self._press_match_show_if_needed():
                 await self._clear_stream_error()
                 return True
             if await self._press_premium_decline_if_needed():
@@ -504,6 +513,96 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
             await self._report_stream_stuck(f"ошибка автопотока: {e}")
             return False
+
+    async def sync_chat_history(
+        self,
+        limit: int = HISTORY_SYNC_LIMIT,
+        min_age_sec: float = HISTORY_SYNC_MIN_AGE_SEC,
+    ) -> int:
+        """Досохраняет в RAW сообщения чата Leo, которые прошли мимо событий.
+
+        Лента на сайте — зеркало Telegram-чата, но строится только из того, что
+        Telethon доставил событием. При обрывах прокси/рестартах события теряются
+        (входящие карточки, наши ❤️/👎, ручные ответы с телефона) — в ленте
+        появлялись дыры и «анархия». Здесь для КАЖДОГО аккаунта читаем последние
+        ``limit`` сообщений чата и INSERT OR IGNORE'им недостающие (ключ
+        ``(account_session, chat_id, tm_id, is_outgoing)`` — уже сохранённые
+        не трогаются).
+
+        Досохранённое помечается обработанным: это прошлое, реагировать на него
+        поздно (карточка уже ушла). Сообщения моложе ``min_age_sec`` не трогаем:
+        их вот-вот сохранит живой хендлер, а наш INSERT отнял бы у него
+        сообщение (дубликат → pipeline пропущен). Возвращает число новых строк.
+        """
+        added = 0
+        now = datetime.now(timezone.utc)
+        for client in self._clients:
+            account_session = self._session_for_client(client)
+            try:
+                async for msg in client.iter_messages(
+                    self._dvinchik_chat_id, limit=limit
+                ):
+                    msg_dt = getattr(msg, "date", None)
+                    if (
+                        isinstance(msg_dt, datetime)
+                        and (now - msg_dt).total_seconds() < min_age_sec
+                    ):
+                        continue
+                    text = getattr(msg, "text", None) or ""
+                    media_type = _detect_media_type(msg)
+                    if not text.strip() and not media_type:
+                        continue
+                    outgoing = bool(getattr(msg, "out", False))
+                    reply_to = getattr(msg, "reply_to_msg_id", None)
+                    raw_id = await self._db.save_raw_message(
+                        telegram_message_id=msg.id,
+                        chat_id=self._dvinchik_chat_id,
+                        sender_id=getattr(msg, "sender_id", 0) or 0,
+                        sender_username="",
+                        sender_name="",
+                        message_date=(
+                            msg_dt.isoformat()
+                            if isinstance(msg_dt, datetime)
+                            else now.isoformat()
+                        ),
+                        text=text,
+                        raw_entities=(
+                            "[]" if outgoing else self._serialize_entities(msg)
+                        ),
+                        reply_markup=(
+                            "[]" if outgoing
+                            else self._serialize_reply_markup(msg)
+                        ),
+                        media_type=media_type,
+                        reply_to_message_id=(
+                            reply_to if isinstance(reply_to, int) else None
+                        ),
+                        received_at=now.isoformat(),
+                        is_outgoing=outgoing,
+                        account_session=account_session,
+                    )
+                    if raw_id is None:
+                        continue
+                    await self._db.mark_raw_processed(raw_id)
+                    added += 1
+            except Exception as e:
+                logger.error(
+                    f"Сверка истории чата ({account_session or '?'}) не удалась: {e}"
+                )
+        if added:
+            logger.info(f"Сверка истории чата: досохранено {added} сообщений")
+        return added
+
+    async def run_history_sync(
+        self, interval_sec: float = HISTORY_SYNC_INTERVAL_SEC,
+    ) -> None:
+        """Фоновая сверка ленты с Telegram (раз в ``interval_sec``)."""
+        while True:
+            await asyncio.sleep(interval_sec)
+            try:
+                await self.sync_chat_history()
+            except Exception as e:
+                logger.error(f"Сверка истории чата: {e}")
 
     async def _stream_snapshot(
         self, limit: int = STREAM_ERROR_SNAPSHOT_LIMIT
@@ -901,69 +1000,90 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка нажатия кнопки Premium-промо: {e}")
             return False
 
-    async def _press_match_show_if_needed(self) -> bool:
-        """Жмёт «Показать» на карточке «Ты понравился N девушке, показать её?».
+    def _is_match_card(self, msg: object) -> bool:
+        """Карточка «Ты понравился N девушке, показать её?» (N — любое).
 
-        Leo после накопления взаимных лайков присылает карточку с кнопками
-        [«1. Показать.», «2. Не хочу больше никого смотреть.»] и ждёт выбора.
-        Без нажатия лента встаёт — анкеты не приходят, пока владелец не
-        нажмёт кнопку вручную. Поэтому авто-аккаунт продолжает поток сам.
+        Текст содержит MATCH_CARD_FRAGMENT и либо «показать» в самом тексте,
+        либо кнопку показа (обе клавиатуры Leo: «1. Показать.» / «1 👍»).
+        """
+        low = (getattr(msg, "text", "") or "").lower()
+        if MATCH_CARD_FRAGMENT not in low:
+            return False
+        if MATCH_SHOW_FRAGMENT in low:
+            return True
+        return any(
+            self._is_match_show_button(t) for t in self._extract_button_texts(msg)
+        )
 
-        Ищем самую свежую карточку с фрагментом MATCH_CARD_FRAGMENT и жмём
-        кнопку с MATCH_SHOW_FRAGMENT или MATCH_SHOW_ALT_FRAGMENT («👍» —
-        реальные клавиатуры Leo нумерованные: [«1 👍», «2 💤»]; отказную
-        пропускаем по «не хочу»/«💤»). Идемпотентно: если после карточки текст
-        этой кнопки уже отправляли — не жмём снова.
+    async def _stop_on_match_card_if_needed(self) -> bool:
+        """Останавливает поиск на карточке «Ты понравился N девушке…».
+
+        Владелец хочет сам решать, смотреть ли тех, кто его лайкнул, поэтому
+        бот НЕ жмёт ни «Показать», ни «Не хочу…»: переводит режим в OBSERVE
+        (сохраняется в config.yaml — переживает restart), снимает незакрытые
+        цепочки «Берем)», ставит баннер на сайте и один раз на карточку
+        уведомляет владельца. Продолжить — ``/mode on`` или режим на сайте.
+
+        Карточка «актуальна», только если после неё мы ещё ничего не
+        отправляли (иначе владелец уже ответил Leo). True — поиск остановлен.
         """
         client = self._auto_engine.client
         if client is None or not self._auto_engine.enabled:
             return False
         try:
             card_msg = None
-            button_text = ""
             async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
-                if MATCH_CARD_FRAGMENT not in (getattr(msg, "text", "") or "").lower():
-                    continue
-                texts = self._extract_button_texts(msg)
-                hit = next(
-                    (t for t in texts if self._is_match_show_button(t)), None
-                )
-                if hit:
+                if getattr(msg, "out", False):
+                    # Наш ответ свежее любой карточки ниже — она уже разобрана.
+                    return False
+                if self._is_match_card(msg):
                     card_msg = msg
-                    button_text = hit
                     break
-
-            if card_msg is None or not button_text:
+            if card_msg is None:
                 return False
 
-            # Идемпотентность: текст кнопки после карточки уже отправляли.
-            sent_at = card_msg.id
-            already_sent = False
-            async for msg in client.iter_messages(
-                self._dvinchik_chat_id, limit=15
-            ):
-                if msg.id <= sent_at:
-                    break
-                if (
-                    getattr(msg, "out", False)
-                    and (msg.text or "").strip() == button_text
-                ):
-                    already_sent = True
-                    break
-
-            if already_sent:
-                logger.info("AutoAction: кнопка «Показать» уже нажата")
-                return False
-
-            logger.info(
-                f"AutoAction: карточка «{MATCH_CARD_FRAGMENT}…» (msg={card_msg.id}) — "
-                f"нажимаю «{button_text}», продолжаю ленту"
+            card_text = (getattr(card_msg, "text", "") or "").strip()
+            logger.warning(
+                f"AutoAction: карточка взаимного лайка (msg={card_msg.id}) — "
+                f"«{card_text[:80]}»: останавливаю поиск (режим OBSERVE)"
             )
-            await self._auto_engine.send_text(button_text)
+            self._auto_engine.abort_like_chains(self._dvinchik_chat_id)
+            self.set_mode(Mode.OBSERVE)
+            await self._mark_match_stop(card_msg.id, card_text)
             return True
         except Exception as e:
-            logger.error(f"AutoAction: ошибка нажатия «Показать» (карточка лайка): {e}")
+            logger.error(f"AutoAction: ошибка остановки на карточке лайка: {e}")
             return False
+
+    async def _mark_match_stop(self, card_id: int, card_text: str) -> None:
+        """Баннер на сайте + уведомление владельцу (одно на карточку)."""
+        if self._db is None:
+            return
+        card_key = f"{self._auto_engine.account_session}:{card_id}"
+        notify = True
+        try:
+            if await self._db.get_state(MATCH_STOP_STATE_KEY) == card_key:
+                notify = False
+            await self._db.set_state(MATCH_STOP_STATE_KEY, card_key)
+            await self._db.set_state(
+                STREAM_ERROR_STATE_KEY,
+                json.dumps(
+                    {
+                        "message": "Поиск остановлен: тебя лайкнули",
+                        "reason": card_text,
+                        "snapshot": [f"Leo: {card_text[:120]}"],
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось сохранить остановку поиска: {e}")
+        if notify:
+            await self._auto_engine.notify_owner(
+                f"💘 {card_text}\n\nПоиск остановлен (режим OBSERVE) — посмотри "
+                "сам в Дайвинчике. Продолжить: /mode on или режим на сайте."
+            )
 
     async def _handle_captcha(self, msg: object | None = None) -> bool:
         """Разруливает капчу/проверку Leo (Stage 7.6 «память капч»).
@@ -1978,14 +2098,12 @@ class DvinchikCollector:
                 ):
                     try:
                         texts = self._extract_button_texts(msg)
-                        if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
+                        if self._is_match_card(msg):
+                            # «Ты понравился N девушке, показать её?» —
+                            # останавливаем поиск, владелец решает сам.
+                            await self._stop_on_match_card_if_needed()
+                        elif any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
-                        elif any(
-                            self._is_match_show_button(t) for t in texts
-                        ):
-                            # Карточка «Ты понравился N девушке, показать её?»
-                            # — без нажатия лента стоит, жмём «Показать».
-                            await self._press_match_show_if_needed()
                         elif (
                             len(texts) >= CAPTCHA_MIN_BUTTONS
                             and any(m in (text or "").lower() for m in CAPTCHA_MARKERS)
@@ -2004,10 +2122,10 @@ class DvinchikCollector:
                             # лента не встала. И главное меню ([«1 🚀», …]) —
                             # нажатие «1 🚀» продолжает ленту (см.
                             # _press_menu_view_if_needed).
-                            await self._press_view_button_if_needed()
-                            await self._press_match_show_if_needed()
-                            await self._press_premium_decline_if_needed()
-                            await self._press_menu_view_if_needed()
+                            if not await self._stop_on_match_card_if_needed():
+                                await self._press_view_button_if_needed()
+                                await self._press_premium_decline_if_needed()
+                                await self._press_menu_view_if_needed()
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
 
@@ -2026,10 +2144,11 @@ class DvinchikCollector:
                 ):
                     try:
                         texts = self._extract_button_texts(msg)
-                        if any(VIEW_BUTTON_FRAGMENT in t for t in texts):
+                        if await self._stop_on_match_card_if_needed():
+                            pass  # поиск остановлен: ничего не жмём
+                        elif any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                             await self._press_view_button_if_needed()
                         else:
-                            await self._press_match_show_if_needed()
                             await self._press_premium_decline_if_needed()
                             await self._press_menu_view_if_needed()
                     except Exception as e:

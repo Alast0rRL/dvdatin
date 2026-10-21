@@ -167,9 +167,21 @@ def feed() -> tuple:
     db = _get_db()
     _, account_session = _get_accounts(_get_config_path())
     page = request.args.get("page", 1, type=int)
-    data = db.get_chat_feed(
-        page=page, per_page=FEED_PER_PAGE, account_session=account_session
-    )
+    # ``pages=N`` — свежие N страниц ОДНИМ срезом (polling-перерисовка). Раньше
+    # фронт тянул страницы 1..N параллельно через OFFSET, и новое сообщение
+    # между запросами сдвигало границы: строки на стыке дублировались/терялись.
+    pages = max(1, min(request.args.get("pages", 1, type=int) or 1, 50))
+    if pages > 1:
+        data = db.get_chat_feed(
+            page=1, per_page=FEED_PER_PAGE * pages,
+            account_session=account_session,
+        )
+        total = data.get("total", 0)
+        data["total_pages"] = max(1, (total + FEED_PER_PAGE - 1) // FEED_PER_PAGE)
+    else:
+        data = db.get_chat_feed(
+            page=page, per_page=FEED_PER_PAGE, account_session=account_session
+        )
     return (
         json.dumps(
             {

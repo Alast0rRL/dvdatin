@@ -2910,11 +2910,33 @@ class TestCollectorAutoActions:
         sig = collector._db.record_pending_captcha.call_args[0][0]
         assert sig == "бармалей, предлагаю тебе сделку"
 
-    def test_start_stream_match_card_presses_show(self) -> None:
-        """Карточка «Ты понравился N девушке, показать её?» → жмём «Показать».
+    def _run_stream_with_match_stop(self, collector, auto_client):
+        """start_auto_stream с заглушками persist_mode/notify_owner.
 
-        Регресс: бот останавливал работу и лента не продолжалась, пока
-        владелец вручную не нажмёт «Показать».
+        persist_mode не должен писать в настоящий config/config.yaml.
+        """
+        notify = AsyncMock(return_value=True)
+        collector._auto_engine.notify_owner = notify
+        with patch.object(AppConfig, "persist_mode"):
+            ok = asyncio.get_event_loop().run_until_complete(
+                collector.start_auto_stream()
+            )
+        return ok, notify
+
+    @pytest.mark.parametrize(
+        "count,buttons",
+        [
+            (1, ["1. Показать.", "2. Не хочу больше никого смотреть"]),
+            (2, ["1 👍", "2 💤"]),
+            (3, ["1. Показать.", "2. Не хочу больше никого смотреть."]),
+        ],
+    )
+    def test_start_stream_match_card_stops_search(self, count, buttons) -> None:
+        """«Ты понравился N девушке, показать её?» → поиск ОСТАНАВЛИВАЕТСЯ.
+
+        Ни «Показать», ни «Не хочу…» бот не жмёт; режим → OBSERVE (поиск
+        стоит, пока владелец не разберёт лайки и не включит режим снова),
+        владелец получает уведомление, на сайте — баннер.
         """
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
@@ -2922,30 +2944,27 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
-        show = "1. Показать."
-        decline = "2. Не хочу больше никого смотреть."
+        card = f"Ты понравился {count} девушке, показать её?"
 
         async def iter_messages(*args, **kwargs):
-            # Новые→старые: карточка взаимного лайка → исходящий ❤️.
-            yield self._iter_msg(
-                auto_client, 801,
-                "Ты понравился 3 девушке, показать её?",
-                buttons=[show, decline],
-            )
+            yield self._iter_msg(auto_client, 801, card, buttons=buttons)
             yield self._iter_msg(auto_client, 800, "❤️", out=True)
             yield self._iter_msg(auto_client, 799, "Катьк, 18, Сургут")
 
         auto_client.iter_messages = iter_messages
 
-        ok = asyncio.get_event_loop().run_until_complete(
-            collector.start_auto_stream()
-        )
-        assert ok is True
-        # Жмём именно «Показать», отказную кнопку — никогда.
-        auto_client.send_message.assert_called_once_with(1234060895, show)
+        ok, notify = self._run_stream_with_match_stop(collector, auto_client)
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+        assert collector.mode is Mode.OBSERVE
+        assert collector.auto_engine().enabled is False
+        notify.assert_awaited_once()
+        assert card in notify.call_args.args[0]
+        keys = [c.args[0] for c in collector._db.set_state.call_args_list]
+        assert "stream_error" in keys and "match_stop_card" in keys
 
-    def test_start_stream_match_card_already_shown(self) -> None:
-        """«Показать» уже отправлен после карточки — повторно не жмём."""
+    def test_start_stream_match_card_already_answered(self) -> None:
+        """После карточки уже был наш ответ — поиск не останавливаем."""
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
@@ -2955,7 +2974,6 @@ class TestCollectorAutoActions:
         show = "1. Показать."
 
         async def iter_messages(*args, **kwargs):
-            # Новые→старые: уже отправленный «Показать» → сама карточка.
             yield self._iter_msg(auto_client, 803, show, out=True)
             yield self._iter_msg(
                 auto_client, 802,
@@ -2965,36 +2983,34 @@ class TestCollectorAutoActions:
 
         auto_client.iter_messages = iter_messages
 
-        ok = asyncio.get_event_loop().run_until_complete(
-            collector.start_auto_stream()
-        )
+        ok, notify = self._run_stream_with_match_stop(collector, auto_client)
         assert ok is False
         auto_client.send_message.assert_not_called()
+        assert collector.mode is Mode.SEMI_AUTO
+        notify.assert_not_awaited()
 
-    def test_start_stream_match_card_never_presses_decline(self) -> None:
-        """Только отказная кнопка («Не хочу…») — не жмём ничего."""
+    def test_match_stop_notifies_once_per_card(self) -> None:
+        """Повторный старт на той же карточке — без второго уведомления."""
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        collector._db.get_state = AsyncMock(return_value="dvai_2:801")
 
         async def iter_messages(*args, **kwargs):
             yield self._iter_msg(
-                auto_client, 805,
-                "Ты понравился 2 девушке, показать её?",
-                buttons=["2. Не хочу больше никого смотреть."],
+                auto_client, 801, "Ты понравился 1 девушке, показать её?",
+                buttons=["1 👍", "2 💤"],
             )
-            yield self._iter_msg(auto_client, 804, "❤️", out=True)
 
         auto_client.iter_messages = iter_messages
 
-        ok = asyncio.get_event_loop().run_until_complete(
-            collector.start_auto_stream()
-        )
+        ok, notify = self._run_stream_with_match_stop(collector, auto_client)
         assert ok is False
-        auto_client.send_message.assert_not_called()
+        assert collector.mode is Mode.OBSERVE
+        notify.assert_not_awaited()
 
     def test_start_stream_main_menu_presses_rocket(self) -> None:
         """Главное меню Leo ([«1 🚀», «2», «3», «4»]) → жмём «1 🚀».
@@ -3057,7 +3073,7 @@ class TestCollectorAutoActions:
     def test_start_stream_match_card_wins_over_stale_menu(self) -> None:
         """Свежая карточка взаимного лайка важнее старого меню.
 
-        Жмём «Показать», а не «1 🚀» из устаревшей карточки меню.
+        Поиск останавливается; «1 🚀» из устаревшего меню не жмём.
         """
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
@@ -3080,11 +3096,10 @@ class TestCollectorAutoActions:
 
         auto_client.iter_messages = iter_messages
 
-        ok = asyncio.get_event_loop().run_until_complete(
-            collector.start_auto_stream()
-        )
-        assert ok is True
-        auto_client.send_message.assert_called_once_with(1234060895, "1 👍")
+        ok, _ = self._run_stream_with_match_stop(collector, auto_client)
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+        assert collector.mode is Mode.OBSERVE
 
     def test_start_stream_main_menu_never_presses_other_buttons(self) -> None:
         """Меню без «1 🚀» — ничего не жмём (2/3/4 — Моя анкета/стоп/Premium)."""
@@ -3110,11 +3125,8 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
-    def test_start_stream_unrelated_card_does_not_press_show(self) -> None:
-        """Обычная кнопка «Показать девушку» без карточки лайка — не жмём.
-
-        Иначе бот начнёт кликать по кнопкам меню в чужих сообщениях.
-        """
+    def test_start_stream_unrelated_card_does_not_stop(self) -> None:
+        """Кнопка «Показать» без карточки лайка — поиск не останавливаем."""
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
@@ -3131,11 +3143,11 @@ class TestCollectorAutoActions:
 
         auto_client.iter_messages = iter_messages
 
-        ok = asyncio.get_event_loop().run_until_complete(
-            collector.start_auto_stream()
-        )
+        ok, notify = self._run_stream_with_match_stop(collector, auto_client)
         assert ok is False
         auto_client.send_message.assert_not_called()
+        assert collector.mode is Mode.SEMI_AUTO
+        notify.assert_not_awaited()
 
     def test_match_show_button_text_not_counted_as_manual_message(self) -> None:
         """«1. Показать.» — это кнопка Leo, а не ручное сообщение при лайке."""
@@ -3744,3 +3756,114 @@ class TestCollectorSwitchAccount:
         collector._config_path = cfg_path
         collector.switch_auto_account("dvai")
         assert collector.auto_engine()._account_session == "dvai"
+
+
+class TestHistorySync:
+    """Сверка ленты с Telegram: досохранение сообщений, пропущенных событиями."""
+
+    def _make_collector(self) -> tuple[DvinchikCollector, AsyncMock, AsyncMock]:
+        cfg = make_config()
+        data = cfg.model_dump()
+        data["telegram"] = {
+            "accounts": [
+                {"api_id": 38219721, "api_hash": "a" * 32, "session": "dvai"},
+                {"api_id": 36266816, "api_hash": "b" * 32, "session": "dvai_2"},
+            ]
+        }
+        acc1, acc2 = AsyncMock(), AsyncMock()
+        collector = DvinchikCollector([acc1, acc2], make_db_mock(), AppConfig(**data))
+        return collector, acc1, acc2
+
+    @staticmethod
+    def _msg(mid: int, text: str, age_sec: float, out: bool = False) -> MagicMock:
+        m = MagicMock()
+        m.id = mid
+        m.text = text
+        m.out = out
+        m.sender_id = 1 if out else 1234060895
+        m.date = datetime.fromtimestamp(time.time() - age_sec, tz=timezone.utc)
+        m.media = None
+        m.photo = None
+        m.document = None
+        m.reply_to_msg_id = None
+        m.reply_markup = None
+        m.entities = None
+        return m
+
+    @staticmethod
+    def _history(*msgs: MagicMock):
+        async def iter_messages(*args, **kwargs):
+            for m in msgs:
+                yield m
+        return iter_messages
+
+    def test_saves_missing_messages_per_account(self) -> None:
+        """Старые сообщения досохраняются с аккаунтом и направлением, processed."""
+        collector, acc1, acc2 = self._make_collector()
+        acc1.iter_messages = self._history(
+            self._msg(501, "👎", age_sec=600, out=True),
+            self._msg(500, "Аня, 18, Санкт-Петербург", age_sec=605),
+        )
+        acc2.iter_messages = self._history()
+
+        added = asyncio.get_event_loop().run_until_complete(
+            collector.sync_chat_history()
+        )
+        assert added == 2
+        calls = collector._db.save_raw_message.call_args_list
+        assert [c.kwargs["telegram_message_id"] for c in calls] == [501, 500]
+        assert calls[0].kwargs["is_outgoing"] is True
+        assert calls[1].kwargs["is_outgoing"] is False
+        assert {c.kwargs["account_session"] for c in calls} == {"dvai"}
+        assert collector._db.mark_raw_processed.await_count == 2
+
+    def test_skips_fresh_and_empty_messages(self) -> None:
+        """Свежие (их сохранит живой хендлер) и пустые — не трогаем."""
+        collector, acc1, acc2 = self._make_collector()
+        acc1.iter_messages = self._history(
+            self._msg(700, "Маша, 19, Санкт-Петербург", age_sec=5),
+            self._msg(699, "", age_sec=900),
+        )
+        acc2.iter_messages = self._history()
+
+        added = asyncio.get_event_loop().run_until_complete(
+            collector.sync_chat_history()
+        )
+        assert added == 0
+        collector._db.save_raw_message.assert_not_called()
+
+    def test_duplicates_are_not_marked(self) -> None:
+        """Уже сохранённое (INSERT OR IGNORE → None) не помечается и не считается."""
+        collector, acc1, acc2 = self._make_collector()
+        collector._db.save_raw_message = AsyncMock(return_value=None)
+        acc1.iter_messages = self._history()
+        acc2.iter_messages = self._history(
+            self._msg(30001, "❤️", age_sec=400, out=True),
+        )
+
+        added = asyncio.get_event_loop().run_until_complete(
+            collector.sync_chat_history()
+        )
+        assert added == 0
+        assert (
+            collector._db.save_raw_message.call_args.kwargs["account_session"]
+            == "dvai_2"
+        )
+        collector._db.mark_raw_processed.assert_not_called()
+
+    def test_account_error_does_not_break_others(self) -> None:
+        """Сбой чтения одного аккаунта не мешает сверке другого."""
+        collector, acc1, acc2 = self._make_collector()
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("proxy down")
+            yield  # pragma: no cover
+
+        acc1.iter_messages = broken
+        acc2.iter_messages = self._history(
+            self._msg(30002, "👎", age_sec=400, out=True),
+        )
+        added = asyncio.get_event_loop().run_until_complete(
+            collector.sync_chat_history()
+        )
+        assert added == 1

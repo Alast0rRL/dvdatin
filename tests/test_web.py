@@ -1454,6 +1454,29 @@ class TestChatFeed:
         assert "feed" in data
         assert data["page"] == 1
 
+    def test_chat_feed_pages_is_single_slice(self, client, sync_db) -> None:
+        """``pages=N`` — свежие N страниц одним срезом (polling без гонок OFFSET)."""
+        self._login(client)
+        resp = client.get("/chat/feed?page=1&pages=3")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "feed" in data
+        assert data["page"] == 1
+        assert data["total_pages"] >= 1
+
+    def test_feed_time_is_localized_on_client(self) -> None:
+        """Время строк — с ISO в ``datetime``: JS переводит UTC в местное."""
+        tpl = (
+            Path(__file__).resolve().parent.parent
+            / "web" / "templates" / "partials" / "app_feed.html"
+        ).read_text(encoding="utf-8")
+        assert 'datetime="{{ item.ts }}"' in tpl
+        js = (
+            Path(__file__).resolve().parent.parent / "static" / "js" / "app.js"
+        ).read_text(encoding="utf-8")
+        assert "function localizeTimes" in js
+        assert "pages=" in js
+
     def test_chat_new_count_signature(self, client, sync_db) -> None:
         self._login(client)
         resp = client.get("/chat/new-count")

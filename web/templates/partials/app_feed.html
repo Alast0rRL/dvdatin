@@ -9,7 +9,7 @@
          data-name="{{ item.name or '' }}"
          {% if item.profile_id %}id="profile-{{ item.profile_id }}"{% endif %}>
 
-    <time class="row__time" title="{{ item.ts }}">{{ item.ts[11:16] if item.ts else '' }}</time>
+    <time class="row__time" datetime="{{ item.ts }}" title="{{ item.ts }}">{{ item.ts[11:16] if item.ts else '' }}</time>
 
     <div class="row__body">
         {% if item.direction == 'out' %}

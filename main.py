@@ -308,6 +308,12 @@ async def main() -> None:
         collector.recover_backlog()
     )
 
+    # Сверка ленты с Telegram: досохраняет сообщения, пропущенные событиями
+    # (обрывы прокси, рестарты, ручные ответы с телефона).
+    history_sync_task = asyncio.get_event_loop().create_task(
+        collector.run_history_sync()
+    )
+
     logger.info(
         f"Приложение запущено ({len(clients)} аккаунт(ов)) "
         f"в режиме {config.project.mode.value}. Ctrl+C для выхода."
@@ -328,6 +334,11 @@ async def main() -> None:
             auto_task.cancel()
         try:
             await auto_task
+        except asyncio.CancelledError:
+            pass
+        history_sync_task.cancel()
+        try:
+            await history_sync_task
         except asyncio.CancelledError:
             pass
         await collector.stop()

@@ -193,6 +193,18 @@
     }
     setLoadedPages(loadedPages());
 
+    /* Время сообщений хранится в UTC (message_date Telegram). Telegram
+       показывает местное время — переводим, иначе лента «отстаёт» на часы. */
+    function localizeTimes(root) {
+        (root || document).querySelectorAll('time.row__time[datetime]').forEach(function (t) {
+            var d = new Date(t.getAttribute('datetime'));
+            if (isNaN(d.getTime())) return;
+            t.textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+            t.title = d.toLocaleString();
+        });
+    }
+    localizeTimes(feed);
+
     function fetchPage(page) {
         return fetch('/chat/feed?page=' + page).then(function (r) { return r.json(); });
     }
@@ -224,6 +236,7 @@
                 .then(function (data) {
                     // Страница 1 = свежие, дальше — более ранние → вставляем сверху.
                     feed.insertAdjacentHTML('afterbegin', data.feed);
+                    localizeTimes(feed);
                     setLoadedPages(next);
                     setLoadMoreState(next, data.total_pages || 1);
                     bindSuggestions(feed);
@@ -244,16 +257,13 @@
         var wasAtBottom = atBottom();
         var before = document.body.offsetHeight;
         var n = loadedPages();
-        var requests = [];
-        for (var p = 1; p <= n; p++) requests.push(fetchPage(p));
-        return Promise.all(requests)
-            .then(function (pages) {
-                var first = pages[0] || {};
+        // Один срез на все загруженные страницы: параллельные запросы по
+        // OFFSET разъезжались, если между ними приходило новое сообщение.
+        return fetch('/chat/feed?page=1&pages=' + n)
+            .then(function (r) { return r.json(); })
+            .then(function (first) {
                 var totalPages = first.total_pages || 1;
-                if (n > totalPages) {
-                    n = totalPages;
-                    pages = pages.slice(0, n);
-                }
+                if (n > totalPages) n = totalPages;
                 setLoadedPages(n);
                 var banner = document.getElementById('stream-banner');
                 if (banner && typeof first.banner === 'string') {
@@ -264,10 +274,8 @@
                 if (first.pending) {
                     feed.insertAdjacentHTML('beforebegin', first.pending);
                 }
-                // pages[i] = страница i+1; визуально сверху старые (страница N).
-                var html = '';
-                for (var i = n - 1; i >= 0; i--) html += pages[i].feed;
-                feed.innerHTML = html;
+                feed.innerHTML = first.feed || '';
+                localizeTimes(feed);
                 if (app) {
                     app.dataset.page = String(first.page || 1);
                     app.dataset.totalPages = String(totalPages);
