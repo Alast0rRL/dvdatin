@@ -498,20 +498,16 @@ class DvinchikCollector:
             return False
         try:
             await self._auto_engine.ensure_peer()
+            # Одна выборка истории на все проверки кнопок (см. _recent_history).
+            history = await self._recent_history()
             # Карточка «Ты понравился…» — первым делом: поиск останавливается,
             # пока владелец не разберёт лайки сам (никаких кнопок не жмём).
-            if await self._stop_on_match_card_if_needed():
+            if await self._stop_on_match_card_if_needed(history):
                 return False
             if await self._process_active_profile_if_any():
                 await self._clear_stream_error()
                 return True
-            if await self._press_view_button_if_needed():
-                await self._clear_stream_error()
-                return True
-            if await self._press_premium_decline_if_needed():
-                await self._clear_stream_error()
-                return True
-            if await self._press_menu_view_if_needed():
+            if await self._continue_stream_if_needed(history):
                 await self._clear_stream_error()
                 return True
             if await self._handle_captcha():
@@ -838,7 +834,48 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка обработки активной анкеты: {e}")
             return False
 
-    async def _press_view_button_if_needed(self) -> bool:
+    async def _recent_history(self, limit: int = 15) -> list:
+        """Последние ``limit`` сообщений чата Leo на авто-аккаунте (новые первыми).
+
+        Один запрос истории на всю проверку состояния чата. Раньше каждый
+        обработчик кнопок (меню, Premium, «Смотреть анкеты», карточка лайка)
+        сам дважды скачивал историю — на каждое служебное сообщение Leo
+        выходило до ~10 запросов getHistory, то есть несколько в секунду
+        при живой ленте: прямой путь к FloodWait.
+        """
+        client = self._auto_engine.client
+        if client is None:
+            return []
+        try:
+            return [
+                msg async for msg in client.iter_messages(
+                    self._dvinchik_chat_id, limit=limit
+                )
+            ]
+        except Exception as e:
+            # Как и раньше (каждый обработчик глотал свою ошибку): сбой
+            # чтения истории не роняет автопоток — кнопки просто не жмём.
+            logger.error(f"AutoAction: не удалось прочитать историю чата Leo: {e}")
+            return []
+
+    async def _continue_stream_if_needed(self, history: list) -> bool:
+        """Продолжает ленту Leo одной кнопкой: «Смотреть анкеты» → отказ от
+        Premium → «1 🚀» в меню. Останавливается на первой нажатой — после
+        нажатия ``history`` устарела, следующий шаг сделает уже новое
+        сообщение Leo. Все проверки — по одной выборке истории.
+        """
+        for press in (
+            self._press_view_button_if_needed,
+            self._press_premium_decline_if_needed,
+            self._press_menu_view_if_needed,
+        ):
+            if await press(history):
+                return True
+        return False
+
+    async def _press_view_button_if_needed(
+        self, history: list | None = None,
+    ) -> bool:
         """Нажимает кнопку «Смотреть анкеты», если Leo её показал.
 
         При исчерпании ленты Leo присылает промо-сообщение с reply-кнопкой
@@ -852,9 +889,11 @@ class DvinchikCollector:
         if client is None or not self._auto_engine.enabled:
             return False
         try:
+            if history is None:
+                history = await self._recent_history()
             card_msg = None
             button_text = ""
-            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+            for msg in history:
                 texts = self._extract_button_texts(msg)
                 hit = next(
                     (t for t in texts if VIEW_BUTTON_FRAGMENT in t), None
@@ -871,9 +910,7 @@ class DvinchikCollector:
             # не нажимаем повторно (тот же поток уже продолжен).
             sent_at = card_msg.id
             already_sent = False
-            async for msg in client.iter_messages(
-                self._dvinchik_chat_id, limit=15
-            ):
+            for msg in history:
                 if msg.id <= sent_at:
                     break
                 if (
@@ -897,7 +934,9 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка нажатия кнопки «Смотреть анкеты»: {e}")
             return False
 
-    async def _press_menu_view_if_needed(self) -> bool:
+    async def _press_menu_view_if_needed(
+        self, history: list | None = None,
+    ) -> bool:
         """Нажимает «1 🚀» в ГЛАВНОМ МЕНЮ Leo, если чат стоит на нём.
 
         Когда лента исчерпана, Leo шлёт текстовое меню «1. Смотреть анкеты. …
@@ -918,9 +957,11 @@ class DvinchikCollector:
         if client is None or not self._auto_engine.enabled:
             return False
         try:
+            if history is None:
+                history = await self._recent_history()
             card_msg = None
             button_text = ""
-            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+            for msg in history:
                 if getattr(msg, "out", False) or not (msg.text or "").strip():
                     continue
                 texts = self._extract_button_texts(msg)
@@ -939,9 +980,7 @@ class DvinchikCollector:
 
             sent_at = card_msg.id
             already_sent = False
-            async for msg in client.iter_messages(
-                self._dvinchik_chat_id, limit=15
-            ):
+            for msg in history:
                 if msg.id <= sent_at:
                     break
                 if (
@@ -965,7 +1004,9 @@ class DvinchikCollector:
             logger.error(f"AutoAction: ошибка нажатия кнопки меню «1 🚀»: {e}")
             return False
 
-    async def _press_premium_decline_if_needed(self) -> bool:
+    async def _press_premium_decline_if_needed(
+        self, history: list | None = None,
+    ) -> bool:
         """Нажимает кнопку-отказ у Premium-промо Leo («Пока без Premium»).
 
         После ❤️/👎 Leo иногда присылает премиум-реклму («Борюсь с
@@ -979,9 +1020,11 @@ class DvinchikCollector:
         if client is None or not self._auto_engine.enabled:
             return False
         try:
+            if history is None:
+                history = await self._recent_history()
             card_msg = None
             button_text = ""
-            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+            for msg in history:
                 texts = self._extract_button_texts(msg)
                 hit = next(
                     (t for t in texts if PREMIUM_DECLINE_FRAGMENT in t.lower()), None
@@ -998,9 +1041,7 @@ class DvinchikCollector:
             # не нажимаем повторно (тот же поток уже продолжен).
             sent_at = card_msg.id
             already_sent = False
-            async for msg in client.iter_messages(
-                self._dvinchik_chat_id, limit=15
-            ):
+            for msg in history:
                 if msg.id <= sent_at:
                     break
                 if (
@@ -1048,7 +1089,9 @@ class DvinchikCollector:
             self._is_match_show_button(t) for t in self._extract_button_texts(msg)
         )
 
-    async def _stop_on_match_card_if_needed(self) -> bool:
+    async def _stop_on_match_card_if_needed(
+        self, history: list | None = None,
+    ) -> bool:
         """Останавливает поиск на карточке «Ты понравился N девушке…».
 
         Владелец хочет сам решать, смотреть ли тех, кто его лайкнул, поэтому
@@ -1064,8 +1107,10 @@ class DvinchikCollector:
         if client is None or not self._auto_engine.enabled:
             return False
         try:
+            if history is None:
+                history = await self._recent_history()
             card_msg = None
-            async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
+            for msg in history:
                 if getattr(msg, "out", False):
                     # Наш ответ свежее любой карточки ниже — она уже разобрана.
                     return False
@@ -2163,10 +2208,9 @@ class DvinchikCollector:
                             # лента не встала. И главное меню ([«1 🚀», …]) —
                             # нажатие «1 🚀» продолжает ленту (см.
                             # _press_menu_view_if_needed).
-                            if not await self._stop_on_match_card_if_needed():
-                                await self._press_view_button_if_needed()
-                                await self._press_premium_decline_if_needed()
-                                await self._press_menu_view_if_needed()
+                            history = await self._recent_history()
+                            if not await self._stop_on_match_card_if_needed(history):
+                                await self._continue_stream_if_needed(history)
                     except Exception as e:
                         logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
 
@@ -2184,14 +2228,10 @@ class DvinchikCollector:
                     and getattr(msg, "client", None) is self._auto_engine.client
                 ):
                     try:
-                        texts = self._extract_button_texts(msg)
-                        if await self._stop_on_match_card_if_needed():
-                            pass  # поиск остановлен: ничего не жмём
-                        elif any(VIEW_BUTTON_FRAGMENT in t for t in texts):
-                            await self._press_view_button_if_needed()
-                        else:
-                            await self._press_premium_decline_if_needed()
-                            await self._press_menu_view_if_needed()
+                        # Одна выборка истории на все проверки (FloodWait).
+                        history = await self._recent_history()
+                        if not await self._stop_on_match_card_if_needed(history):
+                            await self._continue_stream_if_needed(history)
                     except Exception as e:
                         logger.error(
                             f"AutoAction: ошибка нажатия кнопки ленты "

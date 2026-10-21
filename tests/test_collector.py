@@ -3359,7 +3359,12 @@ class TestCollectorAutoActions:
         collector._db.record_pending_captcha.assert_awaited_once()
 
     def test_no_button_press_on_menu_or_premium(self) -> None:
-        """Меню/Premium-промо Leo (без маркера капчи) НЕ трогаем — кнопки не жмём."""
+        """Меню Leo (без маркера капчи) — не капча: в память капч не пишем и
+        наугад не жмём; единственное действие — «1 🚀» (Stage 7.8).
+
+        Регресс теста: присваивание iter_messages стояло ВНУТРИ генератора и не
+        выполнялось — тест ничего не проверял и проходил случайно.
+        """
         auto_client = AsyncMock()
         auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
@@ -3376,13 +3381,56 @@ class TestCollectorAutoActions:
             yield self._iter_msg(auto_client, 719, "\U0001F44E", out=True)
             yield self._iter_msg(auto_client, 718, "Margo, 18, Санкт-Петербург")
 
-            auto_client.iter_messages = iter_messages
+        auto_client.iter_messages = iter_messages
 
         ok = asyncio.get_event_loop().run_until_complete(
             collector.start_auto_stream()
         )
-        assert ok is False
-        auto_client.send_message.assert_not_called()
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, "1 🚀")
+        collector._db.record_pending_captcha.assert_not_called()
+
+    def test_start_stream_reads_history_once_for_buttons(self) -> None:
+        """Проверки кнопок (лайк-карточка/«Смотреть»/Premium/меню) делят ОДНУ
+        выборку истории — раньше каждая скачивала её сама, дважды (FloodWait)."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        calls = {"n": 0}
+
+        async def iter_messages(*args, **kwargs):
+            if kwargs.get("limit") == 15:
+                calls["n"] += 1
+            yield self._iter_msg(
+                auto_client, 720, "1. Смотреть анкеты.\n2. Моя анкета.",
+                buttons=["1 🚀", "2", "3", "4"],
+            )
+
+        auto_client.iter_messages = iter_messages
+        asyncio.get_event_loop().run_until_complete(collector.start_auto_stream())
+        # 1 — общая выборка для кнопок, 1 — поиск активной анкеты.
+        assert calls["n"] == 2
+        auto_client.send_message.assert_called_once_with(1234060895, "1 🚀")
+
+    def test_history_read_error_does_not_stop_stream(self) -> None:
+        """Сбой чтения истории — кнопки не жмём, автопоток не падает."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("proxy down")
+
+        auto_client.iter_messages = broken
+        history = asyncio.get_event_loop().run_until_complete(
+            collector._recent_history()
+        )
+        assert history == []
 
     def test_start_stream_menu_after_profile_marks_it_stale(self) -> None:
         """После анкеты Leo перешёл в меню (лента кончилась) — старая анкета НЕ

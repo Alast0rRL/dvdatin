@@ -516,6 +516,36 @@ class TestAutoActionNotify:
         assert "Город не в списке" in text
         assert "Возраст не подходит" in text
 
+    def test_dislike_notify_can_be_disabled(self) -> None:
+        """notify_dislikes=false: 👎 уходит Leo, но владельцу не пересылаем."""
+        client = make_client()
+        e = make_engine(
+            client=client,
+            config=make_auto_config(
+                notify_chat_id=8525808108, notify_dislikes=False,
+            ),
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=1, message_id=901)
+        )
+        assert result == "DISLIKE"
+        client.forward_messages.assert_not_called()
+        texts = [c.args[1] for c in client.send_message.call_args_list]
+        assert texts == ["\U0001F44E"]
+
+    def test_like_notify_kept_when_dislikes_disabled(self) -> None:
+        client = make_client()
+        e = make_engine(
+            client=client,
+            config=make_auto_config(
+                notify_chat_id=8525808108, notify_dislikes=False,
+            ),
+        )
+        asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.LIKE, profile_id=1, message_id=900)
+        )
+        client.forward_messages.assert_awaited_once()
+
     def test_review_notify_explains_no_data(self) -> None:
         """REVIEW → уведомление «нужно решение» с причиной, без отправки 👎."""
         client, e = self._notify_engine()

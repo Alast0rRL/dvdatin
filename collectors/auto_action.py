@@ -930,6 +930,8 @@ class AutoActionEngine:
         """
         if self._client is None or message_id is None:
             return
+        if action == "DISLIKE" and not self._config.notify_dislikes:
+            return
         if await self._has_prior_action(profile_id):
             # Реакция уже отправлена (лента движется), но владельца повторно
             # не дёргаем — он уже получил уведомление по этой анкете.
