@@ -110,6 +110,16 @@ auto_actions:
     auto_answer: true
     fallback_press_last: false
 
+  # Взаимный лайк («Начинай общаться 👉 [Имя]»): бот сам пишет девушке в
+  # личку — только стикер (текст Leo «Привет! Я с Дайвинчика ✨» не шлётся).
+  # Один раз на девушку; если переписка с ней уже есть — не пишет.
+  match_greeting:
+    enabled: true
+    modes: ["SEMI_AUTO", "AUTO"]   # OBSERVE — никогда
+    sticker_set: "Flame"           # t.me/addstickers/Flame
+    sticker_emojis: ["👋", "🔥"]   # первый стикер с таким эмодзи
+    sticker_index: -1              # >= 0 — взять стикер по номеру в наборе
+
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.
 # Слушает ВСЕ аккаунты из telegram.accounts; команды принимаются от перечисленных

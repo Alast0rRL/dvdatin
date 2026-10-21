@@ -29,9 +29,11 @@ PROFILE_RE = re.compile(
     re.DOTALL,
 )
 
-# Паттерн MATCH: "[Name](https://t.me/username)"
+# Паттерн MATCH: "[Name](https://t.me/username)" или, если у девушки нет
+# @username, "[Name](tg://user?id=123)".
 MATCH_RE = re.compile(
-    r"\[(?P<name>[^\]]+)\]\(https?://t\.me/(?P<username>[^)\s?]+)",
+    r"\[(?P<name>[^\]]+)\]\("
+    r"(?:https?://t\.me/(?P<username>[^)\s?]+)|tg://user\?id=(?P<user_id>\d+))",
 )
 
 # Отказ Leo в лайке/сообщении из-за дневного лимита:
@@ -128,15 +130,20 @@ class DvinchikParser:
             return None
 
         name = match.group("name").strip()
-        username = match.group("username").strip()
-        url = f"https://t.me/{username}"
+        username = (match.group("username") or "").strip()
+        user_id = int(match.group("user_id") or 0)
+        url = f"https://t.me/{username}" if username else f"tg://user?id={user_id}"
 
-        logger.info(f"Match detected: name={name}, username={username}")
+        logger.info(
+            f"Match detected: name={name}, username={username or '-'}, "
+            f"user_id={user_id or '-'}"
+        )
 
         return ParsedMatch(
             name=name,
             telegram_username=username,
             telegram_url=url,
+            telegram_user_id=user_id,
         )
 
     def _check_filter(self, age: int, city: str) -> FilterResult:

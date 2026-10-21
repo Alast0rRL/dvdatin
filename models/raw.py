@@ -61,3 +61,5 @@ class ParsedMatch(BaseModel):
     name: str = ""
     telegram_username: str = ""
     telegram_url: str = ""
+    #: Без @username Leo даёт ссылку tg://user?id=<id> — тогда пишем по id.
+    telegram_user_id: int = 0

@@ -185,6 +185,26 @@ class CaptchaConfig(BaseModel):
     fallback_press_last: bool = False
 
 
+class MatchGreetingConfig(BaseModel):
+    """Приветствие девушке после взаимного лайка («Начинай общаться 👉 …»).
+
+    Вместо текста по умолчанию из ссылки Leo («Привет! Я с Дайвинчика ✨»)
+    бот сам пишет ей в личку — только стикер из набора ``sticker_set``.
+    Работает только при включённых авто-действиях и режиме из ``modes``,
+    один раз на девушку и аккаунт; если переписка уже есть — не пишет.
+    """
+
+    enabled: bool = True
+    #: Режимы, в которых приветствие уходит (OBSERVE — никогда).
+    modes: list[str] = ["SEMI_AUTO", "AUTO"]
+    #: Короткое имя набора (t.me/addstickers/<имя>).
+    sticker_set: str = "Flame"
+    #: Какой стикер брать: первый, чей эмодзи есть в списке (по порядку).
+    sticker_emojis: list[str] = ["👋", "🔥"]
+    #: Явный номер стикера в наборе (0 — первый); -1 — выбирать по эмодзи.
+    sticker_index: int = -1
+
+
 class AutoActionsConfig(BaseModel):
     """Настройки авто-действий (Stage 7, SEMI_AUTO).
 
@@ -218,6 +238,8 @@ class AutoActionsConfig(BaseModel):
     like_message: LikeMessageConfig = LikeMessageConfig()
     #: Память капч: авто-ответ на известные, вывод неизвестных на сайт.
     captcha: CaptchaConfig = CaptchaConfig()
+    #: Стикер-приветствие девушке после взаимного лайка.
+    match_greeting: MatchGreetingConfig = MatchGreetingConfig()
 
     @field_validator("interval_sec")
     @classmethod

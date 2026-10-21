@@ -30,10 +30,11 @@ from collectors.auto_action import (
 )
 from collectors.dedup import Dedup
 from collectors.dvinchik_parser import DvinchikParser
+from collectors.match_greeter import MatchGreeter
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from core.types import Mode
 from models.decision import AIDecision
-from models.raw import MessageType
+from models.raw import MessageType, ParsedMatch
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -277,6 +278,10 @@ class DvinchikCollector:
         self._db = db
         self._dedup: Dedup = Dedup()
         self._parser = DvinchikParser(config.filters)
+        # Стикер-приветствие девушке после взаимного лайка.
+        self._match_greeter = MatchGreeter(
+            config.auto_actions.match_greeting, db
+        )
         self._dvinchik_chat_id = config.dvinchik.chat_id
         self._allowed_chat_ids = set(
             config.sources.allowed_chat_ids
@@ -1135,6 +1140,38 @@ class DvinchikCollector:
         except Exception as e:
             logger.error(f"AutoAction: ошибка остановки на карточке лайка: {e}")
             return False
+
+    async def _greet_match(
+        self, task: RawTask, msg: object | None, match: ParsedMatch,
+    ) -> None:
+        """Взаимный лайк на авто-аккаунте → стикер девушке (вместо текста Leo).
+
+        Только когда авто-действия включены (не OBSERVE) и сообщение пришло
+        на авто-аккаунт: пишем с того аккаунта, с которым у неё матч.
+        """
+        if (
+            msg is None
+            or task.chat_id != self._dvinchik_chat_id
+            or not self._auto_engine.enabled
+            or getattr(msg, "client", None) is not self._auto_engine.client
+        ):
+            return
+        session = task.account_session or self._session_for_client(msg.client)
+        try:
+            status = await self._match_greeter.greet(
+                msg.client, session, match, self.mode.value,
+            )
+        except Exception as e:
+            logger.error(f"MatchGreeting error: {e}")
+            return
+        if status == "SENT":
+            who = (
+                f"@{match.telegram_username}" if match.telegram_username
+                else f"id {match.telegram_user_id}"
+            )
+            await self._auto_engine.notify_owner(
+                f"🔥 Взаимный лайк: {match.name} ({who}) — отправил ей стикер-привет"
+            )
 
     def _halt_on_match_card(self, card_msg: object) -> bool:
         """Синхронная часть остановки: режим OBSERVE + снятие цепочек.
@@ -2184,6 +2221,7 @@ class DvinchikCollector:
                         )
                     except Exception as e:
                         logger.error(f"record_match_response error: {e}")
+                    await self._greet_match(task, msg, match)
                 if self._stats:
                     self._stats.record_match()
 
