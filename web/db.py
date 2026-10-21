@@ -516,7 +516,9 @@ class SyncDB:
             return None
         return data if isinstance(data, dict) else None
 
-    def get_chat_signals(self, account_session: str = "") -> dict[str, Any]:
+    def get_chat_signals(
+        self, account_session: str = "", chat_id: int | None = None,
+    ) -> dict[str, Any]:
         """Сигнатура для polling вкладки «Чат».
 
         Меняется при новой входящей (raw), новой отправке (sent) или
@@ -532,11 +534,19 @@ class SyncDB:
                 f"SELECT MAX({col}) AS m FROM {table}"
             )["m"] or ""
 
+        where, params = [], []
         if account_session:
+            where.append("account_session = ?")
+            params.append(account_session)
+        if chat_id is not None:
+            # Только чат Leo: активность в других чатах не дёргает ленту.
+            where.append("chat_id = ?")
+            params.append(chat_id)
+        if where:
             row = self._query_one(
-                "SELECT MAX(id) AS m FROM raw_messages "
-                "WHERE account_session = ?",
-                (account_session,),
+                "SELECT MAX(id) AS m FROM raw_messages WHERE "
+                + " AND ".join(where),
+                tuple(params),
             )
             max_raw = (row or {}).get("m") or ""
         else:

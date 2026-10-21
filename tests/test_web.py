@@ -1789,6 +1789,30 @@ class TestChatFeedMirror:
         assert 8401 in tms and 8402 in tms
         assert 8411 not in tms and 8412 not in tms
 
+    def test_feed_shows_only_leo_chat(self, client, sync_db) -> None:
+        """Сообщения других чатов (история до allowlist'а) в ленту не попадают.
+
+        Регресс: группа с номерами 262k вставала «самой свежей» между
+        анкетами Leo (номера ~34k) — лента выглядела как анархия.
+        """
+        _login(client)
+        _, _, db = sync_db
+        self._seed(db, card_tm=34000, reaction_tm=34001)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(db.save_raw_message(
+            telegram_message_id=262734, chat_id=-1001880519982,
+            sender_id=8779855177, sender_username="", sender_name="",
+            message_date="2025-03-01T10:00:00",
+            text="Окулисты есть здесь? Напишите в лс",
+            raw_entities="[]", reply_markup="[]", media_type="",
+            received_at="2025-03-01T10:00:00",
+        ))
+        body = client.get("/chat/feed?page=1").get_json()["feed"]
+        assert "Варвара, 20, Сургут" in body
+        assert "Окулисты" not in body
+        page = client.get("/").get_data(as_text=True)
+        assert "Окулисты" not in page
+
     def test_pagination_walks_all_pages_without_duplicates(self, sync_db) -> None:
         """Постраничный обход даёт каждое сообщение ровно один раз."""
         sync, _, db = sync_db

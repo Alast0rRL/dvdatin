@@ -210,10 +210,23 @@
        сайт «отстал» от чата. Фото грузятся лениво и меняют высоту, поэтому
        докручиваем ещё раз после загрузки страницы. */
     if (feed) {
-        window.scrollTo(0, document.body.scrollHeight);
-        window.addEventListener('load', function () {
-            window.scrollTo(0, document.body.scrollHeight);
+        // Браузер сам восстанавливает прежнюю позицию (обычно — верх) уже
+        // ПОСЛЕ нашего скролла, а ленивые фото потом меняют высоту. Поэтому
+        // держимся низа, пока пользователь сам не начал листать.
+        if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+        var stickBottom = true;
+        var stopStick = function () { stickBottom = false; };
+        ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(function (ev) {
+            window.addEventListener(ev, stopStick, {passive: true, once: true});
         });
+        var jumpBottom = function () {
+            if (stickBottom) window.scrollTo(0, document.documentElement.scrollHeight);
+        };
+        feed.addEventListener('load', jumpBottom, true);  // догрузка фото
+        window.addEventListener('load', jumpBottom);
+        jumpBottom();
+        setTimeout(jumpBottom, 300);
+        setTimeout(function () { stickBottom = false; }, 8000);
     }
 
     function fetchPage(page) {

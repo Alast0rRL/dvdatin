@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (780 total, no linter/formatter configured)
+# Run all tests (781 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -32,6 +32,7 @@ python -m pytest tests/test_ai.py -v
 - **Пагинация ленты — в SQL**: `ORDER BY telegram_message_id DESC, id DESC LIMIT/OFFSET` (нативный порядок чата Telegram), `total` считает те же непустые строки, что и страница. Внутри страницы — ASC. **Сигнатура polling (`get_chat_signals`) — на аккаунт**; обновление перерисовывает все загруженные страницы (1..N), не схлопывая историю.
 - **`raw_messages.is_outgoing`**: колонка (`INTEGER DEFAULT 0`) + миграция `_ensure_raw_is_outgoing_column` с backfill `WHERE sender_id <> chat_id`. Ставится перехватчиком исходящих (`DvinchikCollector._handle_outgoing_message`) — иначе наш собственный `👎` рисуется в ленте как входящее сообщение от Leo. Не сдвигай её в `SCHEMA`/`save_raw_message` так, чтобы сломать позиционные вызовы (все вызовы — keyword).
 - **`idx_raw_unique` включает аккаунт и направление**: `UNIQUE(account_session, chat_id, telegram_message_id, is_outgoing)`. Пространства id входящих и исходящих пересекаются, и у аккаунтов свои пространства; старый `UNIQUE(chat_id, telegram_message_id)` **молча отбрасывал** наши исходящие на `INSERT OR IGNORE` (сырые записи всех реакций). Индекс пересоздаётся при старте (`DROP` + `CREATE`); `account_session` и `is_outgoing` мигрируются ДО индекса в `Database.connect()`.
+- **Лента — только чат Leo**: роуты передают `chat_id=_leo_chat_id(config_path)` в `get_chat_feed`/`get_chat_signals` (из `dvinchik.chat_id`). В `raw_messages` есть legacy-сообщения групп с бо́льшими id — без фильтра они перемешивались с анкетами (регресс-тест `test_feed_shows_only_leo_chat`).
 - **Альбом анкеты — одна строка**: `SyncDB._group_albums` склеивает фото без текста той же анкеты (`profile_id`) в `photos` предыдущей входящей строки; шаблон рисует `item.photos`. Лента открывается внизу (свежие), как Telegram.
 - **Пустые сообщения в ленте не показываются** (нет текста и медиа — кнопки меню). Фото-сообщение рисуется миниатюрой: `profile_id` резолвится через `profile_messages` (маршрут `photos.serve_photo`).
 - **Карточек/бейджей/форм в ленте нет** — анкета показывается теми же сообщениями, что в Telegram. `data-decision`/`data-name` остаются скрытыми атрибутами строк для клиентского фильтра/поиска. Ручные маршруты `/chat/profile/<id>/<action>` и блок «Капчи ждут ответа» остаются рабочими.
@@ -72,7 +73,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (31), test_auto_action (102), test_auto_action_audit (5), test_captcha_memory (11), test_collector (151), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (117) → **780 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (34), test_audit (31), test_auto_action (102), test_auto_action_audit (5), test_captcha_memory (11), test_collector (151), test_control_bot (14), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_human_review (23), test_manual_review (13), test_parser (63), test_preferences (26), test_profile (21), test_review_ui (5), test_web (118) → **781 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 

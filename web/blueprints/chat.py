@@ -56,6 +56,26 @@ def _get_config_path() -> Path:
     return current_app.config.get("CONFIG_PATH", Path("config/config.yaml"))
 
 
+#: Чат Дайвинчика (Leo) по умолчанию — как в ``config.example.yaml``.
+DEFAULT_LEO_CHAT_ID = 1234060895
+
+
+def _leo_chat_id(config_path: Path) -> int:
+    """chat_id Дайвинчика из ``dvinchik.chat_id`` (лента — ТОЛЬКО этот чат).
+
+    В ``raw_messages`` бывают сообщения других чатов (история до allowlist'а:
+    группы, личка). Их номера из других пространств id, и без фильтра они
+    вставали в ленту между анкетами как «самые свежие».
+    """
+    import yaml
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        return int((raw.get("dvinchik") or {}).get("chat_id") or DEFAULT_LEO_CHAT_ID)
+    except Exception:
+        return DEFAULT_LEO_CHAT_ID
+
+
 def _with_buttons(captcha: dict[str, Any]) -> dict[str, Any]:
     """buttons_json (строка) → list для шаблона."""
     raw = captcha.get("buttons_json") or "[]"
@@ -102,9 +122,10 @@ def index() -> str:
 
     accounts, account_session = _get_accounts(config_path)
     data = db.get_chat_feed(
-        page=1, per_page=FEED_PER_PAGE, account_session=account_session
+        page=1, per_page=FEED_PER_PAGE, account_session=account_session,
+        chat_id=_leo_chat_id(config_path),
     )
-    signals = db.get_chat_signals(account_session)
+    signals = db.get_chat_signals(account_session, _leo_chat_id(config_path))
     pending = [_with_buttons(c) for c in db.get_pending_captchas(limit=20)]
 
     return render_template(
@@ -149,7 +170,7 @@ def debug() -> tuple:
             "account_session": account_session,
             **db.get_debug_states(),
             "counts": db.get_debug_counts(),
-            "signals": db.get_chat_signals(account_session),
+            "signals": db.get_chat_signals(account_session, _leo_chat_id(config_path)),
             "last_auto_actions": db.get_recent_auto_actions(limit=10),
         },
     }
@@ -165,7 +186,9 @@ def debug() -> tuple:
 def feed() -> tuple:
     """Фрагменты ленты и капч для in-place обновления (polling)."""
     db = _get_db()
-    _, account_session = _get_accounts(_get_config_path())
+    config_path = _get_config_path()
+    _, account_session = _get_accounts(config_path)
+    chat_id = _leo_chat_id(config_path)
     page = request.args.get("page", 1, type=int)
     # ``pages=N`` — свежие N страниц ОДНИМ срезом (polling-перерисовка). Раньше
     # фронт тянул страницы 1..N параллельно через OFFSET, и новое сообщение
@@ -174,13 +197,14 @@ def feed() -> tuple:
     if pages > 1:
         data = db.get_chat_feed(
             page=1, per_page=FEED_PER_PAGE * pages,
-            account_session=account_session,
+            account_session=account_session, chat_id=chat_id,
         )
         total = data.get("total", 0)
         data["total_pages"] = max(1, (total + FEED_PER_PAGE - 1) // FEED_PER_PAGE)
     else:
         data = db.get_chat_feed(
-            page=page, per_page=FEED_PER_PAGE, account_session=account_session
+            page=page, per_page=FEED_PER_PAGE, account_session=account_session,
+            chat_id=chat_id,
         )
     return (
         json.dumps(
@@ -208,8 +232,11 @@ def feed() -> tuple:
 @login_required
 def new_count() -> tuple:
     """Сигнатура для polling: изменилась → обновить ленту."""
-    _, account_session = _get_accounts(_get_config_path())
-    signals = _get_db().get_chat_signals(account_session) or {}
+    config_path = _get_config_path()
+    _, account_session = _get_accounts(config_path)
+    signals = _get_db().get_chat_signals(
+        account_session, _leo_chat_id(config_path)
+    ) or {}
     return (
         json.dumps({"signature": _chat_signature(signals), **signals}),
         200,
