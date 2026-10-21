@@ -100,11 +100,6 @@ class ControlBot:
 
     # ── Команды ──────────────────────────────────────────────────────
 
-    async def _cmd_status(self, event: events.NewMessage.Event) -> None:
-        if not self._is_authorized(event.sender_id):
-            return
-        await self._send_status(event)
-
     async def _cmd_help(self, event: events.NewMessage.Event) -> None:
         if not self._is_authorized(event.sender_id):
             return

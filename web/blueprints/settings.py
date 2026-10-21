@@ -1,4 +1,4 @@
-﻿# Settings blueprint — filter config, preferences, mode control.
+# Settings blueprint — filter config, preferences, mode control.
 
 from __future__ import annotations
 

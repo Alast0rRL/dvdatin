@@ -32,6 +32,9 @@ data/database.db-shm
 # Analysis exports + DB backups (runtime artifacts, NOT for VCS)
 data/exports/
 
+# Журнал ручных решений по REVIEW-анкетам (личные данные анкет)
+data/reviews/
+
 # Config (secrets)
 config/config.yaml
 

@@ -1217,11 +1217,6 @@ class TestPhotoServingRoute:
 class TestSyncDB:
     """Unit-тесты SyncDB (синхронный адаптер БД)."""
 
-    def test_get_profiles_paginated(self, sync_db) -> None:
-        sync, _, _ = sync_db
-        profiles = sync.get_profiles_paginated(0, 10)
-        assert len(profiles) == 3
-
     def test_get_profiles_count(self, sync_db) -> None:
         sync, _, _ = sync_db
         assert sync.get_profiles_count() == 3
@@ -1231,29 +1226,6 @@ class TestSyncDB:
         assert sync.get_profiles_count("LIKE") == 1
         assert sync.get_profiles_count("REVIEW") == 1
         assert sync.get_profiles_count("DISLIKE") == 1
-
-    def test_get_profile_full(self, sync_db) -> None:
-        sync, _, _ = sync_db
-        profile = sync.get_profile_full(1)
-        assert profile is not None
-        assert profile["name"] == "Алиса"
-        assert len(profile["ai_decisions"]) >= 1
-        assert len(profile["filter_results"]) >= 1
-
-    def test_get_profile_full_not_found(self, sync_db) -> None:
-        sync, _, _ = sync_db
-        assert sync.get_profile_full(9999) is None
-
-    def test_count_decisions(self, sync_db) -> None:
-        sync, _, _ = sync_db
-        counts = sync.count_decisions()
-        assert counts.get("LIKE") == 1
-        assert counts.get("REVIEW") == 1
-        assert counts.get("DISLIKE") == 1
-
-    def test_pending_review_count(self, sync_db) -> None:
-        sync, _, _ = sync_db
-        assert sync.get_pending_review_count() == 1
 
     def test_is_already_reviewed(self, sync_db) -> None:
         sync, _, _ = sync_db

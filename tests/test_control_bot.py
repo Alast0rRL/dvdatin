@@ -72,19 +72,15 @@ def _event(sender_id: int, text: str = "") -> MagicMock:
 class TestControlBotAuth:
     def test_denies_unauthorized(self) -> None:
         bot, client, collector = make_bot()
-        ev = _event(sender_id=999999999)
-        asyncio.get_event_loop().run_until_complete(
-            bot._cmd_status(ev)
-        )
+        ev = _event(sender_id=999999999, text="/status")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
         collector.set_mode.assert_not_called()
         ev.respond.assert_not_awaited()
 
     def test_allows_authorized(self) -> None:
         bot, client, collector = make_bot()
-        ev = _event(sender_id=8525808108)
-        asyncio.get_event_loop().run_until_complete(
-            bot._cmd_status(ev)
-        )
+        ev = _event(sender_id=8525808108, text="/status")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
         ev.client.send_message.assert_awaited_once()
 
 

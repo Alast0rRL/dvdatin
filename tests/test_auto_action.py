@@ -290,18 +290,28 @@ class TestAutoActionRateLimit:
             client=client, config=make_auto_config(interval_sec=0.05)
         )
         loop = asyncio.get_event_loop()
+        # Меряем интервал между САМИМИ отправками 👎 в чат Leo: движок отсчитывает
+        # его от отправки, а не от конца maybe_act (уведомление владельцу после
+        # отправки под нагрузкой съедало часть окна — тест флакал).
+        sent_at: list[float] = []
+
+        async def _record(target, text, *args, **kwargs):
+            if text == "\U0001F44E":
+                sent_at.append(time.monotonic())
+            return MagicMock(id=len(sent_at))
+
+        client.send_message.side_effect = _record
         # 👎 дважды: LIKE открывает композер и отложил бы второе действие,
         # поэтому для проверки rate-limit берём один тип действия.
         loop.run_until_complete(
             e.maybe_act(AIDecision.DISLIKE, profile_id=1, message_id=901)
         )
-        t0 = time.monotonic()
         loop.run_until_complete(
             e.maybe_act(AIDecision.DISLIKE, profile_id=2, message_id=902)
         )
-        elapsed = time.monotonic() - t0
-        # Второе действие должно подождать >= interval_sec.
-        assert elapsed >= 0.04
+        assert len(sent_at) == 2
+        # Второе действие должно подождать >= interval_sec (с допуском таймера).
+        assert sent_at[1] - sent_at[0] >= 0.045
 
 
 class TestAutoActionConfig:

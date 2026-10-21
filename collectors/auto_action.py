@@ -39,11 +39,8 @@ DISLIKE_TEXT: str = "\U0001F44E"     # 👎 — дизлайк
 # открывала композер, на который Leo отвечал «Отправь текст, видео или
 # голосовое(до 15сек)». Одиночный «💌» Leo не распознаёт.
 MESSAGE_BUTTON_TEXT: str = "\U0001F48C \U0001F4F9 \U0001F3A4"
-# Маркеры ответов Leo про лайк для обратной совместимости (LIKE_AND_MESSAGE,
-# §30). Сравнение регистронезависимое. ❤️ больше не шлём (упирается в дневной
-# лимит), композер открывается сразу строкой кнопок, поэтому новые цепочки в
-# стадию AWAIT_LIKE_ACK не попадают — маркеры оставлены под старые записи.
-LIKE_ACK_MARKERS: tuple[str, ...] = ("лайк отправлен", "ждем ответа")
+# Маркеры композера Leo («Отправь текст…»): по ним цепочка LIKE_AND_MESSAGE
+# (§30) досылает «Берем)». Сравнение регистронезависимое.
 MESSAGE_PROMPT_MARKERS: tuple[str, ...] = (
     "отправь текст",
     "отправьте текст",
@@ -58,7 +55,6 @@ LIKE_LIMIT_STATE_KEY: str = "likes_exhausted_until"
 LIKE_LIMIT_RESET_HOUR: int = 7
 
 # Стадии цепочки LIKE_AND_MESSAGE.
-_STAGE_AWAIT_LIKE_ACK = "AWAIT_LIKE_ACK"   # кнопка ещё не отправлена
 _STAGE_AWAIT_PROMPT = "AWAIT_PROMPT"       # ждём композер от Leo
 
 #: Сообщение в композер («Берем)») уходит вне общего rate-limit: окно, пока
@@ -529,9 +525,9 @@ class AutoActionEngine:
         (НЕ PROFILE). Цепочка LIKE_AND_MESSAGE (без ❤️):
           «💌 📹 🎤» (открытие композера, сразу в ``maybe_act``) →
           (Leo: «Отправь текст, видео или голосовое…») → «Берем)».
-        Кнопка композера отправляется проактивно в ``maybe_act``. Ветка
-        ``AWAIT_LIKE_ACK`` оставлена для обратной совместимости (ретрай
-        кнопки по ack Leo), но с удалением ❤️ новые цепочки в неё не попадают.
+        Кнопка композера отправляется сразу в ``maybe_act``; цепочки живут
+        только в памяти (после рестарта композер добивает
+        ``recover_open_composer``).
         Идемпотентность: каждый шаг выполняется ровно один раз, потому что
         стадия переводится вперёд сразу после отправки.
         """
@@ -544,19 +540,7 @@ class AutoActionEngine:
             if chain.get("chat_id") != chat_id:
                 continue
             stage = chain.get("stage")
-            if stage == _STAGE_AWAIT_LIKE_ACK and any(
-                m in low for m in LIKE_ACK_MARKERS
-            ):
-                # Ретрай кнопки композера по ack Leo (проактивная отправка
-                # в maybe_act не удалась — Leo подтвердил лайк, пробуем снова).
-                await self._send_locked(MESSAGE_BUTTON_TEXT)
-                logger.info(
-                    f"AutoAction: «Берем)» шаг 2/3 — отправлено {MESSAGE_BUTTON_TEXT!r} "
-                    f"по ack Leo (chat={chat_id}, карточка={card_id})"
-                )
-                chain["stage"] = _STAGE_AWAIT_PROMPT
-                chain["opened_at"] = time.time()
-            elif stage == _STAGE_AWAIT_PROMPT and any(
+            if stage == _STAGE_AWAIT_PROMPT and any(
                 m in low for m in MESSAGE_PROMPT_MARKERS
             ):
                 # Leo открыл композер → отправляем текст «Берем)» и завершаем.

@@ -73,42 +73,6 @@ class SyncDB:
 
     # ── Profiles ──────────────────────────────────────────────────
 
-    def get_profiles_paginated(
-        self, offset: int = 0, limit: int = 20,
-        decision_filter: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Получает профили с пагинацией, объединённые с AI-решениями."""
-        sql = """
-            SELECT
-                p.id, p.name, p.age, p.raw_city, p.normalized_city,
-                p.description, p.status, p.first_seen_at, p.last_seen_at,
-                ad.id as ai_decision_id, ad.decision, ad.combined_score,
-                ad.confidence, ad.reasons, ad.evaluated_at,
-                fr.decision as filter_decision, fr.reasons as filter_reasons,
-                hd.decision as human_decision, hd.agreement,
-                hd.created_at as human_decided_at
-            FROM profiles p
-            LEFT JOIN ai_decisions ad ON ad.id = (
-                SELECT id FROM ai_decisions
-                WHERE profile_id = p.id
-                ORDER BY evaluated_at DESC LIMIT 1
-            )
-            LEFT JOIN filter_results fr ON fr.id = (
-                SELECT id FROM filter_results
-                WHERE profile_id = p.id
-                ORDER BY evaluated_at DESC LIMIT 1
-            )
-            LEFT JOIN human_decisions hd ON hd.ai_decision_id = ad.id
-        """
-        params: list[Any] = []
-        if decision_filter:
-            sql += " WHERE ad.decision = ?"
-            params.append(decision_filter)
-        sql += " ORDER BY p.last_seen_at DESC, p.id DESC"
-        sql += " LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        return self._query(sql, tuple(params))
-
     def get_profiles_count(self, decision_filter: str | None = None) -> int:
         sql = """
             SELECT COUNT(*) as cnt
@@ -125,43 +89,6 @@ class SyncDB:
             params.append(decision_filter)
         row = self._query_one(sql, tuple(params))
         return row["cnt"] if row else 0
-
-    def get_profile_full(self, profile_id: int) -> dict[str, Any] | None:
-        """Получает полный профиль со всеми связанными данными."""
-        profile = self._query_one(
-            "SELECT * FROM profiles WHERE id = ?", (profile_id,)
-        )
-        if not profile:
-            return None
-
-        # AI decisions history
-        profile["ai_decisions"] = self._query(
-            "SELECT * FROM ai_decisions WHERE profile_id = ? ORDER BY evaluated_at DESC",
-            (profile_id,),
-        )
-        # Filter results
-        profile["filter_results"] = self._query(
-            "SELECT * FROM filter_results WHERE profile_id = ? ORDER BY evaluated_at DESC",
-            (profile_id,),
-        )
-        # Human decisions
-        profile["human_decisions"] = self._query(
-            "SELECT * FROM human_decisions WHERE profile_id = ? ORDER BY created_at DESC",
-            (profile_id,),
-        )
-        # Profile messages (photos, etc.)
-        profile["messages"] = self._query(
-            """
-            SELECT pm.*, rm.text as raw_text, rm.media_type
-            FROM profile_messages pm
-            JOIN raw_messages rm ON rm.telegram_message_id = pm.telegram_message_id
-                AND rm.chat_id = pm.chat_id
-            WHERE pm.profile_id = ?
-            ORDER BY pm.created_at ASC
-            """,
-            (profile_id,),
-        )
-        return profile
 
     def get_profile_message(
         self, profile_id: int, telegram_message_id: int,
@@ -254,47 +181,6 @@ class SyncDB:
     def count_profiles(self) -> int:
         row = self._query_one("SELECT COUNT(*) as cnt FROM profiles")
         return row["cnt"] if row else 0
-
-    def count_decisions(self) -> dict[str, int]:
-        rows = self._query(
-            "SELECT decision, COUNT(*) as cnt FROM ai_decisions GROUP BY decision"
-        )
-        return {r["decision"]: r["cnt"] for r in rows}
-
-    def count_human_decisions(self) -> dict[str, int]:
-        rows = self._query(
-            "SELECT decision, COUNT(*) as cnt FROM human_decisions GROUP BY decision"
-        )
-        return {r["decision"]: r["cnt"] for r in rows}
-
-    def get_pending_review_count(self) -> int:
-        row = self._query_one("""
-            SELECT COUNT(*) as cnt FROM ai_decisions ad
-            WHERE ad.decision = 'REVIEW'
-            AND NOT EXISTS (
-                SELECT 1 FROM human_decisions hd WHERE hd.ai_decision_id = ad.id
-            )
-        """)
-        return row["cnt"] if row else 0
-
-    def get_feed_signals(self) -> dict[str, Any]:
-        """Signals для авто-обновления ленты.
-
-        Ловит и новые анкеты (MAX(profiles.id)), и повторы уже известных
-        (MAX(profiles.last_seen_at)), и любую новую активность в чате
-        (MAX(raw_messages.id) — RAW пишется ДО обработки).
-        """
-        row = self._query_one("""
-            SELECT
-                (SELECT MAX(id) FROM profiles) AS max_profile_id,
-                (SELECT MAX(last_seen_at) FROM profiles) AS max_last_seen,
-                (SELECT MAX(id) FROM raw_messages) AS max_raw_id
-        """)
-        return row or {
-            "max_profile_id": None,
-            "max_last_seen": None,
-            "max_raw_id": None,
-        }
 
     # ── Settings ──────────────────────────────────────────────────
 
@@ -605,15 +491,6 @@ class SyncDB:
 
     def get_captcha_by_id(self, captcha_id: int) -> dict[str, Any] | None:
         return self.get_captcha(int(captcha_id))
-
-    def set_captcha_answer_and_mark(self, captcha_id: int, answer: str) -> str:
-        """Сохраняет выученный ответ и сразу отправляет его Leo (inline)."""
-        from web.actions import send_captcha_answer_sync
-        status = self.set_captcha_answer(captcha_id, answer)
-        if not status:
-            return "ERROR"
-        send_status = send_captcha_answer_sync(answer)
-        return "SENT" if send_status == "SENT" else ("KNOWN" if send_status == "DISABLED" else "ERROR")
 
     # ── Captcha memory (Stage 7.6) ────────────────────────────────
 

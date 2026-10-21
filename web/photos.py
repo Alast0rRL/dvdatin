@@ -54,21 +54,9 @@ def set_telegram_clients_with_sessions(
             )
 
 
-def set_telegram_client(client) -> None:
-    """Обратная совместимость: один клиент."""
-    global _telegram_clients, _telegram_sessions
-    _telegram_clients = [client]
-    _telegram_sessions = [""]
-
-
 def get_telegram_clients() -> list:
     """Возвращает текущий список TelegramClient-ов."""
     return _telegram_clients
-
-
-def get_telegram_client():
-    """Обратная совместимость: первый клиент."""
-    return _telegram_clients[0] if _telegram_clients else None
 
 
 def _ordered_clients(account_session: str) -> list:
@@ -114,14 +102,6 @@ def get_photo_path(
     if photo_file.exists():
         return photo_file
     return None
-
-
-def get_all_photo_paths(profile_id: int) -> list[Path]:
-    """Возвращает список кэшированных фото профиля."""
-    photo_dir = MEDIA_ROOT / str(profile_id)
-    if not photo_dir.exists():
-        return []
-    return sorted(photo_dir.glob("*.jpg"))
 
 
 def _ensure_media_dir(profile_id: int) -> Path:

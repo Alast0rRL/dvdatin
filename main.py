@@ -268,18 +268,18 @@ async def main() -> None:
         logger.warning(f"Web UI не запущен: {e}")
 
     # Stage 7 (SEMI_AUTO): обработка активной анкеты на авто-аккаунте
-    auto_task = asyncio.get_event_loop().create_task(
+    auto_task = asyncio.create_task(
         collector.start_auto_stream()
     )
 
     # W3: восстановление backlog'а
-    recovery_task = asyncio.get_event_loop().create_task(
+    recovery_task = asyncio.create_task(
         collector.recover_backlog()
     )
 
     # Сверка ленты с Telegram: досохраняет сообщения, пропущенные событиями
     # (обрывы прокси, рестарты, ручные ответы с телефона).
-    history_sync_task = asyncio.get_event_loop().create_task(
+    history_sync_task = asyncio.create_task(
         collector.run_history_sync()
     )
 
