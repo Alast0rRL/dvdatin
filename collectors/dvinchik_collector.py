@@ -558,10 +558,16 @@ class DvinchikCollector:
         now = datetime.now(timezone.utc)
         for client in self._clients:
             account_session = self._session_for_client(client)
+            # Карточка «Ты понравился…», пропущенная живым хендлером, тоже
+            # должна остановить поиск — но только самая свежая и только если
+            # после неё мы ещё ничего не отправляли (иначе уже разобрана).
+            watch_match = client is self._auto_engine.client
             try:
                 async for msg in client.iter_messages(
                     self._dvinchik_chat_id, limit=limit
                 ):
+                    if getattr(msg, "out", False):
+                        watch_match = False
                     msg_dt = getattr(msg, "date", None)
                     if (
                         isinstance(msg_dt, datetime)
@@ -601,10 +607,15 @@ class DvinchikCollector:
                         is_outgoing=outgoing,
                         account_session=account_session,
                     )
+                    is_card = watch_match and self._is_match_card(msg)
+                    if is_card:
+                        watch_match = False
                     if raw_id is None:
                         continue
                     await self._db.mark_raw_processed(raw_id)
                     added += 1
+                    if is_card:
+                        await self._stop_on_match_card(msg)
             except Exception as e:
                 logger.error(
                     f"Сверка истории чата ({account_session or '?'}) не удалась: {e}"
@@ -1120,18 +1131,42 @@ class DvinchikCollector:
             if card_msg is None:
                 return False
 
-            card_text = (getattr(card_msg, "text", "") or "").strip()
-            logger.warning(
-                f"AutoAction: карточка взаимного лайка (msg={card_msg.id}) — "
-                f"«{card_text[:80]}»: останавливаю поиск (режим OBSERVE)"
-            )
-            self._auto_engine.abort_like_chains(self._dvinchik_chat_id)
-            self.set_mode(Mode.OBSERVE)
-            await self._mark_match_stop(card_msg.id, card_text)
-            return True
+            return await self._stop_on_match_card(card_msg)
         except Exception as e:
             logger.error(f"AutoAction: ошибка остановки на карточке лайка: {e}")
             return False
+
+    def _halt_on_match_card(self, card_msg: object) -> bool:
+        """Синхронная часть остановки: режим OBSERVE + снятие цепочек.
+
+        Без сети и БД (кроме записи режима в config.yaml) — поэтому её можно
+        звать прямо из Telegram-хендлера под локом чата, ДО постановки
+        сообщения в очередь pipeline. Карточка помечается активной
+        (``note_card``): реакции на анкеты, ещё стоящие в очереди, становятся
+        «устаревшими» и не уходят — иначе queued 👎 уходил ПОСЛЕ карточки,
+        и проверка «после карточки уже есть наш ответ» считала её разобранной
+        (поиск не останавливался). True — поиск остановлен сейчас.
+        """
+        if not self._auto_engine.enabled:
+            return False
+        card_text = (getattr(card_msg, "text", "") or "").strip()
+        logger.warning(
+            f"AutoAction: карточка взаимного лайка (msg={card_msg.id}) — "
+            f"«{card_text[:80]}»: останавливаю поиск (режим OBSERVE)"
+        )
+        self._auto_engine.note_card(self._dvinchik_chat_id, card_msg.id)
+        self._auto_engine.abort_like_chains(self._dvinchik_chat_id)
+        self.set_mode(Mode.OBSERVE)
+        return True
+
+    async def _stop_on_match_card(self, card_msg: object) -> bool:
+        """Полная остановка на конкретной карточке «Ты понравился…»."""
+        if not self._halt_on_match_card(card_msg):
+            return False
+        await self._mark_match_stop(
+            card_msg.id, (getattr(card_msg, "text", "") or "").strip()
+        )
+        return True
 
     async def _mark_match_stop(self, card_id: int, card_text: str) -> None:
         """Баннер на сайте + уведомление владельцу (одно на карточку)."""
@@ -1610,8 +1645,15 @@ class DvinchikCollector:
                         is MessageType.PROFILE
                     ):
                         self._auto_engine.note_card(chat_id, msg.id)
+                    elif not getattr(msg, "out", False) and self._is_match_card(msg):
+                        # «Ты понравился N девушке…» — стоп СРАЗУ, до очереди:
+                        # pipeline может отставать, и queued 👎 на прошлую
+                        # анкету ушёл бы после карточки (лента листалась
+                        # дальше). После стопа режим OBSERVE — задержка
+                        # следующих сообщений чата на уведомление не важна.
+                        await self._stop_on_match_card(msg)
                 except Exception as e:
-                    logger.debug(f"AutoAction: note_card не удался: {e}")
+                    logger.error(f"AutoAction: отметка карточки не удалась: {e}")
 
             # D: raw_id поставлен в очередь в этой сессии (live handler).
             # Только пока активна startup-recovery (recover_backlog) — иначе в

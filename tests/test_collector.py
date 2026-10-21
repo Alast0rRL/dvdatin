@@ -275,6 +275,58 @@ class TestCollectorActiveCard:
         assert engine.likes_exhausted() is True
         collector._db.mark_like_rejected.assert_awaited_once()
 
+    @staticmethod
+    def _match_event(client: AsyncMock, msg_id: int) -> MagicMock:
+        event = make_event(
+            text=(
+                "Ты понравился 1 девушке, показать её?\n\n"
+                "1. Показать.\n2. Не хочу больше никого смотреть."
+            ),
+            msg_id=msg_id,
+            sender_id=1234060895,
+        )
+        event.message.out = False
+        event.client = client
+        return event
+
+    def test_match_card_stops_search_in_handler(self) -> None:
+        """«Ты понравился…» → стоп прямо в хендлере, до очереди pipeline.
+
+        Регресс: стоп жил только в worker'е и проверял «нет ли нашего ответа
+        после карточки». Если в очереди перед карточкой стояла анкета, её 👎
+        уходил ПОСЛЕ карточки — проверка считала карточку разобранной и
+        лента листалась дальше. Теперь режим → OBSERVE сразу, а реакция на
+        стоящую в очереди анкету — устаревшая (не уходит).
+        """
+        collector, client, engine = self._collector()
+        engine.note_card(1234060895, 34647)  # анкета ещё ждёт реакции
+        notify = AsyncMock(return_value=True)
+        engine.notify_owner = notify
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(self._match_event(client, 34648))
+            )
+
+        assert collector.mode is Mode.OBSERVE
+        assert engine.enabled is False
+        assert engine.is_stale_card(1234060895, 34647) is True
+        notify.assert_awaited_once()
+        client.send_message.assert_not_called()
+
+    def test_match_card_from_other_account_does_not_stop(self) -> None:
+        """Карточка на НЕ авто-аккаунте авто-поиск не трогает."""
+        collector, client, engine = self._collector()
+        engine.notify_owner = AsyncMock(return_value=True)
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(
+                    self._match_event(AsyncMock(), 740563)
+                )
+            )
+
+        assert collector.mode is Mode.SEMI_AUTO
+        engine.notify_owner.assert_not_awaited()
+
     def test_normal_message_does_not_exhaust_likes(self) -> None:
         collector, client, engine = self._collector()
         event = make_event(text="Лайк отправлен, ждем ответа.", msg_id=733500)
@@ -3879,6 +3931,58 @@ class TestHistorySync:
         )
         assert added == 0
         collector._db.save_raw_message.assert_not_called()
+
+    def _semi_auto_collector(
+        self,
+    ) -> tuple[DvinchikCollector, AsyncMock, AsyncMock]:
+        cfg = make_config()
+        data = cfg.model_dump()
+        data["telegram"] = {
+            "accounts": [
+                {"api_id": 38219721, "api_hash": "a" * 32, "session": "dvai"},
+                {"api_id": 36266816, "api_hash": "b" * 32, "session": "dvai_2"},
+            ]
+        }
+        data["project"] = {"mode": "SEMI_AUTO"}
+        data["auto_actions"] = {
+            "enabled": True, "account_session": "dvai_2", "interval_sec": 0.0,
+        }
+        acc1, acc2 = AsyncMock(), AsyncMock()
+        collector = DvinchikCollector([acc1, acc2], make_db_mock(), AppConfig(**data))
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
+        return collector, acc1, acc2
+
+    def test_missed_match_card_stops_search(self) -> None:
+        """Карточку «Ты понравился…» пропустил хендлер → стоп при сверке."""
+        collector, acc1, acc2 = self._semi_auto_collector()
+        acc1.iter_messages = self._history()
+        acc2.iter_messages = self._history(
+            self._msg(34648, "Ты понравился 1 девушке, показать её?", age_sec=300),
+            self._msg(34647, "👎", age_sec=310, out=True),
+        )
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector.sync_chat_history()
+            )
+
+        assert collector.mode is Mode.OBSERVE
+        collector._auto_engine.notify_owner.assert_awaited_once()
+
+    def test_answered_match_card_in_sync_does_not_stop(self) -> None:
+        """После карточки уже есть наш ответ — при сверке поиск не трогаем."""
+        collector, acc1, acc2 = self._semi_auto_collector()
+        acc1.iter_messages = self._history()
+        acc2.iter_messages = self._history(
+            self._msg(34651, "1 👍", age_sec=200, out=True),
+            self._msg(34648, "Ты понравился 1 девушке, показать её?", age_sec=300),
+        )
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector.sync_chat_history()
+            )
+
+        assert collector.mode is Mode.SEMI_AUTO
+        collector._auto_engine.notify_owner.assert_not_awaited()
 
     def test_duplicates_are_not_marked(self) -> None:
         """Уже сохранённое (INSERT OR IGNORE → None) не помечается и не считается."""
