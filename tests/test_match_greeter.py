@@ -110,10 +110,22 @@ class TestMatchGreeter:
         greeter = MatchGreeter(MatchGreetingConfig(), make_db())
         assert run(greeter.greet(client, "dvai_2", self.match, "SEMI_AUTO")) == "SENT"
 
-    def test_observe_never_sends(self) -> None:
+    def test_any_mode_by_default(self) -> None:
+        """Ручной лайк владельца (OBSERVE) — стикер тоже уходит."""
         client = make_client()
         greeter = MatchGreeter(MatchGreetingConfig(), make_db())
-        assert run(greeter.greet(client, "dvai_2", self.match, "OBSERVE")) == "DISABLED"
+        assert run(greeter.greet(client, "dvai", self.match, "OBSERVE")) == "SENT"
+
+    def test_modes_can_be_restricted(self) -> None:
+        client = make_client()
+        greeter = MatchGreeter(MatchGreetingConfig(modes=["AUTO"]), make_db())
+        assert run(greeter.greet(client, "dvai_2", self.match, "SEMI_AUTO")) == "DISABLED"
+        client.send_file.assert_not_called()
+
+    def test_disabled_never_sends(self) -> None:
+        client = make_client()
+        greeter = MatchGreeter(MatchGreetingConfig(enabled=False), make_db())
+        assert run(greeter.greet(client, "dvai_2", self.match, "AUTO")) == "DISABLED"
         client.send_file.assert_not_called()
 
     def test_send_error_is_recorded_not_raised(self) -> None:
@@ -189,14 +201,27 @@ class TestCollectorGreetsOnMatch:
         assert args[2].telegram_username == "Hisochkaaa"
         collector._auto_engine.notify_owner.assert_awaited_once()
 
-    def test_observe_does_not_greet(self) -> None:
+    def test_observe_greets_after_manual_like(self) -> None:
+        """Сам лайкнул в OBSERVE → взаимный лайк → стикер всё равно уходит."""
         collector, _, auto = self._collector("OBSERVE")
         run(collector._process_message(self._task(auto)))
-        collector._match_greeter.greet.assert_not_called()
+        collector._match_greeter.greet.assert_awaited_once()
+        assert collector._match_greeter.greet.await_args.args[3] == "OBSERVE"
 
-    def test_other_account_does_not_greet(self) -> None:
+    def test_other_account_greets_from_its_own_client(self) -> None:
+        """Матч на втором аккаунте — пишем с него же."""
         collector, other, _ = self._collector("SEMI_AUTO")
-        run(collector._process_message(self._task(other)))
+        task = self._task(other)
+        task.account_session = "dvai"
+        run(collector._process_message(task))
+        args = collector._match_greeter.greet.await_args.args
+        assert args[0] is other and args[1] == "dvai"
+
+    def test_foreign_chat_does_not_greet(self) -> None:
+        collector, _, auto = self._collector("SEMI_AUTO")
+        task = self._task(auto)
+        task.chat_id = 777
+        run(collector._process_message(task))
         collector._match_greeter.greet.assert_not_called()
 
     def test_mode_value_passed(self) -> None:

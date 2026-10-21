@@ -1144,22 +1144,19 @@ class DvinchikCollector:
     async def _greet_match(
         self, task: RawTask, msg: object | None, match: ParsedMatch,
     ) -> None:
-        """Взаимный лайк на авто-аккаунте → стикер девушке (вместо текста Leo).
+        """Взаимный лайк → стикер девушке (вместо текста Leo).
 
-        Только когда авто-действия включены (не OBSERVE) и сообщение пришло
-        на авто-аккаунт: пишем с того аккаунта, с которым у неё матч.
+        Всем матчам: и после лайка бота, и после ручного лайка владельца
+        (в т.ч. в OBSERVE). Пишем с того аккаунта, на котором случился матч
+        (у неё матч именно с ним). Режимы — ``match_greeting.modes``.
         """
-        if (
-            msg is None
-            or task.chat_id != self._dvinchik_chat_id
-            or not self._auto_engine.enabled
-            or getattr(msg, "client", None) is not self._auto_engine.client
-        ):
+        client = getattr(msg, "client", None) if msg is not None else None
+        if client is None or task.chat_id != self._dvinchik_chat_id:
             return
-        session = task.account_session or self._session_for_client(msg.client)
+        session = task.account_session or self._session_for_client(client)
         try:
             status = await self._match_greeter.greet(
-                msg.client, session, match, self.mode.value,
+                client, session, match, self.mode.value,
             )
         except Exception as e:
             logger.error(f"MatchGreeting error: {e}")
@@ -1170,7 +1167,8 @@ class DvinchikCollector:
                 else f"id {match.telegram_user_id}"
             )
             await self._auto_engine.notify_owner(
-                f"🔥 Взаимный лайк: {match.name} ({who}) — отправил ей стикер-привет"
+                f"🔥 Взаимный лайк: {match.name} ({who}) — отправил ей "
+                f"стикер-привет с {session or 'аккаунта'}"
             )
 
     def _halt_on_match_card(self, card_msg: object) -> bool:
