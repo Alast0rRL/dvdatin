@@ -86,16 +86,29 @@
     {% include "partials/app_stream_error.html" %}
 </div>
 <div class="app" id="app"
-     data-sig="{{ signature }}" data-page="{{ page }}" data-total-pages="{{ total_pages }}">
+     data-sig="{{ signature }}" data-page="{{ page }}" data-total-pages="{{ total_pages }}"
+     data-view="{{ view }}">
 
     {% include "partials/app_captchas.html" %}
 
     {# ── Панель управления списком: фильтр по решению, поиск, счётчик ── #}
     <div class="toolbar">
+        {# Вид ленты: прямой — зеркало чата; улучшенный — только ❤️/👎 и причина.
+           Ссылки (работают без JS), выбор запоминается в сессии. #}
+        <nav class="seg" id="view-seg" aria-label="Вид ленты">
+            <a class="seg__btn {% if view == 'direct' %}is-active{% endif %}" href="{{ url_for('chat.index', view='direct') }}"
+               {% if view == 'direct' %}aria-current="page"{% endif %}
+               title="Как в Telegram: все сообщения чата">1 · Прямой</a>
+            <a class="seg__btn {% if view == 'smart' %}is-active{% endif %}" href="{{ url_for('chat.index', view='smart') }}"
+               {% if view == 'smart' %}aria-current="page"{% endif %}
+               title="Только анкеты с ❤️ или 👎 и причиной решения">2 · Улучшенный</a>
+        </nav>
         <div class="seg" id="filter-seg" role="group" aria-label="Фильтр по решению">
             <button type="button" class="seg__btn is-active" data-filter="ALL" aria-pressed="true">Все</button>
             <button type="button" class="seg__btn" data-filter="LIKE" aria-pressed="false">❤️</button>
+            {% if view != 'smart' %}
             <button type="button" class="seg__btn" data-filter="REVIEW" aria-pressed="false">🤔</button>
+            {% endif %}
             <button type="button" class="seg__btn" data-filter="DISLIKE" aria-pressed="false">👎</button>
         </div>
         <input type="search" id="feed-search" class="input input--search"
@@ -106,7 +119,7 @@
     {# ── Список событий: одна колонка, каждая строка — отдельное событие ── #}
     {# Свежие — СВЕРХУ, сразу под панелью управления; более ранние догружаются вниз. #}
     <div class="feed" id="feed">
-        {% include "partials/app_feed.html" %}
+        {% include feed_template %}
     </div>
 
     <div class="feed-more" id="feed-more">

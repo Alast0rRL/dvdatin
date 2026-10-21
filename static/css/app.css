@@ -398,7 +398,40 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .seg__btn:hover { color: var(--text); }
 .seg__btn.is-active { background: var(--accent); color: var(--on-accent); }
 
+a.seg__btn {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
 .toolbar__count { margin-left: auto; color: var(--faint); font-size: 12px; }
+
+/* ── Улучшенная лента: решение бота + причина ──────────────────── */
+.row--like { border-left: 3px solid var(--like-line); }
+.row--dislike { border-left: 3px solid var(--dislike-line); }
+.verdict {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+}
+.verdict--like { color: var(--like-fg); background: var(--like-bg); }
+.verdict--dislike { color: var(--dislike-fg); background: var(--dislike-bg); }
+.reasons {
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg-soft);
+    font-size: 13px;
+    min-width: 0;
+}
+.reasons__title { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.reasons__list { margin: 4px 0 0; padding-left: 18px; color: var(--text); overflow-wrap: anywhere; }
+.reasons__list li + li { margin-top: 2px; }
+.reasons__none { margin-top: 4px; color: var(--faint); }
+.reasons__msg { margin-top: 6px; color: var(--text-soft); overflow-wrap: anywhere; }
 
 .input {
     display: block;

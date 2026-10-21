@@ -1,0 +1,58 @@
+{# Улучшенная лента: только анкеты, на которые бот поставил ❤️ или 👎, и почему.
+   Та же сетка строки, что у прямой ленты (.row: время + содержимое), поэтому
+   инварианты вёрстки и клиентский фильтр/поиск (data-decision/data-name) общие. #}
+{% for item in items %}
+<article class="row row--decision row--{{ item.action|lower }}"
+         data-decision="{{ item.action }}"
+         data-kind="decision"
+         data-name="{{ item.name }} {{ item.city }}">
+
+    <time class="row__time" datetime="{{ item.ts }}" title="{{ item.ts }}">{{ item.ts[11:16] if item.ts else '' }}</time>
+
+    <div class="row__body">
+        <div class="row__head">
+            <span class="verdict verdict--{{ item.action|lower }}">
+                {{ '❤️ Лайк' if item.action == 'LIKE' else '👎 Дизлайк' }}
+            </span>
+            <span class="row__name">{{ item.name }}{% if item.age %}, {{ item.age }}{% endif %}</span>
+            {% if item.city %}<span class="row__city">{{ item.city }}</span>{% endif %}
+        </div>
+
+        {% if item.photos %}
+        <div class="thumbs">
+            {% for mid in item.photos %}
+            <a class="thumbs__item" target="_blank" rel="noopener"
+               href="{{ url_for('photos.serve_photo', profile_id=item.profile_id, message_id=mid) }}">
+                <img class="thumbs__img" loading="lazy" alt="фото"
+                     src="{{ url_for('photos.serve_photo', profile_id=item.profile_id, message_id=mid) }}">
+            </a>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if item.text %}
+        <div class="row__text">{{ item.text }}</div>
+        {% endif %}
+
+        <div class="reasons">
+            <div class="reasons__title">Почему</div>
+            {% if item.reasons %}
+            <ul class="reasons__list">
+                {% for r in item.reasons %}<li>{{ r }}</li>{% endfor %}
+            </ul>
+            {% else %}
+            <div class="reasons__none">Причина не записана</div>
+            {% endif %}
+            {% if item.message_text %}
+            <div class="reasons__msg">Написал при лайке: «{{ item.message_text }}»</div>
+            {% endif %}
+        </div>
+    </div>
+</article>
+{% else %}
+<div class="empty">
+    <div class="empty__icon">🧭</div>
+    <p>Решений пока нет</p>
+    <small>Здесь появятся анкеты, на которые бот поставил ❤️ или 👎, с причиной.</small>
+</div>
+{% endfor %}

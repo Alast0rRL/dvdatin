@@ -146,7 +146,7 @@
         var counter = document.getElementById('feed-count');
         if (counter) counter.textContent = (query || filter !== 'ALL')
             ? shown + ' из ' + total
-            : total + ' событий';
+            : total + ((app && app.dataset.view === 'smart') ? ' решений' : ' событий');
     }
 
     var seg = document.getElementById('filter-seg');

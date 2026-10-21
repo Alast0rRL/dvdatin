@@ -1947,3 +1947,90 @@ class TestDebugConsole:
         assert 'id="debug-open"' in html
         assert 'id="debug-drawer"' in html
         assert 'id="debug-logs"' in html
+
+
+class TestDecisionFeed:
+    """Улучшенная лента: только ❤️/👎 бота и причина решения."""
+
+    @staticmethod
+    def _seed_actions(db) -> None:
+        loop = asyncio.get_event_loop()
+
+        async def _seed() -> None:
+            # Алиса (#1, карточка 111) — лайк + «Берем)»; Варвара (#3, 113) — дизлайк.
+            await db.record_auto_action(1, "LIKE", "LIKE", 1234060895, 111)
+            await db.record_auto_action(
+                1, "MESSAGE", "LIKE", 1234060895, 111, message_text="Берем)",
+            )
+            await db.record_auto_action(3, "DISLIKE", "DISLIKE", 1234060895, 113)
+
+        loop.run_until_complete(_seed())
+
+    def test_only_likes_and_dislikes_with_reasons(self, sync_db) -> None:
+        sync, _, db = sync_db
+        self._seed_actions(db)
+        items = sync.get_decision_feed(page=1, per_page=50)["items"]
+
+        assert [i["action"] for i in items] == ["DISLIKE", "LIKE"]  # свежие сверху
+        dislike, like = items
+        assert dislike["name"] == "Варвара"
+        assert "Возраст не подходит" in dislike["reasons"]
+        assert "Город не в списке" in dislike["reasons"]
+        assert like["name"] == "Алиса"
+        assert "Анкета содержательная, стоп-признаков нет" in like["reasons"]
+        assert "Аниме" in like["reasons"]
+        assert like["message_text"] == "Берем)"
+        assert like["photos"] == [111]
+        # Служебные коды не показываются.
+        assert not any("FILTER_REJECTED" in r for r in dislike["reasons"])
+
+    def test_strict_account_filter(self, sync_db) -> None:
+        """Карточки другого аккаунта в улучшенную ленту не попадают."""
+        sync, _, db = sync_db
+        self._seed_actions(db)
+        data = sync.get_decision_feed(account_session="dvai_2")
+        assert data["items"] == [] and data["total"] == 0
+
+    def test_view_toggle_in_toolbar(self, client) -> None:
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="view-seg"' in html
+        assert "1 · Прямой" in html and "2 · Улучшенный" in html
+        assert 'data-view="direct"' in html
+
+    def test_smart_view_renders_reasons_and_is_remembered(
+        self, client, sync_db,
+    ) -> None:
+        _, _, db = sync_db
+        self._seed_actions(db)
+        _login(client)
+        html = client.get("/?view=smart").get_data(as_text=True)
+        assert 'data-view="smart"' in html
+        assert "row--decision" in html
+        assert "Возраст не подходит" in html
+        assert "Написал при лайке: «Берем)»" in html
+        # Выбор запомнен: polling-фрагмент без параметра — тот же вид.
+        data = json.loads(client.get("/chat/feed").get_data(as_text=True))
+        assert data["view"] == "smart"
+        assert "row--decision" in data["feed"]
+        # Вернуться к прямому виду.
+        data = json.loads(client.get("/chat/feed?view=direct").get_data(as_text=True))
+        assert data["view"] == "direct"
+        assert "row--decision" not in data["feed"]
+
+
+class TestReasonLabels:
+    """Перевод кодов причин — общий для Telegram и сайта."""
+
+    def test_scoring_codes_are_humanized(self) -> None:
+        from services.reason_labels import describe_reasons
+
+        lines = describe_reasons([
+            "LOW_INFO_SKIP:words=7", "USER_LIKE_HARD:политех",
+            "HARD_NEGATIVE:smoking:курю", "FILTER_REJECTED",
+        ])
+        assert lines == [
+            "Мало текста в анкете: 7 значимых слов",
+            "Ваша сильная метка интереса: политех",
+            "Курит: курю",
+        ]

@@ -22,6 +22,7 @@ from core.types import Mode
 from models.action import ActionPolicy
 from models.decision import AIDecision
 from services.action_policy import ActionPolicyResolver
+from services.reason_labels import describe_reasons, evidence_in_card
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -1126,95 +1127,15 @@ class AutoActionEngine:
         """
         if not reasons:
             return ""
-
-        _FILTER_LABELS: dict[str, str] = {
-            "AGE_OUT_OF_RANGE": "Возраст не подходит",
-            "CITY_OUT_OF_RANGE": "Город не в списке",
-            "AGE_UNKNOWN": "Возраст неизвестен",
-            "CITY_UNKNOWN": "Город неизвестен",
-            "INSUFFICIENT_DATA": "Недостаточно данных",
-        }
-
-        _DECISION_CODES: set[str] = {
-            "LIKE_THRESHOLD", "LOW_CONFIDENCE", "REVIEW_THRESHOLD",
-            "BELOW_THRESHOLDS", "FILTER_REJECTED", "FILTER_REVIEW",
-            "USER_SKIP", "USER_LIKE", "AI_UNAVAILABLE",
-        }
-
-        # Review-коды скоринга, которые показываем человеко-читаемо (а не
-        # вырезаем как внутренние). Stage 8: частое REVIEW из-за отсутствия
-        # описания → «Мало информации в анкете».
-        _REVIEW_DATA_LABELS: dict[str, str] = {
-            "NO_FEATURES_FOUND": "Мало информации в анкете",
-            "INSUFFICIENT_DATA": "Недостаточно данных",
-        }
-
-        _NEGATIVE_LABELS: dict[str, str] = {
-            "not_relationships": "Не ищет отношения",
-            "has_boyfriend": "Есть парень",
-            "smoking": "Курит",
-            "alcohol": "Пьёт",
-            "bad_habits": "Вредные привычки",
-            "pokatayte": "Покатайте/прокат",
-            "short_hair": "Волосы короче каре",
-            "instagram": "Instagram",
-            "plus_size": "+size",
-            "age_mismatch": "Возраст в анкете не совпадает",
-        }
-
-        _POSITIVE_LABELS: dict[str, str] = {
-            "spbpu": "СПбПУ",
-            "anime": "Аниме",
-            "games": "Игры",
-            "relocated_to_spb": "Переехала в СПб",
-        }
-
         if action == "REVIEW":
             label = "👎 На ревью"
         elif action == "LIKE":
             label = "❤️ Лайк"
         else:
             label = "👎 Дизлайк"
-        lines = [label]
-
-        for reason in reasons:
-            if reason in _DECISION_CODES:
-                continue
-            if reason.startswith("USER_SKIP:"):
-                tag = reason.split(":", 1)[1]
-                lines.append(f"• Ваша стоп-метка: {tag}")
-            elif reason.startswith("USER_LIKE:"):
-                tag = reason.split(":", 1)[1]
-                lines.append(f"• Ваша метка интереса: {tag}")
-            elif reason.startswith("HARD_NEGATIVE:"):
-                parts = reason.split(":", 2)
-                name = parts[1] if len(parts) > 1 else ""
-                evidence = parts[2].strip("«»") if len(parts) > 2 else ""
-                label_text = _NEGATIVE_LABELS.get(name, name)
-                if evidence and AutoActionEngine._evidence_in_card(
-                    evidence, card_text
-                ):
-                    lines.append(f"• {label_text}: {evidence}")
-                else:
-                    lines.append(f"• {label_text}")
-            elif reason.startswith("POSITIVE:"):
-                parts = reason.split(":", 2)
-                name = parts[1] if len(parts) > 1 else ""
-                evidence = parts[2].strip("«»") if len(parts) > 2 else ""
-                label_text = _POSITIVE_LABELS.get(name, name)
-                if evidence and AutoActionEngine._evidence_in_card(
-                    evidence, card_text
-                ):
-                    lines.append(f"• {label_text}: {evidence}")
-                else:
-                    lines.append(f"• {label_text}")
-            elif reason in _REVIEW_DATA_LABELS:
-                lines.append(f"• {_REVIEW_DATA_LABELS[reason]}")
-            elif reason in _FILTER_LABELS:
-                lines.append(f"• {_FILTER_LABELS[reason]}")
-            else:
-                lines.append(f"• {reason}")
-
+        lines = [label] + [
+            f"• {line}" for line in describe_reasons(reasons, card_text)
+        ]
         return "\n".join(lines)
 
     @staticmethod
@@ -1230,19 +1151,4 @@ class AutoActionEngine:
         случай повторного показа усечённой карточки (только заголовок, без
         описания): тогда evidence из старого полного описания цитировать нельзя.
         """
-        if card_text is None:
-            return True
-        if not evidence:
-            return False
-        # Шапка «... – описание»: описание — всё после первого –/—.
-        header = re.split(r"\s*[–—]\s*", card_text, maxsplit=1)
-        card_desc = header[1] if len(header) > 1 else ""
-        if not card_desc:
-            return False
-        norm_ev = "".join(evidence.lower().split())
-        norm_card = "".join(card_desc.lower().split())
-        # Сравниваем по пересечению (evidence часто включает шапку целиком).
-        return norm_ev in norm_card or (
-            len(norm_ev) >= 6 and
-            any(norm_ev[i:i + 6] in norm_card for i in range(0, max(len(norm_ev) - 5, 1), 3))
-        )
+        return evidence_in_card(evidence, card_text)

@@ -6,7 +6,8 @@
 # Что отдаёт:
 #   GET  /                       — весь UI (лента, капчи, настройки в drawer)
 #   GET  /chat                   — синоним / (старые закладки)
-#   GET  /chat/feed              — фрагмент ленты + капч (in-place polling)
+#   GET  /chat/feed              — фрагмент ленты + капч (in-place polling);
+#                                  ?view=direct|smart — вид ленты (в сессии)
 #   GET  /chat/new-count         — сигнатура состояния (polling)
 #   GET  /chat/debug             — отладочный срез: логи + состояние (polling)
 #   POST /chat/captcha/<id>/answer|delete — ответ на капчу
@@ -46,6 +47,36 @@ ACTIONABLE_DECISION = "REVIEW"
 
 #: Сколько сообщений на страницу ленты.
 FEED_PER_PAGE = 40
+
+#: Вид ленты: «прямой» (зеркало чата) и «улучшенный» (только ❤️/👎 + причина).
+FEED_VIEWS = ("direct", "smart")
+DEFAULT_FEED_VIEW = "direct"
+
+
+def _feed_view() -> str:
+    """Текущий вид ленты: ``?view=`` (запоминается в сессии) или из сессии."""
+    view = (request.args.get("view") or "").strip().lower()
+    if view in FEED_VIEWS:
+        session["feed_view"] = view
+        return view
+    saved = session.get("feed_view")
+    return saved if saved in FEED_VIEWS else DEFAULT_FEED_VIEW
+
+
+def _load_feed(
+    db: SyncDB, view: str, page: int, per_page: int,
+    account_session: str, chat_id: int,
+) -> dict[str, Any]:
+    """Страница ленты нужного вида."""
+    loader = db.get_decision_feed if view == "smart" else db.get_chat_feed
+    return loader(
+        page=page, per_page=per_page,
+        account_session=account_session, chat_id=chat_id,
+    )
+
+
+def _feed_template(view: str) -> str:
+    return "partials/app_decisions.html" if view == "smart" else "partials/app_feed.html"
 
 
 def _get_db() -> SyncDB:
@@ -121,9 +152,9 @@ def index() -> str:
     config_path = _get_config_path()
 
     accounts, account_session = _get_accounts(config_path)
-    data = db.get_chat_feed(
-        page=1, per_page=FEED_PER_PAGE, account_session=account_session,
-        chat_id=_leo_chat_id(config_path),
+    view = _feed_view()
+    data = _load_feed(
+        db, view, 1, FEED_PER_PAGE, account_session, _leo_chat_id(config_path),
     )
     signals = db.get_chat_signals(account_session, _leo_chat_id(config_path))
     pending = [_with_buttons(c) for c in db.get_pending_captchas(limit=20)]
@@ -143,6 +174,8 @@ def index() -> str:
         filter_cfg=db.get_filter_config(config_path),
         preferences=_load_preferences(config_path.parent / "preferences.yaml"),
         stream_error=db.get_stream_error(),
+        view=view,
+        feed_template=_feed_template(view),
     )
 
 
@@ -194,22 +227,24 @@ def feed() -> tuple:
     # фронт тянул страницы 1..N параллельно через OFFSET, и новое сообщение
     # между запросами сдвигало границы: строки на стыке дублировались/терялись.
     pages = max(1, min(request.args.get("pages", 1, type=int) or 1, 50))
+    view = _feed_view()
     if pages > 1:
-        data = db.get_chat_feed(
-            page=1, per_page=FEED_PER_PAGE * pages,
-            account_session=account_session, chat_id=chat_id,
+        data = _load_feed(
+            db, view, 1, FEED_PER_PAGE * pages, account_session, chat_id,
         )
         total = data.get("total", 0)
         data["total_pages"] = max(1, (total + FEED_PER_PAGE - 1) // FEED_PER_PAGE)
     else:
-        data = db.get_chat_feed(
-            page=page, per_page=FEED_PER_PAGE, account_session=account_session,
-            chat_id=chat_id,
+        data = _load_feed(
+            db, view, page, FEED_PER_PAGE, account_session, chat_id,
         )
     return (
         json.dumps(
             {
-                "feed": render_template("partials/app_feed.html", items=data.get("items", [])),
+                "feed": render_template(
+                    _feed_template(view), items=data.get("items", []),
+                ),
+                "view": view,
                 "pending": render_template(
                     "partials/app_captchas.html",
                     pending=[_with_buttons(c) for c in db.get_pending_captchas(limit=20)],

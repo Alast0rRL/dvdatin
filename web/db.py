@@ -385,6 +385,142 @@ class SyncDB:
         except Exception:
             return None
 
+    # ── Улучшенная лента: решения бота с причинами ─────────────────
+
+    def get_decision_feed(
+        self,
+        page: int = 1,
+        per_page: int = 50,
+        chat_id: int | None = None,
+        account_session: str | None = None,
+    ) -> dict[str, Any]:
+        """Только анкеты, на которые бот поставил ❤️ или 👎, и почему.
+
+        Источник — ``auto_actions_log`` (LIKE/DISLIKE на конкретную карточку),
+        причины — решение ``ai_decisions`` на момент действия (последнее до
+        ``sent_at``; нет такого — последнее вообще). Аккаунт — СТРОГО, через
+        входящую карточку в ``raw_messages`` (у аккаунтов свои message id).
+        Свежие сверху. Возвращает {items, total, page, total_pages}.
+        """
+        from services.reason_labels import describe_reasons
+
+        page = max(1, page)
+        per_page = max(1, per_page)
+        where = ["a.action IN ('LIKE', 'DISLIKE')"]
+        params: list[Any] = []
+        if chat_id is not None:
+            where.append("a.chat_id = ?")
+            params.append(chat_id)
+        if account_session:
+            where.append("r.id IS NOT NULL")
+        clause = " AND ".join(where)
+        join_params: list[Any] = [account_session or ""]
+        base = f"""
+            FROM auto_actions_log a
+            JOIN profiles p ON p.id = a.profile_id
+            LEFT JOIN raw_messages r
+                ON r.chat_id = a.chat_id
+                AND r.telegram_message_id = a.telegram_message_id
+                AND r.is_outgoing = 0
+                AND r.account_session = ?
+            WHERE {clause}
+        """
+        total_row = self._query_one(
+            f"SELECT COUNT(*) AS c {base}", tuple(join_params + params)
+        )
+        total = int(total_row["c"] or 0) if total_row else 0
+        rows = self._query(
+            f"""
+            SELECT a.id, a.profile_id, a.action, a.decision AS action_decision,
+                   a.chat_id, a.sent_at, a.telegram_message_id,
+                   p.name, p.age, p.normalized_city, p.raw_city, p.description,
+                   r.text AS card_text, r.media_type AS card_media,
+                   (SELECT m.message_text FROM auto_actions_log m
+                     WHERE m.chat_id = a.chat_id
+                       AND m.telegram_message_id = a.telegram_message_id
+                       AND m.action = 'MESSAGE' LIMIT 1) AS message_text,
+                   COALESCE(
+                       (SELECT ad.reasons FROM ai_decisions ad
+                         WHERE ad.profile_id = a.profile_id
+                           AND ad.evaluated_at <= a.sent_at
+                         ORDER BY ad.evaluated_at DESC LIMIT 1),
+                       (SELECT ad.reasons FROM ai_decisions ad
+                         WHERE ad.profile_id = a.profile_id
+                         ORDER BY ad.evaluated_at DESC LIMIT 1),
+                       '[]'
+                   ) AS reasons
+            {base}
+            ORDER BY a.sent_at DESC, a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(join_params + params) + (per_page, (page - 1) * per_page),
+        )
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                raw_reasons = json.loads(r.get("reasons") or "[]")
+            except Exception:
+                raw_reasons = []
+            card_text = r.get("card_text") or ""
+            reasons = describe_reasons(
+                raw_reasons if isinstance(raw_reasons, list) else [],
+                card_text or None,
+            )
+            if not reasons and r.get("action_decision") in ("REJECT", "REVIEW"):
+                # Фильтр-уровень без записанного скоринга.
+                reasons = ["Не прошла фильтр (возраст/город)"]
+            items.append({
+                "kind": "decision",
+                "action": r["action"],
+                "decision": r["action"],
+                "profile_id": r["profile_id"],
+                "name": r.get("name") or "",
+                "age": r.get("age"),
+                "city": r.get("normalized_city") or r.get("raw_city") or "",
+                "text": card_text or r.get("description") or "",
+                "ts": r.get("sent_at") or "",
+                "message_text": r.get("message_text") or "",
+                "reasons": reasons,
+                "photos": self._decision_photos(
+                    r, account_session or "",
+                ),
+            })
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "total_pages": max(1, (total + per_page - 1) // per_page),
+        }
+
+    def _decision_photos(
+        self, r: dict[str, Any], account_session: str, limit: int = 6,
+    ) -> list[int]:
+        """Фото карточки: сама карточка + альбом сразу за ней (та же анкета)."""
+        tm = r.get("telegram_message_id")
+        if tm is None:
+            return []
+        sql = """
+            SELECT DISTINCT rm.telegram_message_id AS tm
+            FROM raw_messages rm
+            JOIN profile_messages pm
+                ON pm.telegram_message_id = rm.telegram_message_id
+                AND pm.chat_id = rm.chat_id
+                AND pm.profile_id = ?
+            WHERE rm.chat_id = ? AND rm.is_outgoing = 0
+              AND rm.media_type = 'photo'
+              AND rm.telegram_message_id BETWEEN ? AND ?
+        """
+        params: list[Any] = [r["profile_id"], r["chat_id"], tm, tm + 10]
+        if account_session:
+            sql += " AND rm.account_session = ?"
+            params.append(account_session)
+        sql += " ORDER BY rm.telegram_message_id LIMIT ?"
+        params.append(limit)
+        try:
+            return [row["tm"] for row in self._query(sql, tuple(params))]
+        except Exception:
+            return []
+
     def get_app_state(self, key: str) -> str | None:
         """Значение из app_state (None, если не задано)."""
         row = self._query_one(
