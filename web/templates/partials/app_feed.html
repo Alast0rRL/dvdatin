@@ -16,18 +16,21 @@
         <div class="row__head"><span class="row__name">Я</span></div>
         {% endif %}
 
-        {% if item.media_type == 'photo' %}
-        {% if item.profile_id %}
+        {% if item.photos %}
+        {# Альбом анкеты — все фото одной строкой, подпись под ними (как в TG). #}
         <div class="thumbs">
+            {% for mid in item.photos %}
             <a class="thumbs__item" target="_blank" rel="noopener"
-               href="{{ url_for('photos.serve_photo', profile_id=item.profile_id, message_id=item.telegram_message_id) }}">
+               href="{{ url_for('photos.serve_photo', profile_id=item.profile_id, message_id=mid) }}">
                 <img class="thumbs__img" loading="lazy" alt="фото"
-                     src="{{ url_for('photos.serve_photo', profile_id=item.profile_id, message_id=item.telegram_message_id) }}">
+                     src="{{ url_for('photos.serve_photo', profile_id=item.profile_id, message_id=mid) }}">
             </a>
+            {% endfor %}
         </div>
-        {% else %}
+        {% elif item.media_type == 'photo' %}
         <div class="row__text">🖼️ фото</div>
-        {% endif %}
+        {% elif item.media_type in ('video', 'document', 'gif') %}
+        <div class="row__text">🎬 видео</div>
         {% endif %}
 
         {% if item.text %}

@@ -390,11 +390,38 @@ class SyncDB:
         )
         rows.reverse()  # на странице сверху старые, снизу новые
         return {
-            "items": [self._feed_item(r) for r in rows],
+            "items": self._group_albums([self._feed_item(r) for r in rows]),
             "total": total,
             "page": page,
             "total_pages": max(1, (total + per_page - 1) // per_page),
         }
+
+    @staticmethod
+    def _group_albums(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Склеивает анкету-альбом в одну строку, как Telegram.
+
+        Leo шлёт анкету с N фото альбомом: первое сообщение — фото + подпись
+        («Имя, возраст, город»), следом N-1 фото без текста. Telegram рисует это
+        одной карточкой, а лента рисовала N строк — «безымянные» фото выглядели
+        как лишние анкеты. Фото без текста, привязанное к той же анкете, что и
+        предыдущая входящая строка, дописывается в её ``photos``.
+        """
+        out: list[dict[str, Any]] = []
+        for item in items:
+            prev = out[-1] if out else None
+            if (
+                prev is not None
+                and item["direction"] == "in"
+                and prev["direction"] == "in"
+                and item["kind"] == "photo"
+                and not item["text"]
+                and item["profile_id"] is not None
+                and item["profile_id"] == prev["profile_id"]
+            ):
+                prev["photos"].extend(item["photos"])
+                continue
+            out.append(item)
+        return out
 
     def _feed_item(self, r: dict[str, Any]) -> dict[str, Any]:
         """Сырое сообщение → строка ленты (плоское дублирование чата).
@@ -428,6 +455,12 @@ class SyncDB:
                 item["profile_id"] = prof["id"]
                 item["decision"] = prof.get("ai_decision") or ""
                 item["name"] = prof.get("name") or ""
+        # Фото строки (альбом анкеты — несколько, см. _group_albums).
+        item["photos"] = (
+            [r["telegram_message_id"]]
+            if media_type == "photo" and item["profile_id"] is not None
+            else []
+        )
         return item
 
     def _profile_for_message(

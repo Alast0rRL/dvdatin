@@ -205,6 +205,17 @@
     }
     localizeTimes(feed);
 
+    /* Как в Telegram: открываемся на самом свежем (внизу). Раньше страница
+       открывалась сверху — на самом старом из загруженного, и казалось, что
+       сайт «отстал» от чата. Фото грузятся лениво и меняют высоту, поэтому
+       докручиваем ещё раз после загрузки страницы. */
+    if (feed) {
+        window.scrollTo(0, document.body.scrollHeight);
+        window.addEventListener('load', function () {
+            window.scrollTo(0, document.body.scrollHeight);
+        });
+    }
+
     function fetchPage(page) {
         return fetch('/chat/feed?page=' + page).then(function (r) { return r.json(); });
     }

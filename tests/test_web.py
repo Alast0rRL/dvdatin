@@ -1608,6 +1608,42 @@ class TestStreamErrorBanner:
         assert parsed and parsed["reason"] == "Leo ждёт текст в композере"
 
 
+class TestFeedAlbums:
+    """Анкета-альбом (фото + подпись, затем фото без текста) — одна строка, как в TG."""
+
+    @staticmethod
+    def _item(direction: str, kind: str, text: str, pid: int | None, mid: int) -> dict:
+        return {
+            "direction": direction, "kind": kind, "text": text,
+            "profile_id": pid, "photos": [mid] if kind == "photo" and pid else [],
+            "telegram_message_id": mid,
+        }
+
+    def test_album_photos_merge_into_card(self) -> None:
+        items = [
+            self._item("out", "message", "👎", None, 10),
+            self._item("in", "photo", "суслик, 18, питер", 7, 11),
+            self._item("in", "photo", "", 7, 12),
+            self._item("in", "photo", "", 7, 13),
+            self._item("out", "message", "👎", None, 14),
+        ]
+        out = SyncDB._group_albums(items)
+        assert [i["telegram_message_id"] for i in out] == [10, 11, 14]
+        assert out[1]["photos"] == [11, 12, 13]
+
+    def test_other_profile_photo_not_merged(self) -> None:
+        """Фото чужой анкеты / после нашего сообщения — отдельная строка."""
+        items = [
+            self._item("in", "photo", "Аня, 18, СПб", 1, 20),
+            self._item("in", "photo", "", 2, 21),
+            self._item("out", "message", "👎", None, 22),
+            self._item("in", "photo", "", 2, 23),
+        ]
+        out = SyncDB._group_albums(items)
+        assert len(out) == 4
+        assert out[0]["photos"] == [20]
+
+
 class TestChatFeedMirror:
     """Лента = прямое дублирование Telegram-чата с Leo.
 
