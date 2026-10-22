@@ -104,6 +104,15 @@ def describe_reason(reason: str, card_text: str | None = None) -> str | None:
         return _feature(reason, NEGATIVE_LABELS, card_text)
     if reason.startswith("POSITIVE:"):
         return _feature(reason, POSITIVE_LABELS, card_text)
+    if reason.startswith("PHOTO_VICE:"):
+        # PHOTO_VICE:<smoke|alcohol>:<вероятность> — services/photo_vice.py
+        _, kind, prob = (reason.split(":") + ["", ""])[:3]
+        what = {"smoke": "сигарета/вейп", "alcohol": "алкоголь"}.get(kind, kind)
+        try:
+            pct = f" ({float(prob) * 100:.0f}%)"
+        except ValueError:
+            pct = ""
+        return f"На фото {what}{pct}"
     if reason.startswith("LOW_INFO_SKIP"):
         words = reason.partition("words=")[2]
         return (

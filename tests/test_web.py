@@ -2200,3 +2200,16 @@ class TestPhotoRating:
         assert "e.repeat" in js                   # зажатая клавиша не оценивает пачку
         assert "addEventListener('keydown'" in js and "}, true);" in js  # фаза захвата
         assert "mousedown" in js                  # кнопки не забирают фокус
+
+    def test_vice_rating_button(self, client, sync_db) -> None:
+        """«🚬/🍷 на фото» — отдельная оценка VICE (метки для детектора)."""
+        sync, _, _ = sync_db
+        _login(client)
+        html = client.get("/rate").get_data(as_text=True)
+        assert 'data-rate="VICE"' in html and 'id="rate-vice"' in html
+        resp = client.post("/rate/3", data={"rating": "VICE", "csrf_token": self._csrf(client)})
+        assert resp.status_code == 200
+        assert json.loads(resp.get_data(as_text=True))["stats"]["VICE"] == 1
+        assert sync.get_photo_rating_stats()["rated"] == 1
+        js = client.get("/static/js/rate.js").get_data(as_text=True)
+        assert "ArrowUp: 'VICE'" in js

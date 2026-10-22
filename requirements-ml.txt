@@ -1,0 +1,7 @@
+# Опционально: проверка фото на сигареты/алкоголь (config.photo_check, services/photo_vice.py).
+# CPU-сборка torch (видеокарта сервера занята другим сервисом):
+#   pip install -r requirements-ml.txt --extra-index-url https://download.pytorch.org/whl/cpu
+torch
+open_clip_torch
+pillow
+numpy

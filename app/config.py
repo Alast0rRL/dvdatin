@@ -293,6 +293,29 @@ class ManualReviewConfig(BaseModel):
         return v
 
 
+class PhotoCheckConfig(BaseModel):
+    """Проверка фото анкеты на сигареты/вейп/алкоголь (CLIP локально, без сети).
+
+    Правило владельца: сигарета или алкоголь на фото → сразу 👎. Проверяются
+    ТОЛЬКО анкеты, которые бот собирается лайкнуть (остальные и так получают
+    👎), поэтому лента не замедляется. Пороги строгие: zero-shot CLIP уверенно
+    ловит только явные случаи, а ложный скип = потерянная подходящая анкета
+    (офлайн-проверка 2026-10-22: при этих порогах ~4 из 5 срабатываний верные).
+    Нужны пакеты ``torch`` и ``open_clip_torch`` (requirements-ml.txt); без них
+    проверка выключается с предупреждением в логе.
+    """
+
+    enabled: bool = False
+    # Вероятность класса «курит/вейп/кальян», выше которой — скип.
+    smoke_threshold: float = 0.99
+    # Вероятность класса «алкоголь», выше которой — скип.
+    alcohol_threshold: float = 0.97
+    # Сколько фото карточки (альбома) проверять максимум.
+    max_photos: int = 4
+    # Потоков CPU для torch (сервер общий — не занимаем все ядра).
+    threads: int = 4
+
+
 class DecisionConfig(BaseModel):
     """Настройки Decision Engine.
 
@@ -371,6 +394,7 @@ class AppConfig(BaseModel):
     auto_actions: AutoActionsConfig = AutoActionsConfig()
     control: ControlConfig = ControlConfig()
     manual_review: ManualReviewConfig = ManualReviewConfig()
+    photo_check: PhotoCheckConfig = PhotoCheckConfig()
     logging: LoggingConfig = LoggingConfig()
 
     def model_post_init(self, __context: object) -> None:

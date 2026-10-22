@@ -32,10 +32,12 @@
             · ❤️ <span id="rate-like">{{ stats.LIKE }}</span>
             · 👎 <span id="rate-dislike">{{ stats.DISLIKE }}</span>
             · пропущено <span id="rate-skip">{{ stats.SKIP }}</span>
+            · 🚬/🍷 <span id="rate-vice">{{ stats.VICE }}</span>
         </p>
         <p class="rate__hint rate__hint--desktop">
             Оценивай только по фото. Клавиши: <kbd>←</kbd> нет · <kbd>→</kbd> нравится ·
-            <kbd>↓</kbd> пропустить (фото не годится) · <kbd>Backspace</kbd> назад.
+            <kbd>↓</kbd> пропустить (фото не годится) · <kbd>↑</kbd> на фото сигарета/алкоголь ·
+            <kbd>Backspace</kbd> назад.
         </p>
         <p class="rate__hint rate__hint--touch">
             Свайп вправо — нравится, влево — нет. Тап по краю фото — следующее фото.
@@ -57,6 +59,8 @@
     </div>
     <div class="rate__actions">
         <button type="button" class="btn btn--ghost btn--sm" id="rate-undo" disabled>↶ Назад</button>
+        <button type="button" class="btn btn--sm" data-rate="VICE"
+                title="На фото сигарета, вейп или алкоголь (клавиша ↑)">🚬/🍷 на фото</button>
     </div>
 </div>
 {% endblock %}

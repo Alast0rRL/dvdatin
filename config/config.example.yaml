@@ -141,5 +141,15 @@ manual_review:
   file: "data/reviews/review_log.json"   # data/reviews/review_log.md для Markdown
   format: json                            # json | md
 
+# Проверка фото на сигареты/вейп/алкоголь (CLIP локально). Только для анкет,
+# которые бот собирается лайкнуть: уверенно найдено → 👎 (причина PHOTO_VICE).
+# Нужны torch + open_clip_torch (pip install -r requirements-ml.txt).
+photo_check:
+  enabled: false
+  smoke_threshold: 0.99
+  alcohol_threshold: 0.97
+  max_photos: 4
+  threads: 4
+
 logging:
   level: INFO

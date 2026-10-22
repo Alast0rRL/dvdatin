@@ -256,6 +256,7 @@ class DvinchikCollector:
         config_path: Path = Path("config/config.yaml"),
         manual_review: object | None = None,
         client_sessions: list[str] | None = None,
+        photo_vice: object | None = None,
     ) -> None:
         # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
         # регистрируются на каждом клиенте. Один и тот же message из одного
@@ -311,6 +312,9 @@ class DvinchikCollector:
         self._decision_service = decision_service
         # Stage 8: запись ручных решений владельца по REVIEW-анкетам.
         self._manual_review = manual_review
+        # Проверка фото на сигарету/алкоголь (services/photo_vice.py) —
+        # только для анкет, которые бот собирается лайкнуть.
+        self._photo_vice = photo_vice
         # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
         # (config.auto_actions.account_session) среди accounts/clients (они
         # параллельны: main.py строит clients в том же порядке, что accounts).
@@ -1964,6 +1968,66 @@ class DvinchikCollector:
             border_style="cyan",
         ))
 
+    # ── Фото: сигарета/алкоголь → 👎 (services/photo_vice.py) ──────────
+
+    async def _card_photos(self, msg: object, limit: int) -> list[bytes]:
+        """Байты фото карточки: само сообщение + остальной альбом (grouped_id).
+
+        Альбом Leo приходит пачкой сообщений с соседними id, поэтому соседи
+        берутся одним запросом. Ошибки → то, что удалось скачать.
+        """
+        msgs = [msg]
+        grouped_id = getattr(msg, "grouped_id", None)
+        client = getattr(msg, "client", None)
+        if grouped_id and client is not None:
+            try:
+                chat = await msg.get_input_chat()
+                around = await client.get_messages(
+                    chat, ids=list(range(msg.id - 9, msg.id + 10)),
+                )
+                album = [
+                    m for m in around
+                    if m is not None and getattr(m, "grouped_id", None) == grouped_id
+                ]
+                if album:
+                    msgs = sorted(album, key=lambda m: m.id)
+            except Exception as e:
+                logger.debug(f"PhotoVice: альбом не прочитан: {e!r}")
+        photos = [m for m in msgs if getattr(m, "photo", None)][:limit]
+        results = await asyncio.gather(
+            *(m.download_media(file=bytes) for m in photos), return_exceptions=True,
+        )
+        return [r for r in results if isinstance(r, (bytes, bytearray))]
+
+    async def _apply_photo_vice(self, decision: object, msg: object) -> object:
+        """LIKE → DISLIKE, если на фото карточки уверенно найдены сигарета/алкоголь.
+
+        Любая ошибка (нет torch, сеть, битое фото) — решение не меняется:
+        проверка — дополнительный фильтр, бот без неё работает как раньше.
+        """
+        detector = self._photo_vice
+        if (
+            detector is None
+            or not getattr(detector, "enabled", False)
+            or msg is None
+            or self._decision_service is None
+        ):
+            return decision
+        try:
+            images = await self._card_photos(msg, detector.max_photos)
+            hit = await detector.check_async(images)
+        except Exception as e:
+            logger.error(f"PhotoVice: проверка фото не удалась: {e!r}")
+            return decision
+        if hit is None:
+            logger.debug(f"PhotoVice: profile #{decision.profile_id} — чисто ({len(images)} фото)")
+            return decision
+        try:
+            return await self._decision_service.apply_photo_vice(decision, hit.reason())
+        except Exception as e:
+            logger.error(f"PhotoVice: не удалось записать решение: {e!r}")
+            return decision
+
     async def _process_message(self, task: RawTask) -> None:
         """Выполняет pipeline: parse → filter → AI → decision.
 
@@ -2131,6 +2195,14 @@ class DvinchikCollector:
                                             is self._auto_engine.client
                                         ):
                                             try:
+                                                # Правило владельца: сигарета/алкоголь
+                                                # на фото → 👎. Проверяем ТОЛЬКО будущие
+                                                # лайки (остальные и так 👎) — лента не
+                                                # замедляется.
+                                                if decision.decision == AIDecision.LIKE:
+                                                    decision = await self._apply_photo_vice(
+                                                        decision, msg,
+                                                    )
                                                 if await self._db.has_auto_action_for_message(
                                                     chat_id, task.message_id
                                                 ):

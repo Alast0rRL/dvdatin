@@ -35,7 +35,7 @@
     function setStats(s) {
         if (!s) return;
         var map = {'rate-rated': s.rated, 'rate-total': s.total, 'rate-like': s.LIKE,
-                   'rate-dislike': s.DISLIKE, 'rate-skip': s.SKIP};
+                   'rate-dislike': s.DISLIKE, 'rate-skip': s.SKIP, 'rate-vice': s.VICE};
         Object.keys(map).forEach(function (id) {
             var el = document.getElementById(id);
             if (el && map[id] !== undefined) el.textContent = String(map[id]);
@@ -286,7 +286,8 @@
 
     var KEY_RATE = {ArrowLeft: 'DISLIKE', a: 'DISLIKE', 'ф': 'DISLIKE',
                     ArrowRight: 'LIKE', d: 'LIKE', 'в': 'LIKE',
-                    ArrowDown: 'SKIP', s: 'SKIP', 'ы': 'SKIP'};
+                    ArrowDown: 'SKIP', s: 'SKIP', 'ы': 'SKIP',
+                    ArrowUp: 'VICE', w: 'VICE', 'ц': 'VICE'};
     var KEY_UNDO = {Backspace: 1, z: 1, 'я': 1};
 
     // Перехват на window в фазе захвата — раньше браузерной навигации

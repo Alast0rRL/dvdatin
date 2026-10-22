@@ -244,7 +244,8 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- листает фото анкет (без текста) и отмечает «нравится / нет / пропустить».
 -- Это обучающие метки для модели «твой вкус по фото», на действия бота не
 -- влияют. Одна оценка на анкету (повторная перезаписывает, «отменить» удаляет).
--- rating: LIKE | DISLIKE | SKIP (SKIP — фото не годится для оценки).
+-- rating: LIKE | DISLIKE | SKIP (SKIP — фото не годится для оценки) |
+-- VICE (на фото сигарета/вейп/алкоголь — для владельца это 👎; метки детектора).
 CREATE TABLE IF NOT EXISTS photo_ratings (
     profile_id INTEGER PRIMARY KEY,
     rating TEXT NOT NULL,

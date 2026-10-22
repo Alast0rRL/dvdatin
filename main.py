@@ -30,6 +30,7 @@ from services.profile_service import ProfileService
 from services.decision_service import DecisionService
 from services.analysis_export import EXPORTS_DIR, export_analysis_csv, clear_database
 from services.manual_review import ManualReviewRecorder
+from services.photo_vice import PhotoViceDetector
 from telegram.control_bot import ControlBot
 from telegram.client import authorize, create_client
 
@@ -193,6 +194,11 @@ async def main() -> None:
             f"ManualReview: запись ручных решений активна (файл: {mr_cfg.file})"
         )
 
+    # Проверка фото на сигарету/алкоголь (CLIP на CPU) для будущих лайков.
+    photo_vice = PhotoViceDetector(config.photo_check)
+    if config.photo_check.enabled:
+        logger.info("PhotoVice: проверка фото на сигареты/алкоголь включена")
+
     collector = DvinchikCollector(
         clients, db, config,
         profile_service=profile_service,
@@ -203,6 +209,7 @@ async def main() -> None:
         manual_review=manual_review,
         # Имена сессий ТОЛЬКО вошедших аккаунтов, параллельно clients.
         client_sessions=client_sessions,
+        photo_vice=photo_vice,
     )
     collector.register()
 
@@ -271,6 +278,9 @@ async def main() -> None:
     auto_task = asyncio.create_task(
         collector.start_auto_stream()
     )
+
+    # Модель CLIP грузится в фоне (~10–30 с), чтобы первая анкета не ждала.
+    photo_vice_task = asyncio.create_task(photo_vice.preload())
 
     # W3: восстановление backlog'а
     recovery_task = asyncio.create_task(

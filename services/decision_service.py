@@ -278,6 +278,37 @@ class DecisionService:
         reasons.append("NO_FEATURES_FOUND")
         return AIDecision.REVIEW, score, reasons
 
+    # ── Фото: сигарета/алкоголь (правило владельца) ──────────────────
+
+    async def apply_photo_vice(
+        self, result: AIDecisionResult, reason: str,
+    ) -> AIDecisionResult:
+        """Переводит LIKE в DISLIKE из-за сигареты/алкоголя на фото.
+
+        Фото проверяет коллектор (``services/photo_vice.py``) и только для
+        анкет с решением LIKE; сюда приходит готовый код причины
+        ``PHOTO_VICE:<smoke|alcohol>:<p>``. Это явный найденный признак, как
+        hard-negative в тексте, поэтому инвариант
+        NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE не нарушается. Решение
+        сохраняется НОВОЙ записью ai_decisions (история не переписывается).
+        """
+        overridden = AIDecisionResult(
+            profile_id=result.profile_id,
+            decision=AIDecision.DISLIKE,
+            combined_score=result.combined_score,
+            confidence=result.confidence,
+            reasons=[reason, *result.reasons],
+            evaluated_at=datetime.now(timezone.utc).isoformat(),
+            scoring_version=result.scoring_version,
+            informative=result.informative,
+            meaningful_words=result.meaningful_words,
+        )
+        await self._save(overridden)
+        logger.info(
+            f"DECISION: profile #{result.profile_id} LIKE → DISLIKE ({reason})"
+        )
+        return overridden
+
     # ── Сохранение и чтение ──────────────────────────────────────────
 
     async def _save(self, result: AIDecisionResult) -> None:
