@@ -297,6 +297,8 @@ async def main() -> None:
             await asyncio.to_thread(photo_vice.load)
 
     photo_vice_task = asyncio.create_task(_preload_clip())
+    # Фоновый досчёт старых анкет: вердикт модели вкуса + отпечаток фото.
+    photo_backfill_task = asyncio.create_task(collector.run_photo_backfill())
 
     # W3: восстановление backlog'а
     recovery_task = asyncio.create_task(

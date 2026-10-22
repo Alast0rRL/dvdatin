@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -47,10 +48,39 @@ class PhotoTasteModel:
         self._dislike_thr = 0.0
         self.version = ""
         self._failed = False
+        self._mtime = 0.0
+        self._checked_at = 0.0
 
     @property
     def enabled(self) -> bool:
         return bool(self._cfg.enabled) and not self._failed and self.load()
+
+    #: Как часто проверять, не переобучена ли модель (новый JSON на диске).
+    RELOAD_CHECK_SEC = 30.0
+
+    def _maybe_reload(self) -> None:
+        """Переобучение пишет новый JSON — подхватываем без рестарта бота."""
+        now = time.monotonic()
+        if self._weights is None or now - self._checked_at < self.RELOAD_CHECK_SEC:
+            return
+        self._checked_at = now
+        try:
+            mtime = Path(self._cfg.model_path).stat().st_mtime
+        except OSError:
+            return
+        if mtime != self._mtime:
+            backup = (self._weights, self._bias, self._like_thr, self._dislike_thr,
+                      self.version, self._mtime)
+            old = self.version
+            self._weights = None
+            if self.load():
+                logger.info(f"PhotoTaste: модель обновлена {old} → {self.version}")
+            else:
+                # Битый файл — остаёмся на прежней модели, попробуем позже.
+                (self._weights, self._bias, self._like_thr, self._dislike_thr,
+                 self.version, _) = backup
+                self._mtime = mtime
+                self._failed = False
 
     def load(self) -> bool:
         if self._weights is not None:
@@ -58,7 +88,9 @@ class PhotoTasteModel:
         if self._failed or not self._cfg.enabled:
             return False
         try:
-            data = json.loads(Path(self._cfg.model_path).read_text(encoding="utf-8"))
+            path = Path(self._cfg.model_path)
+            self._mtime = path.stat().st_mtime
+            data = json.loads(path.read_text(encoding="utf-8"))
             self._weights = [float(w) for w in data["weights"]]
             self._bias = float(data["bias"])
             self._like_thr = float(data["like_threshold"])
@@ -76,6 +108,7 @@ class PhotoTasteModel:
 
     def score(self, emb: np.ndarray) -> TasteVerdict | None:
         """Score по эмбеддингам фото карточки (строка = фото)."""
+        self._maybe_reload()
         if emb is None or len(emb) == 0 or not self.load():
             return None
         mean = emb.mean(axis=0)
@@ -123,6 +156,10 @@ class PhotoShadowScorer:
         verdict = self._taste.score(emb)
         if verdict is None:
             return None
+        import numpy as np  # noqa: PLC0415
+
+        mean = emb.mean(axis=0)
+        mean = mean / (float(np.linalg.norm(mean)) or 1.0)
         out = {
             "score": verdict.score,
             "verdict": verdict.verdict,
@@ -130,6 +167,8 @@ class PhotoShadowScorer:
             "model_version": self._taste.version,
             "smoke": None,
             "alcohol": None,
+            # Отпечаток для переобучения (photo_embeddings): float32 LE.
+            "embedding": mean.astype("<f4").tobytes(),
         }
         if self._vice is not None:
             try:

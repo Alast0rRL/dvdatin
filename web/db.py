@@ -755,11 +755,13 @@ class SyncDB:
     ) -> list[dict[str, Any]]:
         """Следующие неоценённые анкеты с фото.
 
-        Порядок — перемешанный, но стабильный (хэш id): разметка не зависит
-        от того, в каком порядке Leo показывал анкеты. ``prefer`` — анкеты,
-        чьи фото уже лежат в кэше на диске: их показываем первыми, чтобы не
-        дёргать Telegram на каждой оценке. ``exclude`` — уже стоящие в
-        очереди браузера.
+        Сначала — анкеты, в которых модель вкуса сомневается больше всего
+        (последний score в photo_scores ближе всего к 0.5): на них разметка
+        учит модель сильнее всего. Каждая RATE_EXPLORE_EVERY-я — из обычного
+        перемешанного порядка (хэш id), чтобы метки не перекосило в сторону
+        «пограничных» анкет. ``prefer`` — анкеты с фото в кэше на диске (в
+        обычном порядке идут раньше: не дёргаем Telegram). ``exclude`` — уже
+        стоящие в очереди браузера.
         """
         exclude = [int(x) for x in (exclude or [])][:200]
         ex_sql = ""
@@ -777,10 +779,43 @@ class SyncDB:
         pids = [r["pid"] for r in rows]
         if prefer:
             pids.sort(key=lambda p: p not in prefer)  # стабильная сортировка
+        scores = self._latest_photo_scores()
+        uncertain = sorted(
+            (p for p in pids if p in scores), key=lambda p: abs(scores[p] - 0.5),
+        )
+        uncertain_set = set(uncertain)
+        explore = [p for p in pids if p not in uncertain_set]
+        ordered: list[int] = []
+        while (uncertain or explore) and len(ordered) < max(1, int(limit)):
+            take_explore = (len(ordered) + 1) % self.RATE_EXPLORE_EVERY == 0
+            if (take_explore and explore) or not uncertain:
+                ordered.append(explore.pop(0))
+            else:
+                ordered.append(uncertain.pop(0))
         out: list[dict[str, Any]] = []
-        for pid in pids[: max(1, int(limit))]:
-            out.append({"profile_id": pid, "photos": self._rating_photos(pid)})
+        for pid in ordered:
+            score = scores.get(pid)
+            out.append({
+                "profile_id": pid,
+                "photos": self._rating_photos(pid),
+                "score": score,
+                "uncertain": pid in uncertain_set,
+            })
         return out
+
+    #: Каждая N-я анкета очереди /rate — из обычного порядка, а не «сомнительных».
+    RATE_EXPLORE_EVERY = 5
+
+    def _latest_photo_scores(self) -> dict[int, float]:
+        """Последний теневой score модели вкуса по каждой анкете."""
+        try:
+            rows = self._query(
+                "SELECT profile_id, score FROM photo_scores WHERE id IN "
+                "(SELECT MAX(id) FROM photo_scores GROUP BY profile_id)"
+            )
+        except sqlite3.Error:
+            return {}
+        return {r["profile_id"]: float(r["score"]) for r in rows}
 
     #: Альбом одного показа анкеты — сообщения с номерами подряд; больший
     #: разрыв означает предыдущий показ (Leo показывает анкету повторно, и

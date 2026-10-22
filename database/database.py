@@ -277,6 +277,21 @@ CREATE TABLE IF NOT EXISTS photo_scores (
 );
 
 CREATE INDEX IF NOT EXISTS idx_photo_scores_profile ON photo_scores(profile_id);
+
+-- photo_embeddings: «отпечаток» фото анкеты для обучения модели вкуса —
+-- среднее L2-нормированных CLIP-эмбеддингов фото последнего показа
+-- (float32 little-endian, BLOB), тех же фото, что видны на /rate. Пишет бот
+-- (фоновый досчёт и теневой расчёт), читает scripts/train_photo_taste.py —
+-- переобучение без повторного прогона CLIP. emb NULL + n_photos 0 — фото
+-- получить не удалось (чтобы досчёт не крутился на ней вечно).
+CREATE TABLE IF NOT EXISTS photo_embeddings (
+    profile_id INTEGER PRIMARY KEY,
+    emb BLOB,
+    n_photos INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
 """
 
 
@@ -1493,6 +1508,80 @@ class Database:
         except Exception as e:
             await self._connection.rollback()
             logger.warning(f"save_photo_score(profile={profile_id}): {e}")
+
+    #: Альбом одного показа анкеты — сообщения с номерами подряд (как в
+    #: web/db.SyncDB.RATE_ALBUM_GAP): больший разрыв — предыдущий показ.
+    PHOTO_ALBUM_GAP = 2
+
+    async def save_photo_embedding(
+        self, profile_id: int, emb: bytes | None, n_photos: int, model: str,
+    ) -> None:
+        """Отпечаток фото анкеты (перезаписывается свежим показом)."""
+        try:
+            await self._connection.execute(
+                """INSERT OR REPLACE INTO photo_embeddings
+                (profile_id, emb, n_photos, model, created_at) VALUES (?, ?, ?, ?, ?)""",
+                (profile_id, emb, n_photos, model, datetime.now(timezone.utc).isoformat()),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"save_photo_embedding(profile={profile_id}): {e}")
+
+    async def get_photo_backfill_batch(
+        self, limit: int = 10, max_photos: int = 3,
+    ) -> list[dict]:
+        """Анкеты с фото без отпечатка: сначала НЕоценённые на /rate (нужны
+        для очереди «модель сомневается»), затем оценённые (для обучения).
+
+        Фото — последний показ с одного аккаунта (та же логика, что у /rate):
+        ``[{"profile_id", "photos": [{"message_id", "chat_id", "account_session"}]}]``.
+        """
+        photo_sql = """
+            FROM profile_messages pm
+            WHERE pm.account_session <> ''
+              AND EXISTS (
+                  SELECT 1 FROM raw_messages rm
+                  WHERE rm.account_session IN (pm.account_session, '')
+                    AND rm.chat_id = pm.chat_id
+                    AND rm.telegram_message_id = pm.telegram_message_id
+                    AND rm.is_outgoing = 0
+                    AND rm.media_type = 'photo'
+              )
+        """
+        cur = await self._connection.execute(
+            "SELECT DISTINCT pm.profile_id " + photo_sql
+            + """ AND pm.profile_id NOT IN (SELECT profile_id FROM photo_embeddings)
+            ORDER BY (pm.profile_id IN (SELECT profile_id FROM photo_ratings)),
+                     pm.profile_id DESC
+            LIMIT ?""",
+            (int(limit),),
+        )
+        pids = [r[0] for r in await cur.fetchall()]
+        out: list[dict] = []
+        for pid in pids:
+            cur = await self._connection.execute(
+                "SELECT pm.telegram_message_id, pm.chat_id, pm.account_session "
+                + photo_sql + " AND pm.profile_id = ? ORDER BY pm.telegram_message_id",
+                (pid,),
+            )
+            rows = await cur.fetchall()
+            if not rows:
+                continue
+            session = rows[-1][2]
+            same = [r for r in rows if r[2] == session]
+            start = len(same) - 1
+            while start > 0 and same[start][0] - same[start - 1][0] <= self.PHOTO_ALBUM_GAP:
+                start -= 1
+            photos = [
+                {"message_id": r[0], "chat_id": r[1], "account_session": r[2]}
+                # Первые фото альбома — как у живого теневого расчёта
+                # (DvinchikCollector._card_photos), чтобы обучение и вердикт
+                # смотрели на одни и те же фото.
+                for r in same[start:][: max(1, int(max_photos))]
+            ]
+            out.append({"profile_id": pid, "photos": photos})
+        return out
 
     async def set_state(self, key: str, value: str) -> None:
         """Сохраняет рантайм-значение (переживает рестарт)."""

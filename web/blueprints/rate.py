@@ -62,6 +62,8 @@ def _item_json(item: dict[str, Any]) -> dict[str, Any]:
     pid = item["profile_id"]
     return {
         "profile_id": pid,
+        "uncertain": bool(item.get("uncertain")),
+        "score": item.get("score"),
         "photos": [
             url_for("photos.serve_photo", profile_id=pid, message_id=p["message_id"])
             for p in item["photos"]

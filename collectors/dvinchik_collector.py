@@ -2007,6 +2007,121 @@ class DvinchikCollector:
         )
         return [r for r in results if isinstance(r, (bytes, bytearray))]
 
+    # ── Фоновый досчёт старых анкет (вердикт + отпечаток фото) ──────────
+
+    #: Пауза, когда досчитывать нечего (новые анкеты считает живая тень).
+    PHOTO_BACKFILL_IDLE_SEC = 600.0
+
+    async def _backfill_photo_bytes(self, photos: list[dict]) -> list[bytes]:
+        """Фото из кэша media/; нет в кэше — скачиваем аккаунтом-получателем
+        и кладём в кэш (тогда и на /rate они откроются сразу)."""
+        from web.photos import _cache_filename  # noqa: PLC0415 — общая схема имён кэша
+
+        out: list[bytes] = []
+        missing: list[dict] = []
+        for ph in photos:
+            path = _cache_filename(ph["profile_id"], ph["message_id"], ph["account_session"])
+            if path.exists():
+                out.append(path.read_bytes())
+            else:
+                missing.append(ph)
+        if not missing:
+            return out
+        client, _ = self._clients_for_session(missing[0]["account_session"])
+        if client is None:
+            return out
+        try:
+            msgs = await client.get_messages(
+                missing[0]["chat_id"], ids=[ph["message_id"] for ph in missing],
+            )
+        except Exception as e:
+            logger.debug(f"PhotoBackfill: get_messages: {e!r}")
+            return out
+        for ph, m in zip(missing, msgs or []):
+            if m is None or not getattr(m, "photo", None):
+                continue
+            try:
+                data = await m.download_media(file=bytes)
+            except Exception as e:
+                logger.debug(f"PhotoBackfill: download {ph['message_id']}: {e!r}")
+                continue
+            if not data:
+                continue
+            path = _cache_filename(ph["profile_id"], ph["message_id"], ph["account_session"])
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            except OSError:
+                pass
+            out.append(data)
+        return out
+
+    async def run_photo_backfill(self) -> None:
+        """Фоновый досчёт: анкеты без отпечатка фото → вердикт + отпечаток.
+
+        Сначала НЕоценённые на /rate (для очереди «модель сомневается»), потом
+        оценённые (для переобучения). Медленно и по одной, чтобы не мешать
+        ленте: CLIP на CPU ~1.5 с на фото.
+        """
+        shadow = self._photo_shadow
+        cfg = self._config.photo_taste
+        if shadow is None or not cfg.enabled or not cfg.backfill:
+            return
+        await asyncio.sleep(60)  # даём боту подняться и загрузить CLIP
+        done = 0
+        while True:
+            try:
+                if not shadow.enabled:
+                    await asyncio.sleep(self.PHOTO_BACKFILL_IDLE_SEC)
+                    continue
+                batch = await self._db.get_photo_backfill_batch(
+                    limit=10, max_photos=max(1, int(cfg.max_photos)),
+                )
+                if not batch:
+                    if done:
+                        logger.info(f"PhotoBackfill: досчитано {done} анкет, жду новых")
+                        done = 0
+                    await asyncio.sleep(self.PHOTO_BACKFILL_IDLE_SEC)
+                    continue
+                for item in batch:
+                    pid = item["profile_id"]
+                    photos = [dict(ph, profile_id=pid) for ph in item["photos"]]
+                    images = await self._backfill_photo_bytes(photos)
+                    result = (
+                        await asyncio.to_thread(shadow.score_images, images)
+                        if images else None
+                    )
+                    if not result:
+                        # Отметка «не получилось», чтобы не крутиться на ней.
+                        await self._db.save_photo_embedding(pid, None, 0, "")
+                    else:
+                        await self._db.save_photo_embedding(
+                            pid, result["embedding"], result["n_photos"],
+                            result["model_version"],
+                        )
+                        first = photos[0]
+                        await self._db.save_photo_score(
+                            profile_id=pid,
+                            account_session=first["account_session"],
+                            chat_id=first["chat_id"],
+                            telegram_message_id=first["message_id"],
+                            score=result["score"],
+                            verdict=result["verdict"],
+                            smoke_prob=result.get("smoke"),
+                            alcohol_prob=result.get("alcohol"),
+                            n_photos=result["n_photos"],
+                            model_version=result["model_version"],
+                        )
+                        done += 1
+                        if done % 50 == 0:
+                            logger.info(f"PhotoBackfill: досчитано {done} анкет")
+                    await asyncio.sleep(max(0.0, float(cfg.backfill_pause_sec)))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"PhotoBackfill: {e!r}")
+                await asyncio.sleep(60)
+
     #: Сколько ждать фонового расчёта этой карточки, прежде чем считать самим.
     PHOTO_SHADOW_WAIT_SEC = 15.0
 
@@ -2120,6 +2235,11 @@ class DvinchikCollector:
             result = await asyncio.to_thread(self._photo_shadow.score_images, images)
             if not result:
                 return None
+            if result.get("embedding"):
+                await self._db.save_photo_embedding(
+                    profile_id, result["embedding"], result["n_photos"],
+                    result["model_version"],
+                )
             await self._db.save_photo_score(
                 profile_id=profile_id,
                 account_session=account_session or "",

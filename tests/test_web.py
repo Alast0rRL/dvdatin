@@ -2213,3 +2213,31 @@ class TestPhotoRating:
         assert sync.get_photo_rating_stats()["rated"] == 1
         js = client.get("/static/js/rate.js").get_data(as_text=True)
         assert "ArrowUp: 'VICE'" in js
+
+
+    def test_uncertain_profiles_come_first(self, sync_db) -> None:
+        """Очередь: сначала анкеты, где модель сомневается (score ближе к 0.5)."""
+        sync, _, db = sync_db
+
+        async def _seed() -> None:
+            for pid, score in ((1, 0.95), (2, 0.52), (3, 0.30)):
+                await db.save_photo_score(
+                    profile_id=pid, account_session="dvai", chat_id=1234060895,
+                    telegram_message_id=110 + pid, score=score, verdict="REVIEW",
+                    smoke_prob=None, alcohol_prob=None, n_photos=1, model_version="v",
+                )
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        items = sync.get_rating_queue(limit=10)
+        assert [i["profile_id"] for i in items] == [2, 3, 1]
+        assert all(i["uncertain"] for i in items)
+        assert items[0]["score"] == 0.52
+
+    def test_explore_slot_takes_unscored_profile(self, sync_db) -> None:
+        """Каждая N-я анкета — из обычного порядка (не «сомнительная»)."""
+        sync, _, _ = sync_db
+        sync._latest_photo_scores = lambda: {1: 0.5, 2: 0.6}  # type: ignore[method-assign]
+        sync.RATE_EXPLORE_EVERY = 2
+        items = sync.get_rating_queue(limit=10)
+        assert [i["uncertain"] for i in items] == [True, False, True]
+        assert items[1]["profile_id"] == 3

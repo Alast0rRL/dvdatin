@@ -737,6 +737,7 @@ a.seg__btn {
 .rate__dot { flex: 1 1 0; height: 4px; border-radius: 2px; background: var(--line); }
 .rate__dot.is-current { background: var(--text); }
 .rate__hint--touch { display: none; }
+.rate__badge { margin: 0; font-size: 13px; color: var(--review-fg); }
 
 @media (max-width: 640px) {
     .rate { padding: 12px; gap: 10px; }

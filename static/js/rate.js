@@ -17,6 +17,7 @@
     var dotsBox = document.getElementById('rate-dots');
     var emptyBox = document.getElementById('rate-empty');
     var undoBtn = document.getElementById('rate-undo');
+    var badge = document.getElementById('rate-badge');
 
     var QUEUE_MIN = 6;      // держим в очереди не меньше (фото грузятся заранее)
     var QUEUE_FETCH = 10;   // сколько просить за раз (= RATE_BATCH_MAX)
@@ -102,6 +103,7 @@
 
     function showEmpty(text) {
         resetCard();
+        badge.hidden = true;
         photosBox.textContent = '';
         dotsBox.textContent = '';
         emptyBox.textContent = text;
@@ -132,6 +134,8 @@
     function render(item) {
         photosBox.textContent = '';
         emptyBox.hidden = true;
+        // Анкета из очереди «модель сомневается» — её оценка учит модель сильнее всего.
+        badge.hidden = !item.uncertain;
         resetCard();
         (item.imgs || []).length || preload(item);
         item.imgs.forEach(function (pre) {

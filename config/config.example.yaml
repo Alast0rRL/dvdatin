@@ -158,6 +158,8 @@ photo_taste:
   model_path: "data/ml/taste_model.json"
   max_photos: 3            # CLIP на CPU ~1.5 с на фото
   max_pending: 20
+  backfill: true           # фоновый досчёт старых анкет (вердикт + отпечаток)
+  backfill_pause_sec: 2.0
 
 logging:
   level: INFO
