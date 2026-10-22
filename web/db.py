@@ -699,12 +699,17 @@ class SyncDB:
     # Фото анкеты — сообщения из profile_messages, которые в raw_messages
     # помечены как фото. Только с известным аккаунтом-получателем: фото
     # качается строго им (иначе чужой message_id → фото другой анкеты).
+    # Условие на rm.account_session обязательно: индекс idx_raw_unique
+    # начинается с account_session, и без него SQLite сканировал всю
+    # raw_messages на каждую строку (прод: 7.9 с на запрос вместо 0.02 с —
+    # между анкетами висело «Загружаю…»). '' — legacy-строки до разметки.
     _RATE_PHOTO_SQL = """
         FROM profile_messages pm
         WHERE pm.account_session <> ''
           AND EXISTS (
               SELECT 1 FROM raw_messages rm
-              WHERE rm.chat_id = pm.chat_id
+              WHERE rm.account_session IN (pm.account_session, '')
+                AND rm.chat_id = pm.chat_id
                 AND rm.telegram_message_id = pm.telegram_message_id
                 AND rm.is_outgoing = 0
                 AND rm.media_type = 'photo'

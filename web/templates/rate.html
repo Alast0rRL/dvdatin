@@ -33,13 +33,21 @@
             · 👎 <span id="rate-dislike">{{ stats.DISLIKE }}</span>
             · пропущено <span id="rate-skip">{{ stats.SKIP }}</span>
         </p>
-        <p class="rate__hint">
+        <p class="rate__hint rate__hint--desktop">
             Оценивай только по фото. Клавиши: <kbd>←</kbd> нет · <kbd>→</kbd> нравится ·
             <kbd>↓</kbd> пропустить (фото не годится) · <kbd>Backspace</kbd> назад.
         </p>
+        <p class="rate__hint rate__hint--touch">
+            Свайп вправо — нравится, влево — нет. Тап по краю фото — следующее фото.
+        </p>
     </div>
 
-    <div class="rate__photos" id="rate-photos" aria-live="polite"></div>
+    {# Карточка анкеты: на телефоне свайп вправо — нравится, влево — нет,
+       тап по левой/правой половине листает фото (полоски сверху). #}
+    <div class="rate__card" id="rate-card">
+        <div class="rate__dots" id="rate-dots" aria-hidden="true"></div>
+        <div class="rate__photos" id="rate-photos" aria-live="polite"></div>
+    </div>
     <p class="rate__empty" id="rate-empty" hidden>Загружаю…</p>
 
     <div class="rate__actions">

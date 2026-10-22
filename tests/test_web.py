@@ -2164,3 +2164,27 @@ class TestPhotoRating:
 
         asyncio.get_event_loop().run_until_complete(_seed())
         assert [p["message_id"] for p in sync._rating_photos(1)] == [200, 201, 202]
+
+    def test_photo_query_uses_raw_index(self, sync_db) -> None:
+        """Регресс: проверка «сообщение — фото» должна идти по idx_raw_unique.
+
+        Без условия на account_session SQLite сканировал всю raw_messages на
+        каждую строку: на проде 7.9 с на запрос, между анкетами висело
+        «Загружаю…»."""
+        sync, _, _ = sync_db
+        plan = sync._query("EXPLAIN QUERY PLAN SELECT 1 " + SyncDB._RATE_PHOTO_SQL)
+        details = " | ".join(str(r.get("detail", "")) for r in plan)
+        assert "SCAN rm" not in details, details
+        assert "idx_raw_unique" in details, details
+
+    def test_swipe_card_on_page(self, client) -> None:
+        """Телефон: карточка со свайпом (как в Tinder) и полосками фото."""
+        _login(client)
+        html = client.get("/rate").get_data(as_text=True)
+        assert 'id="rate-card"' in html and 'id="rate-dots"' in html
+        js = client.get("/static/js/rate.js").get_data(as_text=True)
+        for marker in ("pointerdown", "pointerup", "SWIPE_SHARE", "setPhoto"):
+            assert marker in js, marker
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        card = css.split(".rate__card {", 1)[1].split("}", 1)[0]
+        assert "touch-action: pan-y" in card  # вертикальный скролл не ломается

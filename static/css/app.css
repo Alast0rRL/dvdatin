@@ -716,9 +716,37 @@ a.seg__btn {
 .rate__empty { margin: 0; padding: 40px 0; text-align: center; color: var(--muted); }
 .rate__actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 .rate__btn { min-height: 48px; min-width: 120px; font-size: 16px; }
+/* Карточка анкеты: тянется за пальцем (transform ставит rate.js),
+   подсветка — куда улетит. touch-action: pan-y — вертикальный скролл
+   страницы остаётся, горизонтальный жест забирает свайп. */
+.rate__card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-radius: 12px;
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grab;
+}
+.rate__card.is-dragging { cursor: grabbing; }
+.rate__card.is-swipe-like { box-shadow: 0 0 0 3px var(--like-line); background: var(--like-bg); }
+.rate__card.is-swipe-dislike { box-shadow: 0 0 0 3px var(--dislike-line); background: var(--dislike-bg); }
+.rate__photo { -webkit-user-drag: none; }
+.rate__dots { display: none; gap: 4px; }
+.rate__dot { flex: 1 1 0; height: 4px; border-radius: 2px; background: var(--line); }
+.rate__dot.is-current { background: var(--text); }
+.rate__hint--touch { display: none; }
+
 @media (max-width: 640px) {
-    .rate { padding: 12px; }
-    .rate__photos { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .rate { padding: 12px; gap: 10px; }
+    .rate__hint--desktop { display: none; }
+    .rate__hint--touch { display: block; }
+    /* Телефон: одно большое фото, остальные — тапом (полоски сверху). */
+    .rate__dots { display: flex; }
+    .rate__photos { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+    .rate__photo { display: none; max-height: 68vh; }
+    .rate__photo.is-current { display: block; }
     .rate__actions { flex-wrap: nowrap; gap: 6px; }
     .rate__btn { min-width: 0; flex: 1 1 0; padding-left: 6px; padding-right: 6px; font-size: 15px; }
 }
