@@ -151,5 +151,13 @@ photo_check:
   max_photos: 4
   threads: 4
 
+# Модель вкуса по фото — ТЕНЕВОЙ режим: вердикт пишется в photo_scores,
+# действия бота не меняются. Веса обучены на разметке /rate (не в git).
+photo_taste:
+  enabled: false
+  model_path: "data/ml/taste_model.json"
+  max_photos: 3            # CLIP на CPU ~1.5 с на фото
+  max_pending: 20
+
 logging:
   level: INFO

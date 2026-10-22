@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from app.config import PhotoCheckConfig
 from models.decision import AIDecision, AIDecisionResult
 from services.decision_service import DecisionService
+from services.clip_encoder import ClipEncoder
 from services.photo_vice import PhotoViceDetector, ViceHit
 from services.reason_labels import describe_reason
 
@@ -28,20 +29,27 @@ def make_decision(decision: AIDecision = AIDecision.LIKE) -> AIDecisionResult:
     )
 
 
+def make_detector(**kw) -> PhotoViceDetector:
+    """Детектор с фиктивным (исправным) энкодером — CLIP не грузится."""
+    encoder = MagicMock()
+    encoder.failed = False
+    return PhotoViceDetector(make_config(**kw), encoder)
+
+
 def run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
 class TestDetector:
     def test_disabled_never_checks(self) -> None:
-        det = PhotoViceDetector(make_config(enabled=False))
+        det = make_detector(enabled=False)
         det.class_probs = MagicMock()  # type: ignore[method-assign]
         assert not det.enabled
         assert det.check([b"img"]) is None
         det.class_probs.assert_not_called()
 
     def test_hit_above_threshold_picks_strongest(self) -> None:
-        det = PhotoViceDetector(make_config())
+        det = make_detector()
         det.class_probs = MagicMock(return_value=[  # type: ignore[method-assign]
             {"smoke": 0.10, "alcohol": 0.05, "neutral": 0.85},
             {"smoke": 0.995, "alcohol": 0.0, "neutral": 0.005},
@@ -53,7 +61,7 @@ class TestDetector:
 
     def test_below_strict_threshold_is_clean(self) -> None:
         """Пороги строгие: «наверное сигарета» (0.9) — не скип."""
-        det = PhotoViceDetector(make_config())
+        det = make_detector()
         det.class_probs = MagicMock(return_value=[  # type: ignore[method-assign]
             {"smoke": 0.90, "alcohol": 0.0, "neutral": 0.10},
             {"smoke": 0.0, "alcohol": 0.95, "neutral": 0.05},
@@ -71,14 +79,33 @@ class TestDetector:
                 raise ImportError(name)
             return real_import(name, *args, **kwargs)
 
-        det = PhotoViceDetector(make_config())
+        encoder = ClipEncoder()
+        det = PhotoViceDetector(make_config(), encoder)
         builtins.__import__ = fake_import
         try:
-            assert det.load() is False
+            assert encoder.load() is False
             assert det.check([b"img"]) is None
         finally:
             builtins.__import__ = real_import
+        assert encoder.failed
         assert not det.enabled
+
+    def test_no_encoder_means_disabled(self) -> None:
+        assert not PhotoViceDetector(make_config()).enabled
+
+    def test_probs_from_embeddings_softmax_by_class(self) -> None:
+        """Вероятности классов — softmax по всем фразам, сумма по классу."""
+        import numpy as np
+
+        det = make_detector()
+        n = sum(len(v) for v in __import__("services.photo_vice", fromlist=["x"]).VICE_PROMPTS.values())
+        text = np.zeros((n, 3), dtype=np.float32)
+        text[0] = [1, 0, 0]          # первая фраза «smoke» совпадает с фото
+        det._text = text
+        det._labels = (["smoke"] * 4) + (["alcohol"] * 5) + (["neutral"] * 10)
+        probs = det.probs_from_embeddings(np.array([[1.0, 0.0, 0.0]], dtype=np.float32))
+        assert probs[0]["smoke"] > 0.99
+        assert abs(sum(probs[0].values()) - 1.0) < 1e-6
 
 
 class TestDecisionOverride:

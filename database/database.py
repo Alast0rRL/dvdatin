@@ -254,6 +254,29 @@ CREATE TABLE IF NOT EXISTS photo_ratings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_photo_ratings_rating ON photo_ratings(rating);
+
+-- photo_scores: ТЕНЕВОЙ вердикт модели вкуса по фото (services/photo_taste.py)
+-- на каждую карточку анкеты: score 0..1, зона LIKE/REVIEW/DISLIKE и максимум
+-- вероятностей «сигарета»/«алкоголь» по фото. На действия бота не влияет —
+-- нужен, чтобы сравнить модель с решениями владельца перед включением.
+CREATE TABLE IF NOT EXISTS photo_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL,
+    account_session TEXT NOT NULL DEFAULT '',
+    chat_id INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    score REAL NOT NULL,
+    verdict TEXT NOT NULL,
+    smoke_prob REAL,
+    alcohol_prob REAL,
+    n_photos INTEGER NOT NULL DEFAULT 0,
+    model_version TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+    UNIQUE(account_session, chat_id, telegram_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_photo_scores_profile ON photo_scores(profile_id);
 """
 
 
@@ -1438,6 +1461,38 @@ class Database:
         except Exception as e:
             await self._connection.rollback()
             logger.warning(f"mark_like_rejected: {e}")
+
+    async def save_photo_score(
+        self,
+        *,
+        profile_id: int,
+        account_session: str,
+        chat_id: int,
+        telegram_message_id: int,
+        score: float,
+        verdict: str,
+        smoke_prob: float | None,
+        alcohol_prob: float | None,
+        n_photos: int,
+        model_version: str,
+    ) -> None:
+        """Теневой вердикт модели вкуса на карточку (повтор карточки — no-op)."""
+        try:
+            await self._connection.execute(
+                """INSERT OR IGNORE INTO photo_scores
+                (profile_id, account_session, chat_id, telegram_message_id, score,
+                 verdict, smoke_prob, alcohol_prob, n_photos, model_version, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    profile_id, account_session or "", chat_id, telegram_message_id,
+                    score, verdict, smoke_prob, alcohol_prob, n_photos, model_version,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"save_photo_score(profile={profile_id}): {e}")
 
     async def set_state(self, key: str, value: str) -> None:
         """Сохраняет рантайм-значение (переживает рестарт)."""

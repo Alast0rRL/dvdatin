@@ -257,6 +257,7 @@ class DvinchikCollector:
         manual_review: object | None = None,
         client_sessions: list[str] | None = None,
         photo_vice: object | None = None,
+        photo_shadow: object | None = None,
     ) -> None:
         # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
         # регистрируются на каждом клиенте. Один и тот же message из одного
@@ -315,6 +316,13 @@ class DvinchikCollector:
         # Проверка фото на сигарету/алкоголь (services/photo_vice.py) —
         # только для анкет, которые бот собирается лайкнуть.
         self._photo_vice = photo_vice
+        # Теневая модель вкуса по фото (services/photo_taste.py): вердикт
+        # каждой карточки пишется в photo_scores в фоне, действия не меняет.
+        self._photo_shadow = photo_shadow
+        # Фоновые расчёты по карточкам: (account, chat, msg_id) → Task с
+        # результатом. Проверка сигарет/алкоголя для будущего лайка берёт
+        # готовый результат отсюда, а не гоняет CLIP второй раз.
+        self._photo_shadow_pending: dict[tuple[str, int, int], asyncio.Task] = {}
         # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
         # (config.auto_actions.account_session) среди accounts/clients (они
         # параллельны: main.py строит clients в том же порядке, что accounts).
@@ -1999,9 +2007,20 @@ class DvinchikCollector:
         )
         return [r for r in results if isinstance(r, (bytes, bytearray))]
 
-    async def _apply_photo_vice(self, decision: object, msg: object) -> object:
+    #: Сколько ждать фонового расчёта этой карточки, прежде чем считать самим.
+    PHOTO_SHADOW_WAIT_SEC = 15.0
+
+    async def _apply_photo_vice(
+        self,
+        decision: object,
+        msg: object,
+        card_key: tuple[str, int, int] | None = None,
+    ) -> object:
         """LIKE → DISLIKE, если на фото карточки уверенно найдены сигарета/алкоголь.
 
+        Если по карточке уже идёт теневой расчёт (он считает и вероятности
+        пороков), берём его результат — CLIP на CPU ~1.5 с на фото, двойной
+        прогон задерживал бы реакцию. Иначе считаем сами.
         Любая ошибка (нет torch, сеть, битое фото) — решение не меняется:
         проверка — дополнительный фильтр, бот без неё работает как раньше.
         """
@@ -2014,8 +2033,25 @@ class DvinchikCollector:
         ):
             return decision
         try:
-            images = await self._card_photos(msg, detector.max_photos)
-            hit = await detector.check_async(images)
+            hit = None
+            pending = getattr(self, "_photo_shadow_pending", {})
+            shadow_task = pending.get(card_key) if card_key is not None else None
+            shadow_result = None
+            if shadow_task is not None:
+                try:
+                    shadow_result = await asyncio.wait_for(
+                        asyncio.shield(shadow_task), timeout=self.PHOTO_SHADOW_WAIT_SEC,
+                    )
+                except Exception as e:
+                    logger.debug(f"PhotoVice: теневой расчёт не дождались: {e!r}")
+            if shadow_result and shadow_result.get("smoke") is not None:
+                hit = detector.best_hit([{
+                    "smoke": shadow_result.get("smoke") or 0.0,
+                    "alcohol": shadow_result.get("alcohol") or 0.0,
+                }])
+            else:
+                images = await self._card_photos(msg, detector.max_photos)
+                hit = await detector.check_async(images)
         except Exception as e:
             logger.error(f"PhotoVice: проверка фото не удалась: {e!r}")
             return decision
@@ -2027,6 +2063,83 @@ class DvinchikCollector:
         except Exception as e:
             logger.error(f"PhotoVice: не удалось записать решение: {e!r}")
             return decision
+
+    def _schedule_photo_shadow(
+        self,
+        msg: object,
+        profile_id: int,
+        account_session: str,
+        chat_id: int,
+        message_id: int,
+    ) -> None:
+        """Ставит фоновый расчёт теневого вердикта по фото карточки.
+
+        Не ждём: CLIP на CPU занимает секунды, а реакция Leo должна уйти
+        быстро. Очередь ограничена photo_taste.max_pending — при быстром
+        листании лишние карточки пропускаются (в лог DEBUG).
+        """
+        shadow = self._photo_shadow
+        if shadow is None or msg is None or not getattr(msg, "photo", None):
+            return
+        try:
+            if not shadow.enabled:
+                return
+        except Exception:
+            return
+        cap = max(1, int(self._config.photo_taste.max_pending))
+        if len(self._photo_shadow_pending) >= cap:
+            logger.debug(f"PhotoShadow: очередь полна, карточка {message_id} пропущена")
+            return
+        key = (account_session or "", chat_id, message_id)
+        if key in self._photo_shadow_pending:
+            return
+        task = asyncio.create_task(
+            self._photo_shadow_run(msg, profile_id, account_session, chat_id, message_id)
+        )
+        self._photo_shadow_pending[key] = task
+        task.add_done_callback(lambda _t, k=key: self._photo_shadow_pending.pop(k, None))
+
+    async def _photo_shadow_run(
+        self,
+        msg: object,
+        profile_id: int,
+        account_session: str,
+        chat_id: int,
+        message_id: int,
+    ) -> dict | None:
+        """Фото карточки → CLIP → вердикт вкуса → photo_scores. Ошибки — в лог.
+
+        Возвращает результат (score/verdict/smoke/alcohol) — его переиспользует
+        проверка сигарет/алкоголя для этой же карточки.
+        """
+        try:
+            limit = max(1, int(self._config.photo_taste.max_photos))
+            images = await self._card_photos(msg, limit)
+            if not images:
+                return None
+            result = await asyncio.to_thread(self._photo_shadow.score_images, images)
+            if not result:
+                return None
+            await self._db.save_photo_score(
+                profile_id=profile_id,
+                account_session=account_session or "",
+                chat_id=chat_id,
+                telegram_message_id=message_id,
+                score=result["score"],
+                verdict=result["verdict"],
+                smoke_prob=result.get("smoke"),
+                alcohol_prob=result.get("alcohol"),
+                n_photos=result["n_photos"],
+                model_version=result["model_version"],
+            )
+            logger.info(
+                f"PhotoShadow: profile #{profile_id} → {result['verdict']} "
+                f"(score {result['score']:.2f}, фото {result['n_photos']})"
+            )
+            return result
+        except Exception as e:
+            logger.warning(f"PhotoShadow: profile #{profile_id}: {e!r}")
+            return None
 
     async def _process_message(self, task: RawTask) -> None:
         """Выполняет pipeline: parse → filter → AI → decision.
@@ -2167,6 +2280,10 @@ class DvinchikCollector:
 
                         is_new = profile.status == "NEW"
                         self._print_profile_stored(profile, is_new=is_new)
+                        # Теневой вердикт модели вкуса по фото (фон, не ждём).
+                        self._schedule_photo_shadow(
+                            msg, profile.id, account_session, chat_id, task.message_id,
+                        )
 
                         if self._filter_service:
                             try:
@@ -2202,6 +2319,11 @@ class DvinchikCollector:
                                                 if decision.decision == AIDecision.LIKE:
                                                     decision = await self._apply_photo_vice(
                                                         decision, msg,
+                                                        card_key=(
+                                                            account_session or "",
+                                                            chat_id,
+                                                            task.message_id,
+                                                        ),
                                                     )
                                                 if await self._db.has_auto_action_for_message(
                                                     chat_id, task.message_id

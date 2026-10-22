@@ -316,6 +316,25 @@ class PhotoCheckConfig(BaseModel):
     threads: int = 4
 
 
+class PhotoTasteConfig(BaseModel):
+    """Модель вкуса владельца по фото (services/photo_taste.py) — ТЕНЕВОЙ режим.
+
+    Для каждой новой анкеты в фоне считается score «во вкусе ли» и зона
+    LIKE/REVIEW/DISLIKE; результат пишется в photo_scores и на действия бота
+    не влияет — его сравнивают с решениями владельца, прежде чем включать.
+    Веса — JSON (``model_path``), обучены на разметке /rate; в git не лежат.
+    CLIP общий с photo_check (``photo_check.threads``).
+    """
+
+    enabled: bool = False
+    model_path: str = "data/ml/taste_model.json"
+    # Сколько фото карточки (альбома) учитывать (CLIP на CPU ~1.5 с на фото).
+    max_photos: int = 3
+    # Сколько карточек может ждать фонового расчёта; лишние пропускаются,
+    # чтобы очередь не росла при быстром листании.
+    max_pending: int = 20
+
+
 class DecisionConfig(BaseModel):
     """Настройки Decision Engine.
 
@@ -395,6 +414,7 @@ class AppConfig(BaseModel):
     control: ControlConfig = ControlConfig()
     manual_review: ManualReviewConfig = ManualReviewConfig()
     photo_check: PhotoCheckConfig = PhotoCheckConfig()
+    photo_taste: PhotoTasteConfig = PhotoTasteConfig()
     logging: LoggingConfig = LoggingConfig()
 
     def model_post_init(self, __context: object) -> None:

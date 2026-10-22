@@ -30,6 +30,8 @@ from services.profile_service import ProfileService
 from services.decision_service import DecisionService
 from services.analysis_export import EXPORTS_DIR, export_analysis_csv, clear_database
 from services.manual_review import ManualReviewRecorder
+from services.clip_encoder import ClipEncoder
+from services.photo_taste import PhotoShadowScorer, PhotoTasteModel
 from services.photo_vice import PhotoViceDetector
 from telegram.control_bot import ControlBot
 from telegram.client import authorize, create_client
@@ -195,9 +197,18 @@ async def main() -> None:
         )
 
     # Проверка фото на сигарету/алкоголь (CLIP на CPU) для будущих лайков.
-    photo_vice = PhotoViceDetector(config.photo_check)
+    # Один CLIP на CPU для обеих задач: сигареты/алкоголь (действует) и
+    # модель вкуса (теневой режим, только пишет вердикт).
+    clip_encoder = ClipEncoder(threads=config.photo_check.threads)
+    photo_vice = PhotoViceDetector(config.photo_check, clip_encoder)
+    photo_shadow = PhotoShadowScorer(
+        clip_encoder, PhotoTasteModel(config.photo_taste), photo_vice,
+    )
+    clip_needed = config.photo_check.enabled or config.photo_taste.enabled
     if config.photo_check.enabled:
         logger.info("PhotoVice: проверка фото на сигареты/алкоголь включена")
+    if config.photo_taste.enabled:
+        logger.info("PhotoTaste: теневая модель вкуса по фото включена")
 
     collector = DvinchikCollector(
         clients, db, config,
@@ -210,6 +221,7 @@ async def main() -> None:
         # Имена сессий ТОЛЬКО вошедших аккаунтов, параллельно clients.
         client_sessions=client_sessions,
         photo_vice=photo_vice,
+        photo_shadow=photo_shadow,
     )
     collector.register()
 
@@ -280,7 +292,11 @@ async def main() -> None:
     )
 
     # Модель CLIP грузится в фоне (~10–30 с), чтобы первая анкета не ждала.
-    photo_vice_task = asyncio.create_task(photo_vice.preload())
+    async def _preload_clip() -> None:
+        if clip_needed and await asyncio.to_thread(clip_encoder.load):
+            await asyncio.to_thread(photo_vice.load)
+
+    photo_vice_task = asyncio.create_task(_preload_clip())
 
     # W3: восстановление backlog'а
     recovery_task = asyncio.create_task(
