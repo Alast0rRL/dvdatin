@@ -6,7 +6,7 @@
 # Run the app
 python main.py
 
-# Run all tests (786 total, no linter/formatter configured)
+# Run all tests (787 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -39,7 +39,7 @@ python -m pytest tests/test_ai.py -v
 - **Штатные сообщения Leo (`✨🔍`, «Отправь текст…») пишутся в лог как DEBUG**, а не WARNING «Unknown message format» (`ROUTINE_LEO_TEXTS`, `_is_routine_leo_text`); классификация и обработка не меняются.
 - **Пустые сообщения в ленте не показываются** (нет текста и медиа — кнопки меню). Фото-сообщение рисуется миниатюрой: `profile_id` резолвится через `profile_messages` (маршрут `photos.serve_photo`).
 - **Карточек/бейджей/форм в ленте нет** — анкета показывается теми же сообщениями, что в Telegram. `data-decision`/`data-name` остаются скрытыми атрибутами строк для клиентского фильтра/поиска. Ручные маршруты `/chat/profile/<id>/<action>` и блок «Капчи ждут ответа» остаются рабочими.
-- **Разметка внешности (`/rate`)**: `web/blueprints/rate.py` + `templates/rate.html` + `static/js/rate.js`, кнопка `#rate-open` в топбаре главной. Владелец оценивает ТОЛЬКО фото анкеты (без текста) → таблица `photo_ratings` (`profile_id` PK, `LIKE`/`DISLIKE`/`SKIP`, повтор перезаписывает, undo удаляет). Это обучающие метки для фото-модели вкуса — на решения/действия бота НЕ влияют. Фото — с одного аккаунта-получателя (`SyncDB._rating_photos`, последний показ), только `account_session <> ''`; анкеты с фото в кэше `media/` идут первыми (`get_rating_queue(prefer=...)`), чтобы разметка не нагружала Telegram. Проверка «фото» в `_RATE_PHOTO_SQL` — только с `rm.account_session IN (pm.account_session, '')`, иначе мимо `idx_raw_unique` и полный скан `raw_messages` (прод 7.9 с, регресс-тест `test_photo_query_uses_raw_index`). На телефоне — Tinder-свайп (`rate.js`: pointer events на `#rate-card`, тап по краю листает фото). Тесты: `tests/test_web.py::TestPhotoRating`.
+- **Разметка внешности (`/rate`)**: `web/blueprints/rate.py` + `templates/rate.html` + `static/js/rate.js`, кнопка `#rate-open` в топбаре главной. Владелец оценивает ТОЛЬКО фото анкеты (без текста) → таблица `photo_ratings` (`profile_id` PK, `LIKE`/`DISLIKE`/`SKIP`, повтор перезаписывает, undo удаляет). Это обучающие метки для фото-модели вкуса — на решения/действия бота НЕ влияют. Фото — с одного аккаунта-получателя (`SyncDB._rating_photos`, последний показ), только `account_session <> ''`; анкеты с фото в кэше `media/` идут первыми (`get_rating_queue(prefer=...)`), чтобы разметка не нагружала Telegram. Проверка «фото» в `_RATE_PHOTO_SQL` — только с `rm.account_session IN (pm.account_session, '')`, иначе мимо `idx_raw_unique` и полный скан `raw_messages` (прод 7.9 с, регресс-тест `test_photo_query_uses_raw_index`). На телефоне — Tinder-свайп (`rate.js`: pointer events на `#rate-card`, тап по краю листает фото). Очередь в браузере дедуплицируется по `seen` (НЕ обрезать список исключений так, чтобы из него выпадала очередь — прод-баг 2026-10-22, анкеты шли по второму кругу); клавиши — `window` capture + игнор `e.repeat`. Тесты: `tests/test_web.py::TestPhotoRating`.
 - **Тема**: палитра — CSS-переменные (`:root` тёмная, `[data-theme="light"]` светлая), переключатель `#theme-toggle` в топбаре + `localStorage`, применение до первой отрисовки — `web/templates/partials/theme_boot.html` (подключён в `base.html` и `login.html`). За пределами палитр сырых цветов в `app.css` быть не должно (`TestTheme`), иначе в светлой теме тёмные пятна.
 
 
@@ -77,7 +77,7 @@ filters:
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (163), test_control_bot (17), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_manual_review (13), test_match_greeter (18), test_parser (63), test_preferences (26), test_profile (21), test_web (131) → **786 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (163), test_control_bot (17), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_manual_review (13), test_match_greeter (18), test_parser (63), test_preferences (26), test_profile (21), test_web (132) → **787 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 

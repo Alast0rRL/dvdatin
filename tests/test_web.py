@@ -2188,3 +2188,15 @@ class TestPhotoRating:
         css = client.get("/static/css/app.css").get_data(as_text=True)
         card = css.split(".rate__card {", 1)[1].split("}", 1)[0]
         assert "touch-action: pan-y" in card  # вертикальный скролл не ломается
+
+    def test_queue_never_repeats_and_keys_are_safe(self, client) -> None:
+        """Регресс (прод 2026-10-22): после ~150 оценок анкеты шли по второму
+        кругу — список «уже есть» для сервера обрезался до 150 и терял саму
+        очередь. Плюс фокус на кнопке и автоповтор клавиши."""
+        _login(client)
+        js = client.get("/static/js/rate.js").get_data(as_text=True)
+        assert "slice(-150)" not in js
+        assert "seen[" in js                      # анкета в очередь — один раз
+        assert "e.repeat" in js                   # зажатая клавиша не оценивает пачку
+        assert "addEventListener('keydown'" in js and "}, true);" in js  # фаза захвата
+        assert "mousedown" in js                  # кнопки не забирают фокус

@@ -52,28 +52,45 @@
         });
     }
 
-    function knownIds() {
+    // Все анкеты, которые уже были в этой вкладке (очередь, на экране,
+    // оценённые). Повторно в очередь не попадают никогда: раньше список
+    // для сервера обрезался до последних 150, после ~150 оценок из него
+    // выпадала сама очередь — сервер присылал её снова, и анкеты шли по
+    // второму кругу («оценка не ставится с первого раза»).
+    var seen = {};
+
+    // Для сервера: сначала очередь и текущая (их повтор виден сразу),
+    // затем последние оценённые — их сервер и так отсекает по БД, хвост
+    // нужен лишь на время, пока POST оценки ещё в пути.
+    function excludeIds() {
         var ids = queue.map(function (i) { return i.profile_id; });
         if (current) ids.push(current.profile_id);
-        history.forEach(function (h) { ids.push(h.item.profile_id); });
-        return ids.slice(-150);
+        history.slice(-40).forEach(function (h) { ids.push(h.item.profile_id); });
+        return ids;
     }
 
     function refill() {
         if (loading || exhausted || queue.length >= QUEUE_MIN) return;
         loading = true;
-        var url = '/rate/next?limit=' + QUEUE_FETCH + '&exclude=' + knownIds().join(',');
+        var url = '/rate/next?limit=' + QUEUE_FETCH + '&exclude=' + excludeIds().join(',');
         fetch(url, {headers: {'X-Requested-With': 'fetch'}})
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 loading = false;
                 setStats(data.stats);
-                var known = knownIds();
-                var fresh = (data.items || []).filter(function (it) {
-                    return known.indexOf(it.profile_id) < 0;
+                var items = data.items || [];
+                var fresh = items.filter(function (it) { return !seen[it.profile_id]; });
+                if (!items.length) exhausted = true;
+                fresh.forEach(function (it) {
+                    seen[it.profile_id] = true;
+                    preload(it);
+                    queue.push(it);
                 });
-                if (!fresh.length) exhausted = true;
-                fresh.forEach(function (it) { preload(it); queue.push(it); });
+                if (items.length && !fresh.length) {
+                    // Пришли только уже виденные — не долбим сервер по кругу.
+                    setTimeout(refill, 2000);
+                    return;
+                }
                 if (!current) showNext();
                 else refill();
             })
@@ -252,28 +269,43 @@
     card.addEventListener('pointercancel', onCancel);
 
     // ── Кнопки и клавиатура ──────────────────────────────────────────
+    // Кнопки не забирают фокус: иначе после клика мышью стрелки в части
+    // браузеров ходят фокусом по кнопкам, а Enter/пробел жмёт выделенную.
+    var actionBtns = root.querySelectorAll('[data-rate], #rate-undo');
+    for (var b = 0; b < actionBtns.length; b++) {
+        actionBtns[b].addEventListener('mousedown', function (e) { e.preventDefault(); });
+    }
     root.addEventListener('click', function (e) {
         var btn = e.target.closest('[data-rate]');
-        if (btn) rate(btn.getAttribute('data-rate'));
+        if (btn) {
+            btn.blur();
+            rate(btn.getAttribute('data-rate'));
+        }
     });
-    undoBtn.addEventListener('click', undo);
+    undoBtn.addEventListener('click', function () { undoBtn.blur(); undo(); });
 
-    document.addEventListener('keydown', function (e) {
+    var KEY_RATE = {ArrowLeft: 'DISLIKE', a: 'DISLIKE', 'ф': 'DISLIKE',
+                    ArrowRight: 'LIKE', d: 'LIKE', 'в': 'LIKE',
+                    ArrowDown: 'SKIP', s: 'SKIP', 'ы': 'SKIP'};
+    var KEY_UNDO = {Backspace: 1, z: 1, 'я': 1};
+
+    // Перехват на window в фазе захвата — раньше браузерной навигации
+    // фокусом и чужих обработчиков.
+    window.addEventListener('keydown', function (e) {
         if (e.ctrlKey || e.metaKey || e.altKey) return;
         var tag = (e.target && e.target.tagName) || '';
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         var k = e.key;
-        var map = {ArrowLeft: 'DISLIKE', a: 'DISLIKE', 'ф': 'DISLIKE',
-                   ArrowRight: 'LIKE', d: 'LIKE', 'в': 'LIKE',
-                   ArrowDown: 'SKIP', s: 'SKIP', 'ы': 'SKIP'};
-        if (map[k]) {
-            e.preventDefault();
-            rate(map[k]);
-        } else if (k === 'Backspace' || k === 'z' || k === 'я') {
-            e.preventDefault();
-            undo();
+        if (!KEY_RATE[k] && !KEY_UNDO[k]) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;  // зажатая клавиша не оценивает пачку анкет
+        if (document.activeElement && document.activeElement !== document.body) {
+            document.activeElement.blur();
         }
-    });
+        if (KEY_RATE[k]) rate(KEY_RATE[k]);
+        else undo();
+    }, true);
 
     showEmpty('Загружаю…');
     refill();
