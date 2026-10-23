@@ -2233,11 +2233,15 @@ class TestPhotoRating:
         assert all(i["uncertain"] for i in items)
         assert items[0]["score"] == 0.52
 
-    def test_explore_slot_takes_unscored_profile(self, sync_db) -> None:
-        """Каждая N-я анкета — из обычного порядка (не «сомнительная»)."""
+    def test_explore_slot_takes_normal_order(self, sync_db) -> None:
+        """Каждая N-я анкета — из обычного порядка, даже если вердикт есть у всех
+        (после фонового досчёта так и есть), и без повторов."""
         sync, _, _ = sync_db
-        sync._latest_photo_scores = lambda: {1: 0.5, 2: 0.6}  # type: ignore[method-assign]
+        sync._latest_photo_scores = lambda: {1: 0.9, 2: 0.5, 3: 0.1}  # type: ignore[method-assign]
         sync.RATE_EXPLORE_EVERY = 2
         items = sync.get_rating_queue(limit=10)
-        assert [i["uncertain"] for i in items] == [True, False, True]
-        assert items[1]["profile_id"] == 3
+        ids = [i["profile_id"] for i in items]
+        assert sorted(ids) == [1, 2, 3]                 # все, без повторов
+        assert ids[0] == 2 and items[0]["uncertain"]    # самая сомнительная — первой
+        assert not items[1]["uncertain"]                # 2-я — «разведка»
+        assert items[2]["uncertain"]

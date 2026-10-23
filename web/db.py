@@ -783,15 +783,30 @@ class SyncDB:
         uncertain = sorted(
             (p for p in pids if p in scores), key=lambda p: abs(scores[p] - 0.5),
         )
-        uncertain_set = set(uncertain)
-        explore = [p for p in pids if p not in uncertain_set]
+        # «Случайные» — обычный перемешанный порядок ВСЕХ неоценённых (после
+        # фонового досчёта вердикт есть у всех, поэтому брать только анкеты
+        # без вердикта нельзя — разведка бы пропала).
+        explore = list(pids)
         ordered: list[int] = []
-        while (uncertain or explore) and len(ordered) < max(1, int(limit)):
+        explore_slots: set[int] = set()
+        taken: set[int] = set()
+        want = max(1, int(limit))
+        while len(ordered) < want and len(taken) < len(pids):
             take_explore = (len(ordered) + 1) % self.RATE_EXPLORE_EVERY == 0
-            if (take_explore and explore) or not uncertain:
-                ordered.append(explore.pop(0))
-            else:
-                ordered.append(uncertain.pop(0))
+            source = explore if (take_explore or not uncertain) else uncertain
+            while source and source[0] in taken:
+                source.pop(0)
+            if not source:
+                source = uncertain if source is explore else explore
+                while source and source[0] in taken:
+                    source.pop(0)
+                if not source:
+                    break
+            pid = source.pop(0)
+            if source is explore:
+                explore_slots.add(pid)
+            taken.add(pid)
+            ordered.append(pid)
         out: list[dict[str, Any]] = []
         for pid in ordered:
             score = scores.get(pid)
@@ -799,7 +814,7 @@ class SyncDB:
                 "profile_id": pid,
                 "photos": self._rating_photos(pid),
                 "score": score,
-                "uncertain": pid in uncertain_set,
+                "uncertain": pid in scores and pid not in explore_slots,
             })
         return out
 

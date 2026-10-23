@@ -4,6 +4,10 @@
 #   venv/bin/python scripts/train_photo_taste.py --dry-run  # только отчёт
 #   venv/bin/python scripts/train_photo_taste.py --force    # заменить в любом случае
 #
+# После замены модели вердикты photo_scores пересчитываются новой моделью по
+# сохранённым отпечаткам (CLIP не нужен) — очередь /rate «модель сомневается»
+# сразу строится по свежей модели (--no-rescore, чтобы не трогать).
+#
 # Данные: photo_embeddings (отпечатки фото, пишет бот — CLIP здесь не нужен)
 # × photo_ratings (LIKE=1, DISLIKE/VICE=0, SKIP — исключён). Качество —
 # честное: out-of-fold AUC (5 повторов × 5 фолдов, модель не видит анкету,
@@ -32,6 +36,41 @@ from sklearn.model_selection import StratifiedKFold
 CS = [0.03, 0.1, 0.3, 1, 3, 10]
 LIKE_SHARE = 0.15      # верхние 15% анкет → зона LIKE
 DISLIKE_SHARE = 0.50   # нижние 50% → зона DISLIKE
+
+
+def rescore(db_path: Path, model: dict) -> int:
+    """Пересчитывает последний вердикт каждой анкеты новой моделью."""
+    w = np.asarray(model["weights"], dtype=np.float64)
+    con = sqlite3.connect(str(db_path), timeout=30)
+    has_table = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'photo_scores'"
+    ).fetchone()
+    if not has_table:
+        con.close()
+        return 0
+    rows = con.execute(
+        "SELECT s.id, e.emb FROM photo_scores s "
+        "JOIN photo_embeddings e ON e.profile_id = s.profile_id "
+        "WHERE e.emb IS NOT NULL AND s.id IN "
+        "(SELECT MAX(id) FROM photo_scores GROUP BY profile_id)"
+    ).fetchall()
+    for row_id, blob in rows:
+        v = np.frombuffer(blob, dtype="<f4").astype(np.float64)
+        v = v / (np.linalg.norm(v) or 1.0)
+        score = float(1.0 / (1.0 + np.exp(-(v @ w + model["bias"]))))
+        if score >= model["like_threshold"]:
+            verdict = "LIKE"
+        elif score <= model["dislike_threshold"]:
+            verdict = "DISLIKE"
+        else:
+            verdict = "REVIEW"
+        con.execute(
+            "UPDATE photo_scores SET score = ?, verdict = ?, model_version = ? WHERE id = ?",
+            (score, verdict, model["version"], row_id),
+        )
+    con.commit()
+    con.close()
+    return len(rows)
 
 
 def load_data(db_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -72,6 +111,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--tolerance", type=float, default=0.01)
+    ap.add_argument("--no-rescore", action="store_true",
+                    help="не пересчитывать вердикты photo_scores новой моделью")
     args = ap.parse_args()
 
     X, y, X_all = load_data(Path(args.db))
@@ -127,6 +168,9 @@ def main() -> int:
     tmp.write_text(json.dumps(new), encoding="utf-8")
     os.replace(tmp, model_path)
     print(f"Новая модель записана: {model_path} ({version}); бот подхватит её за ~30 с")
+    if not args.no_rescore:
+        n = rescore(Path(args.db), new)
+        print(f"Вердикты photo_scores пересчитаны новой моделью: {n} анкет")
     return 0
 
 

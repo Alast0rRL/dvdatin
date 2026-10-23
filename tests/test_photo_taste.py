@@ -405,7 +405,11 @@ class TestTrainScript:
             "CREATE TABLE photo_embeddings(profile_id INTEGER PRIMARY KEY, emb BLOB, "
             "n_photos INT, model TEXT, created_at TEXT);"
             "CREATE TABLE photo_ratings(profile_id INTEGER PRIMARY KEY, rating TEXT, created_at TEXT);"
+            "CREATE TABLE photo_scores(id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INT, "
+            "score REAL, verdict TEXT, model_version TEXT);"
         )
+        con.execute("INSERT INTO photo_scores (profile_id, score, verdict, model_version) "
+                    "VALUES (0, 0.5, 'REVIEW', 'old')")
         for pid in range(300):
             like = pid % 5 == 0
             v = rng.normal(size=8) + (2.0 if like else 0.0) * np.eye(8)[0]
@@ -426,3 +430,10 @@ class TestTrainScript:
         data = json.loads(model.read_text(encoding="utf-8"))
         assert len(data["weights"]) == 8 and data["oof_auc"] > 0.8
         assert data["dislike_threshold"] < data["like_threshold"]
+        # Вердикт пересчитан новой моделью (профиль 0 — «лайк» в синтетике).
+        con = sqlite3.connect(db)
+        version, verdict = con.execute(
+            "SELECT model_version, verdict FROM photo_scores"
+        ).fetchone()
+        con.close()
+        assert version == data["version"] and verdict in ("LIKE", "REVIEW", "DISLIKE")
