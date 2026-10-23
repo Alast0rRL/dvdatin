@@ -2157,6 +2157,17 @@ class DvinchikCollector:
     async def _apply_photo_taste(
         self, decision: object, card_key: tuple[str, int, int],
     ) -> object:
+        """Безопасная обёртка: любая ошибка → решение без изменений (лента не
+        встаёт из-за фото-модели — прод-баг 2026-10-23)."""
+        try:
+            return await self._apply_photo_taste_impl(decision, card_key)
+        except Exception as e:
+            logger.error(f"PhotoTaste: сбой решения по фото, оставляю прежнее: {e!r}")
+            return decision
+
+    async def _apply_photo_taste_impl(
+        self, decision: object, card_key: tuple[str, int, int],
+    ) -> object:
         """Режим decide: LIKE/DISLIKE по модели вкуса (результат теневого расчёта
         этой карточки). Текстовые запреты и сильный плюс главнее; нет фото,
         CLIP недоступен или не дождались — решение не меняется (старое правило).
@@ -2202,6 +2213,19 @@ class DvinchikCollector:
         msg: object,
         card_key: tuple[str, int, int] | None = None,
     ) -> object:
+        """Безопасная обёртка: любая ошибка → решение без изменений."""
+        try:
+            return await self._apply_photo_vice_impl(decision, msg, card_key)
+        except Exception as e:
+            logger.error(f"PhotoVice: сбой проверки фото, оставляю прежнее: {e!r}")
+            return decision
+
+    async def _apply_photo_vice_impl(
+        self,
+        decision: object,
+        msg: object,
+        card_key: tuple[str, int, int] | None = None,
+    ) -> object:
         """LIKE → DISLIKE, если на фото карточки уверенно найдены сигарета/алкоголь.
 
         Если по карточке уже идёт теневой расчёт (он считает и вероятности
@@ -2233,7 +2257,7 @@ class DvinchikCollector:
             logger.error(f"PhotoVice: проверка фото не удалась: {e!r}")
             return decision
         if hit is None:
-            logger.debug(f"PhotoVice: profile #{decision.profile_id} — чисто ({len(images)} фото)")
+            logger.debug(f"PhotoVice: profile #{decision.profile_id} — чисто")
             return decision
         try:
             return await self._decision_service.apply_photo_vice(decision, hit.reason())

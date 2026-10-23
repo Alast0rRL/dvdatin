@@ -543,6 +543,20 @@ class SyncDB:
             return None
         return data if isinstance(data, dict) else None
 
+    def get_bot_error(self) -> dict[str, Any] | None:
+        """Последняя ошибка бота (collectors/error_reporter.py) или None.
+
+        JSON: ``at``, ``where``, ``message``, ``count`` — для всплывающего окна.
+        """
+        raw = self.get_app_state("bot_error")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+        return data if isinstance(data, dict) else None
+
     def get_chat_signals(
         self, account_session: str = "", chat_id: int | None = None,
     ) -> dict[str, Any]:
@@ -585,6 +599,7 @@ class SyncDB:
             "max_auto": _max("auto_actions_log", "id"),
             "pending_captchas": len(self.get_pending_captchas(limit=999)),
             "stream_error_at": (self.get_stream_error() or {}).get("at") or "",
+            "bot_error_at": (self.get_bot_error() or {}).get("at") or "",
         }
 
     # ── Debug console (Stage 9) ───────────────────────────────────

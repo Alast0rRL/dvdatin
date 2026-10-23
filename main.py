@@ -30,6 +30,7 @@ from services.profile_service import ProfileService
 from services.decision_service import DecisionService
 from services.analysis_export import EXPORTS_DIR, export_analysis_csv, clear_database
 from services.manual_review import ManualReviewRecorder
+from collectors.error_reporter import BotErrorReporter
 from services.clip_encoder import ClipEncoder
 from services.photo_taste import PhotoShadowScorer, PhotoTasteModel
 from services.photo_vice import PhotoViceDetector
@@ -290,6 +291,18 @@ async def main() -> None:
     auto_task = asyncio.create_task(
         collector.start_auto_stream()
     )
+
+    # Любая ошибка бота (ERROR в логе) → сообщение «твинку» в Telegram (тот же
+    # получатель, что у уведомлений о лайках) + всплывающее окно на сайте.
+    async def _notify_owner(text: str) -> bool:
+        engine = collector.auto_engine()
+        if engine is None or getattr(engine, "client", None) is None:
+            return False
+        return await engine.notify_owner(text)
+
+    error_reporter = BotErrorReporter(db, notify=_notify_owner)
+    error_reporter.install()
+    error_reporter_task = asyncio.create_task(error_reporter.run())
 
     # Модель CLIP грузится в фоне (~10–30 с), чтобы первая анкета не ждала.
     async def _preload_clip() -> None:

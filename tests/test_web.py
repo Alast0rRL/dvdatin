@@ -2245,3 +2245,41 @@ class TestPhotoRating:
         assert ids[0] == 2 and items[0]["uncertain"]    # самая сомнительная — первой
         assert not items[1]["uncertain"]                # 2-я — «разведка»
         assert items[2]["uncertain"]
+
+
+
+class TestBotErrorPopup:
+    """Ошибка бота (app_state.bot_error) → всплывающее окно на главной."""
+
+    @staticmethod
+    def _set_error(db, at: str = "2026-10-23T13:01:48+00:00") -> None:
+        payload = json.dumps({"at": at, "where": "collector:x:1",
+                              "message": "AutoAction error: <boom>", "count": 2})
+        asyncio.get_event_loop().run_until_complete(db.set_state("bot_error", payload))
+
+    def test_popup_in_shell_and_data_escaped(self, client, sync_db) -> None:
+        _, _, db = sync_db
+        self._set_error(db)
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="bot-error"' in html and 'id="bot-error-close"' in html
+        assert "AutoAction error" in html
+        assert "<boom>" not in html            # данные экранированы
+        js = client.get("/static/js/app.js").get_data(as_text=True)
+        assert "showBotError" in js and "dvai.botErrorSeen" in js
+        assert "textContent = err.message" in js   # без innerHTML из ошибки
+
+    def test_feed_json_carries_error_and_signature_changes(self, client, sync_db) -> None:
+        _, _, db = sync_db
+        _login(client)
+        before = json.loads(client.get("/chat/new-count").get_data(as_text=True))["signature"]
+        self._set_error(db)
+        after = json.loads(client.get("/chat/new-count").get_data(as_text=True))["signature"]
+        assert before != after
+        data = json.loads(client.get("/chat/feed").get_data(as_text=True))
+        assert data["bot_error"]["message"] == "AutoAction error: <boom>"
+
+    def test_no_error_no_popup_data(self, client, sync_db) -> None:
+        _login(client)
+        data = json.loads(client.get("/chat/feed").get_data(as_text=True))
+        assert data["bot_error"] is None

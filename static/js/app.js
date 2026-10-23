@@ -272,6 +272,7 @@
                 if (banner && typeof first.banner === 'string') {
                     banner.innerHTML = first.banner;
                 }
+                if (first.bot_error) showBotError(first.bot_error);
                 var oldPending = document.getElementById('pending');
                 if (oldPending) oldPending.remove();
                 if (first.pending) {
@@ -298,6 +299,37 @@
                 }
             })
             .catch(function () { /* не сеть — ждём следующий тик */ });
+    }
+
+    /* ── Всплывающее окно ошибки бота ───────────────────────────────── */
+    /* Ошибку пишет бот (app_state.bot_error); показываем, пока владелец не
+       нажал «Понятно» — тогда её время запоминается в localStorage и та же
+       ошибка больше не всплывает, новая — всплывёт. Только textContent. */
+    var BOT_ERROR_SEEN = 'dvai.botErrorSeen';
+    var botErrorBox = document.getElementById('bot-error');
+
+    function botErrorSeen() {
+        try { return localStorage.getItem(BOT_ERROR_SEEN) || ''; } catch (e) { return ''; }
+    }
+
+    function showBotError(err) {
+        if (!botErrorBox || !err || !err.at || err.at === botErrorSeen()) return;
+        document.getElementById('bot-error-text').textContent = err.message || '';
+        var when = new Date(err.at);
+        var meta = isNaN(when) ? err.at : when.toLocaleString();
+        if (err.count > 1) meta += ' · повторов: ' + err.count;
+        if (err.where) meta += ' · ' + err.where;
+        document.getElementById('bot-error-meta').textContent = meta;
+        botErrorBox.dataset.at = err.at;
+        botErrorBox.hidden = false;
+    }
+
+    if (botErrorBox) {
+        document.getElementById('bot-error-close').addEventListener('click', function () {
+            try { localStorage.setItem(BOT_ERROR_SEEN, botErrorBox.dataset.at || ''); } catch (e) { /* приватный режим */ }
+            botErrorBox.hidden = true;
+        });
+        try { showBotError(JSON.parse(botErrorBox.dataset.error || '{}')); } catch (e) { /* пусто */ }
     }
 
     function poll() {

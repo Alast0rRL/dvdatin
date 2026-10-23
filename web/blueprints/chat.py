@@ -129,6 +129,7 @@ def _chat_signature(signals: dict[str, Any] | None) -> str:
             str(signals.get("max_captcha") or ""),
             str(signals.get("pending_captchas") or 0),
             str(signals.get("stream_error_at") or ""),
+            str(signals.get("bot_error_at") or ""),
         ]
     )
 
@@ -174,6 +175,7 @@ def index() -> str:
         filter_cfg=db.get_filter_config(config_path),
         preferences=_load_preferences(config_path.parent / "preferences.yaml"),
         stream_error=db.get_stream_error(),
+        bot_error=db.get_bot_error(),
         view=view,
         feed_template=_feed_template(view),
     )
@@ -253,6 +255,8 @@ def feed() -> tuple:
                     "partials/app_stream_error.html",
                     stream_error=db.get_stream_error(),
                 ),
+                # Последняя ошибка бота — всплывающее окно (app.js showBotError).
+                "bot_error": db.get_bot_error(),
                 "total": data.get("total", 0),
                 "page": data.get("page", 1),
                 "total_pages": data.get("total_pages", 1),

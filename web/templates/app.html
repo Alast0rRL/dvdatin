@@ -90,6 +90,16 @@
 {% block content %}
 {# Баннер сбоя автопотока (бот не может листать анкеты). Обновляется из
    /chat/feed (app.js) без перезагрузки страницы. #}
+{# Всплывающее окно с последней ошибкой бота (заполняет app.js showBotError;
+   данные — app_state.bot_error, пишет collectors/error_reporter.py). #}
+<div class="bot-error" id="bot-error" role="alertdialog" aria-live="assertive"
+     aria-labelledby="bot-error-title" hidden
+     data-error="{{ (bot_error or {})|tojson|forceescape }}">
+    <p class="bot-error__title" id="bot-error-title">⚠️ Ошибка бота</p>
+    <p class="bot-error__text" id="bot-error-text"></p>
+    <p class="bot-error__meta" id="bot-error-meta"></p>
+    <button type="button" class="btn btn--sm" id="bot-error-close">Понятно</button>
+</div>
 <div id="stream-banner">
     {% include "partials/app_stream_error.html" %}
 </div>

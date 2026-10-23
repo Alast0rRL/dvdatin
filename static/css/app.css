@@ -648,6 +648,27 @@ a.seg__btn {
 .toast--success { border-color: var(--like-line); color: var(--like-fg); }
 .toast--error { border-color: var(--dislike-line); color: var(--dislike-fg); }
 .toast--warning { border-color: var(--review-line); color: var(--review-fg); }
+/* Всплывающее окно ошибки бота: поверх ленты, по центру сверху. */
+.bot-error {
+    position: fixed;
+    top: 72px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 70;
+    width: min(92vw, 480px);
+    padding: 14px 16px;
+    border: 1px solid var(--dislike-line);
+    border-radius: 12px;
+    background: var(--toast-bg);
+    box-shadow: 0 12px 32px var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.bot-error[hidden] { display: none; }
+.bot-error__title { margin: 0; font-weight: 600; color: var(--dislike-fg); }
+.bot-error__text { margin: 0; font-size: 14px; overflow-wrap: anywhere; color: var(--text); }
+.bot-error__meta { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
 
 /* ── Вход ──────────────────────────────────────────────────────── */
