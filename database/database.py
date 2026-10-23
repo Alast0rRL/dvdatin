@@ -1528,6 +1528,18 @@ class Database:
             await self._connection.rollback()
             logger.warning(f"save_photo_embedding(profile={profile_id}): {e}")
 
+    async def get_photo_embedding(self, profile_id: int) -> bytes | None:
+        """Отпечаток фото анкеты (float32 LE) или None."""
+        try:
+            cur = await self._connection.execute(
+                "SELECT emb FROM photo_embeddings WHERE profile_id = ?", (profile_id,)
+            )
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else None
+        except Exception as e:
+            logger.warning(f"get_photo_embedding(profile={profile_id}): {e}")
+            return None
+
     async def get_photo_backfill_batch(
         self, limit: int = 10, max_photos: int = 3,
     ) -> list[dict]:

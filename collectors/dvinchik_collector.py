@@ -1981,11 +1981,25 @@ class DvinchikCollector:
 
     # ── Фото: сигарета/алкоголь → 👎 (services/photo_vice.py) ──────────
 
+    @staticmethod
+    def _is_card_video(msg: object) -> bool:
+        """Видео анкеты (в Telegram — документ video/*): берём его превью-кадр."""
+        if getattr(msg, "video", None):
+            return True
+        doc = getattr(msg, "document", None)
+        return bool(doc) and str(getattr(doc, "mime_type", "") or "").startswith("video/")
+
+    @classmethod
+    def _has_card_media(cls, msg: object) -> bool:
+        return bool(getattr(msg, "photo", None)) or cls._is_card_video(msg)
+
     async def _card_photos(self, msg: object, limit: int) -> list[bytes]:
         """Байты фото карточки: само сообщение + остальной альбом (grouped_id).
 
         Альбом Leo приходит пачкой сообщений с соседними id, поэтому соседи
-        берутся одним запросом. Ошибки → то, что удалось скачать.
+        берутся одним запросом. Видео-анкета (прод 2026-10-23: ~1 из 9
+        карточек) — берётся превью-кадр видео (``thumb=-1``), иначе модель
+        вкуса молчала и решало старое правило. Ошибки → то, что удалось скачать.
         """
         msgs = [msg]
         grouped_id = getattr(msg, "grouped_id", None)
@@ -2004,11 +2018,17 @@ class DvinchikCollector:
                     msgs = sorted(album, key=lambda m: m.id)
             except Exception as e:
                 logger.debug(f"PhotoVice: альбом не прочитан: {e!r}")
-        photos = [m for m in msgs if getattr(m, "photo", None)][:limit]
+        media = [m for m in msgs if self._has_card_media(m)][:limit]
         results = await asyncio.gather(
-            *(m.download_media(file=bytes) for m in photos), return_exceptions=True,
+            *(
+                m.download_media(file=bytes, thumb=-1)
+                if self._is_card_video(m) and not getattr(m, "photo", None)
+                else m.download_media(file=bytes)
+                for m in media
+            ),
+            return_exceptions=True,
         )
-        return [r for r in results if isinstance(r, (bytes, bytearray))]
+        return [r for r in results if isinstance(r, (bytes, bytearray)) and r]
 
     # ── Фоновый досчёт старых анкет (вердикт + отпечаток фото) ──────────
 
@@ -2183,6 +2203,19 @@ class DvinchikCollector:
             return decision
         result = await self._photo_result_for(card_key)
         if not result:
+            # Нет вердикта по этой карточке (видео без кадра, не успели) — у
+            # повторно показанной девушки есть отпечаток фото прошлого показа.
+            try:
+                blob = await self._db.get_photo_embedding(decision.profile_id)
+                result = shadow.score_embedding(blob) if blob else None
+            except Exception as e:
+                logger.debug(f"PhotoTaste: отпечаток прошлого показа не прочитан: {e!r}")
+                result = None
+            if result:
+                logger.info(
+                    f"PhotoTaste: profile #{decision.profile_id} — по фото прошлого показа"
+                )
+        if not result:
             logger.info(
                 f"PhotoTaste: profile #{decision.profile_id} — вердикта модели нет "
                 "(нет фото / не успели), решает старое правило"
@@ -2280,7 +2313,7 @@ class DvinchikCollector:
         листании лишние карточки пропускаются (в лог DEBUG).
         """
         shadow = self._photo_shadow
-        if shadow is None or msg is None or not getattr(msg, "photo", None):
+        if shadow is None or msg is None or not self._has_card_media(msg):
             return
         try:
             if not shadow.enabled:

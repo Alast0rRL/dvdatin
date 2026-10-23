@@ -72,10 +72,21 @@ class BotErrorReporter:
                 pass
             self._sink_id = None
 
+    #: Строка access-лога веб-сервера («1.2.3.4 - - [дата] "GET …" 400»):
+    #: кривые запросы сканеров из интернета werkzeug пишет как ERROR — это не
+    #: ошибки бота, слать их владельцу — спам.
+    _ACCESS_LOG = re.compile(r'^\S+ - - \[')
+
+    @classmethod
+    def is_noise(cls, name: str, message: str) -> bool:
+        return (name or "").startswith("werkzeug") or bool(cls._ACCESS_LOG.match(message or ""))
+
     def _sink(self, message) -> None:  # noqa: ANN001 — loguru Message
         record = message.record
         if record["name"] == __name__:
             return  # ошибки самого репортёра не репортим (иначе петля)
+        if self.is_noise(record["name"], str(record["message"])):
+            return
         item = {
             "at": datetime.now(timezone.utc).isoformat(),
             "where": f"{record['name']}:{record['function']}:{record['line']}",

@@ -191,6 +191,8 @@ class TestCollectorShadow:
         col = self._collector(shadow)
         no_photo = self._msg()
         no_photo.photo = None
+        no_photo.video = None
+        no_photo.document = None
 
         async def _go() -> None:
             col._schedule_photo_shadow(self._msg(), 1, "dvai", 1, 1)
@@ -571,3 +573,52 @@ class TestLikeShareThreshold:
         assert not PhotoTasteConfig(enabled=False, mode="decide").decides
         with pytest.raises(ValidationError):
             PhotoTasteConfig(mode="auto")
+
+
+
+class TestVideoCards:
+    """Видео-анкеты (прод 2026-10-23: ~1 из 9 карточек) — модель тоже решает."""
+
+    def test_video_card_uses_preview_frame(self) -> None:
+        from collectors.dvinchik_collector import DvinchikCollector
+
+        col = DvinchikCollector.__new__(DvinchikCollector)
+        msg = MagicMock()
+        msg.grouped_id = None
+        msg.photo = None
+        msg.video = object()
+        msg.download_media = AsyncMock(return_value=b"frame")
+        out = run(col._card_photos(msg, 2))
+        assert out == [b"frame"]
+        msg.download_media.assert_awaited_once_with(file=bytes, thumb=-1)
+
+    def test_text_only_card_has_no_media(self) -> None:
+        from collectors.dvinchik_collector import DvinchikCollector
+
+        msg = MagicMock()
+        msg.photo = None
+        msg.video = None
+        msg.document = None
+        assert not DvinchikCollector._has_card_media(msg)
+        doc = MagicMock()
+        doc.mime_type = "video/mp4"
+        msg.document = doc
+        assert DvinchikCollector._has_card_media(msg)
+
+    def test_fallback_to_previous_showing_embedding(self, tmp_path: Path) -> None:
+        """Нет вердикта по карточке → оценка по отпечатку прошлого показа."""
+        from models.decision import AIDecision
+
+        col = TestDecideMode._collector(threshold=0.6)
+        model = make_model(tmp_path)
+        col._photo_shadow.score_embedding = PhotoShadowScorer(
+            MagicMock(), model,
+        ).score_embedding
+        col._db = MagicMock()
+        col._db.get_photo_embedding = AsyncMock(
+            return_value=np.array([1.0, 0.0, 0.0], dtype="<f4").tobytes(),
+        )
+        dec = TestDecideMode._decision(["LOW_INFO_SKIP:words=1"])
+        out = run(col._apply_photo_taste(dec, ("dvai", 1, 99)))
+        assert out.decision == AIDecision.LIKE
+        col._db.get_photo_embedding.assert_awaited_once_with(7)

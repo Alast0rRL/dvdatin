@@ -134,3 +134,15 @@ class TestPhotoChecksNeverBreakActions:
         dec = make_decision()
         assert run(col._apply_photo_vice(dec, MagicMock(), card_key=None)) is dec
         assert run(col._apply_photo_taste(dec, ("dvai", 1, 1))) is dec
+
+
+
+class TestNoiseFilter:
+    def test_web_access_log_is_not_a_bot_error(self) -> None:
+        assert BotErrorReporter.is_noise(
+            "app.logging", '127.0.0.1 - - [23/Oct/2026 18:16:09] code 400, message Bad request',
+        )
+        assert BotErrorReporter.is_noise("werkzeug._internal", "anything")
+        assert not BotErrorReporter.is_noise(
+            "collectors.dvinchik_collector", "AutoAction error: boom",
+        )

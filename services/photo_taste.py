@@ -167,6 +167,25 @@ class PhotoShadowScorer:
     def like_threshold(self, share: float) -> float | None:
         return self._taste.like_threshold(share)
 
+    def score_embedding(self, blob: bytes) -> dict | None:
+        """Вердикт по сохранённому отпечатку (photo_embeddings) — без CLIP."""
+        import numpy as np  # noqa: PLC0415
+
+        if not blob:
+            return None
+        emb = np.frombuffer(blob, dtype="<f4").astype(np.float32)[None, :]
+        verdict = self._taste.score(emb)
+        if verdict is None:
+            return None
+        return {
+            "score": verdict.score,
+            "verdict": verdict.verdict,
+            "n_photos": 0,
+            "model_version": self._taste.version,
+            "smoke": None,
+            "alcohol": None,
+        }
+
     def score_images(self, images: list[bytes]) -> dict | None:
         emb, index = self._encoder.encode_images(images)
         if emb is None:
