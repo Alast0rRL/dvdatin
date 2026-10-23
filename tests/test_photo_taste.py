@@ -14,6 +14,7 @@ import pytest
 
 from app.config import PhotoTasteConfig
 from database.database import Database
+from services.decision_service import DecisionService
 from services.photo_taste import PhotoShadowScorer, PhotoTasteModel
 
 
@@ -437,3 +438,136 @@ class TestTrainScript:
         ).fetchone()
         con.close()
         assert version == data["version"] and verdict in ("LIKE", "REVIEW", "DISLIKE")
+
+
+
+class TestDecideMode:
+    """photo_taste.mode = decide: лайк решает модель вкуса по фото."""
+
+    @staticmethod
+    def _decision(reasons: list[str], decision=None):
+        from models.decision import AIDecision, AIDecisionResult
+
+        return AIDecisionResult(
+            profile_id=7, decision=decision or AIDecision.DISLIKE, combined_score=0.3,
+            confidence=0.3, reasons=reasons, evaluated_at="x",
+            scoring_version="deterministic-v2",
+        )
+
+    @staticmethod
+    def _collector(mode: str = "decide", share: float = 0.2, threshold: float = 0.6):
+        from collectors.dvinchik_collector import DvinchikCollector
+        from app.config import PhotoTasteConfig
+
+        col = DvinchikCollector.__new__(DvinchikCollector)
+        col._config = MagicMock()
+        col._config.photo_taste = PhotoTasteConfig(enabled=True, mode=mode, like_share=share)
+        shadow = MagicMock()
+        shadow.like_threshold = MagicMock(return_value=threshold)
+        col._photo_shadow = shadow
+        db = MagicMock()
+        db.save_ai_decision = AsyncMock(return_value=1)
+        col._decision_service = DecisionService(db, MagicMock(), MagicMock(), MagicMock())
+        col._photo_shadow_pending = {}
+        col._photo_shadow_results = {}
+        return col
+
+    def test_low_info_dislike_becomes_like_by_photo(self) -> None:
+        """Пустая анкета: раньше скип «мало текста», теперь решает фото."""
+        from models.decision import AIDecision
+
+        col = self._collector()
+        key = ("dvai", 1, 5)
+        col._remember_photo_result(key, {"score": 0.71, "model_version": "m1"})
+        out = run(col._apply_photo_taste(self._decision(["LOW_INFO_SKIP:words=0"]), key))
+        assert out.decision == AIDecision.LIKE
+        assert out.reasons[0] == "PHOTO_TASTE:like:0.710"
+        assert out.scoring_version == "photo-taste/m1"
+        col._photo_shadow.like_threshold.assert_called_once_with(0.2)
+
+    def test_text_like_becomes_dislike_below_threshold(self) -> None:
+        """«Информативная» анкета больше не лайкается за длину текста."""
+        from models.decision import AIDecision
+
+        col = self._collector()
+        key = ("dvai", 1, 6)
+        col._remember_photo_result(key, {"score": 0.4, "model_version": "m1"})
+        out = run(col._apply_photo_taste(
+            self._decision(["INFORMATIVE_CLEAN"], AIDecision.LIKE), key,
+        ))
+        assert out.decision == AIDecision.DISLIKE
+        assert out.reasons[0].startswith("PHOTO_TASTE:dislike:")
+
+    def test_text_bans_and_strong_plus_win(self) -> None:
+        from models.decision import AIDecision
+
+        col = self._collector()
+        key = ("dvai", 1, 7)
+        col._remember_photo_result(key, {"score": 0.99, "model_version": "m1"})
+        for reasons, decision in (
+            (["USER_SKIP:курит"], AIDecision.DISLIKE),
+            (["HARD_NEGATIVE:has_boyfriend:есть парень"], AIDecision.DISLIKE),
+            (["FILTER_REJECTED", "AGE_OUT_OF_RANGE"], AIDecision.DISLIKE),
+            (["USER_LIKE_HARD:политех"], AIDecision.LIKE),
+        ):
+            dec = self._decision(reasons, decision)
+            assert run(col._apply_photo_taste(dec, key)) is dec
+
+    def test_shadow_mode_never_decides(self) -> None:
+        col = self._collector(mode="shadow")
+        key = ("dvai", 1, 8)
+        col._remember_photo_result(key, {"score": 0.99, "model_version": "m1"})
+        dec = self._decision(["LOW_INFO_SKIP:words=0"])
+        assert run(col._apply_photo_taste(dec, key)) is dec
+
+    def test_no_photo_result_keeps_old_rule(self) -> None:
+        col = self._collector()
+        dec = self._decision(["LOW_INFO_SKIP:words=0"])
+        assert run(col._apply_photo_taste(dec, ("dvai", 1, 9))) is dec
+
+    def test_waits_for_running_shadow_task(self) -> None:
+        from models.decision import AIDecision
+
+        col = self._collector()
+
+        async def _go():
+            fut = asyncio.get_event_loop().create_future()
+            col._photo_shadow_pending[("dvai", 1, 10)] = fut
+            asyncio.get_event_loop().call_later(
+                0.01, fut.set_result, {"score": 0.8, "model_version": "m1"},
+            )
+            return await col._apply_photo_taste(
+                self._decision(["NO_FEATURES_FOUND"], AIDecision.REVIEW), ("dvai", 1, 10),
+            )
+
+        assert run(_go()).decision == AIDecision.LIKE
+
+    def test_result_cache_is_bounded(self) -> None:
+        col = self._collector()
+        for i in range(col.PHOTO_RESULTS_KEEP + 5):
+            col._remember_photo_result(("dvai", 1, i), {"score": 0.1})
+        assert len(col._photo_shadow_results) == col.PHOTO_RESULTS_KEEP
+        assert ("dvai", 1, 0) not in col._photo_shadow_results
+
+
+class TestLikeShareThreshold:
+    def test_nearest_share_and_fallback(self, tmp_path: Path) -> None:
+        m = make_model(tmp_path, like_thresholds={"0.15": 0.7, "0.20": 0.6, "0.30": 0.5})
+        assert m.like_threshold(0.2) == 0.6
+        assert m.like_threshold(0.27) == 0.5
+        plain = make_model(tmp_path)
+        assert plain.like_threshold(0.2) == 0.8   # нет таблицы — порог зоны LIKE
+
+    def test_reason_labels(self) -> None:
+        from services.reason_labels import describe_reason
+
+        assert describe_reason("PHOTO_TASTE:like:0.712") == "Фото во вкусе (71%)"
+        assert describe_reason("PHOTO_TASTE:dislike:0.1") == "Фото не во вкусе (10%)"
+
+    def test_config_mode_validation(self) -> None:
+        from pydantic import ValidationError
+
+        assert PhotoTasteConfig(enabled=True, mode="DECIDE").decides
+        assert not PhotoTasteConfig(enabled=False, mode="decide").decides
+        with pytest.raises(ValidationError):
+            PhotoTasteConfig(mode="auto")

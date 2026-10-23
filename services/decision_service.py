@@ -309,6 +309,50 @@ class DecisionService:
         )
         return overridden
 
+    # ── Фото: модель вкуса решает лайк (photo_taste.mode = decide) ──────
+
+    #: Причины, после которых решение НЕ отдаётся модели фото: явные запреты
+    #: в тексте, стоп-слова владельца, возраст/город — и его сильный плюс.
+    PHOTO_TASTE_KEEP_PREFIXES = (
+        "USER_SKIP", "HARD_NEGATIVE", "FILTER_REJECTED", "USER_LIKE_HARD", "PHOTO_VICE",
+    )
+
+    def photo_taste_applies(self, result: AIDecisionResult) -> bool:
+        """Можно ли отдать решение модели фото (нет запретов/сильного плюса)."""
+        return not any(
+            str(r).startswith(self.PHOTO_TASTE_KEEP_PREFIXES) for r in result.reasons
+        )
+
+    async def apply_photo_taste(
+        self, result: AIDecisionResult, score: float, like: bool, version: str,
+    ) -> AIDecisionResult:
+        """Решение по модели вкуса: LIKE (верхние like_share анкет) или DISLIKE.
+
+        Вызывается коллектором в режиме decide и только когда
+        ``photo_taste_applies`` (текстовые запреты главнее). Сохраняется НОВОЙ
+        записью ai_decisions с причиной ``PHOTO_TASTE:<like|dislike>:<score>``;
+        прежние причины (текстовые) остаются следом для истории.
+        """
+        decision = AIDecision.LIKE if like else AIDecision.DISLIKE
+        tag = "like" if like else "dislike"
+        overridden = AIDecisionResult(
+            profile_id=result.profile_id,
+            decision=decision,
+            combined_score=score,
+            confidence=score,
+            reasons=[f"PHOTO_TASTE:{tag}:{score:.3f}", *result.reasons],
+            evaluated_at=datetime.now(timezone.utc).isoformat(),
+            scoring_version=f"photo-taste/{version}" if version else result.scoring_version,
+            informative=result.informative,
+            meaningful_words=result.meaningful_words,
+        )
+        await self._save(overridden)
+        logger.info(
+            f"DECISION: profile #{result.profile_id} {result.decision.value} → "
+            f"{decision.value} (модель фото, score {score:.2f})"
+        )
+        return overridden
+
     # ── Сохранение и чтение ──────────────────────────────────────────
 
     async def _save(self, result: AIDecisionResult) -> None:

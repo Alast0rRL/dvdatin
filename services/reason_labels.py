@@ -104,6 +104,14 @@ def describe_reason(reason: str, card_text: str | None = None) -> str | None:
         return _feature(reason, NEGATIVE_LABELS, card_text)
     if reason.startswith("POSITIVE:"):
         return _feature(reason, POSITIVE_LABELS, card_text)
+    if reason.startswith("PHOTO_TASTE:"):
+        # PHOTO_TASTE:<like|dislike>:<score> — services/photo_taste.py (decide)
+        _, tag, score = (reason.split(":") + ["", ""])[:3]
+        try:
+            pct = f" ({float(score) * 100:.0f}%)"
+        except ValueError:
+            pct = ""
+        return f"Фото во вкусе{pct}" if tag == "like" else f"Фото не во вкусе{pct}"
     if reason.startswith("PHOTO_VICE:"):
         # PHOTO_VICE:<smoke|alcohol>:<вероятность> — services/photo_vice.py
         _, kind, prob = (reason.split(":") + ["", ""])[:3]

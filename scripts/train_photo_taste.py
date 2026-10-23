@@ -168,6 +168,11 @@ def main() -> int:
     final = LogisticRegression(C=C, class_weight="balanced", max_iter=5000).fit(X, y)
     s_all = final.predict_proba(X_all)[:, 1]
     like_thr = float(np.quantile(s_all, 1 - LIKE_SHARE))
+    # Пороги «верхние N% анкет» — для режима decide (photo_taste.like_share).
+    like_thresholds = {
+        f"{share:.2f}": float(np.quantile(s_all, 1 - share))
+        for share in (0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40)
+    }
     dislike_thr = float(np.quantile(s_all, DISLIKE_SHARE))
     version = "clip-l14-lr-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     new = {
@@ -178,6 +183,7 @@ def main() -> int:
         "bias": float(final.intercept_[0]),
         "like_threshold": like_thr,
         "dislike_threshold": dislike_thr,
+        "like_thresholds": like_thresholds,
         "trained_on": {"profiles": int(len(y)), "likes": int(y.sum())},
         "oof_auc": round(auc, 3),
         "trained_at": datetime.now(timezone.utc).isoformat(),

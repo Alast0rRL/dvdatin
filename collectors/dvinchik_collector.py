@@ -323,6 +323,9 @@ class DvinchikCollector:
         # результатом. Проверка сигарет/алкоголя для будущего лайка берёт
         # готовый результат отсюда, а не гоняет CLIP второй раз.
         self._photo_shadow_pending: dict[tuple[str, int, int], asyncio.Task] = {}
+        # Готовые результаты последних карточек: расчёт может закончиться
+        # РАНЬШЕ, чем коллектор дойдёт до решения (задача уже снята из pending).
+        self._photo_shadow_results: dict[tuple[str, int, int], dict] = {}
         # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
         # (config.auto_actions.account_session) среди accounts/clients (они
         # параллельны: main.py строит clients в том же порядке, что accounts).
@@ -2122,6 +2125,74 @@ class DvinchikCollector:
                 logger.error(f"PhotoBackfill: {e!r}")
                 await asyncio.sleep(60)
 
+    #: Сколько готовых результатов карточек держать в памяти.
+    PHOTO_RESULTS_KEEP = 64
+
+    def _remember_photo_result(self, key: tuple[str, int, int], result: dict) -> None:
+        cache = getattr(self, "_photo_shadow_results", None)
+        if cache is None:
+            cache = self._photo_shadow_results = {}
+        cache[key] = result
+        while len(cache) > self.PHOTO_RESULTS_KEEP:
+            cache.pop(next(iter(cache)))
+
+    async def _photo_result_for(self, key: tuple[str, int, int] | None) -> dict | None:
+        """Результат теневого расчёта карточки: готовый или дождаться идущего."""
+        if key is None:
+            return None
+        ready = getattr(self, "_photo_shadow_results", {}).get(key)
+        if ready is not None:
+            return ready
+        task = getattr(self, "_photo_shadow_pending", {}).get(key)
+        if task is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(task), timeout=self.PHOTO_SHADOW_WAIT_SEC,
+            )
+        except Exception as e:
+            logger.debug(f"PhotoShadow: результат карточки не дождались: {e!r}")
+            return None
+
+    async def _apply_photo_taste(
+        self, decision: object, card_key: tuple[str, int, int],
+    ) -> object:
+        """Режим decide: LIKE/DISLIKE по модели вкуса (результат теневого расчёта
+        этой карточки). Текстовые запреты и сильный плюс главнее; нет фото,
+        CLIP недоступен или не дождались — решение не меняется (старое правило).
+        """
+        cfg = self._config.photo_taste
+        shadow = self._photo_shadow
+        if (
+            not getattr(cfg, "decides", False)
+            or shadow is None
+            or self._decision_service is None
+            or not self._decision_service.photo_taste_applies(decision)
+        ):
+            return decision
+        result = await self._photo_result_for(card_key)
+        if not result:
+            logger.info(
+                f"PhotoTaste: profile #{decision.profile_id} — вердикта модели нет "
+                "(нет фото / не успели), решает старое правило"
+            )
+            return decision
+        try:
+            threshold = shadow.like_threshold(float(cfg.like_share))
+        except Exception as e:
+            logger.warning(f"PhotoTaste: порог модели не получен: {e!r}")
+            return decision
+        if threshold is None:
+            return decision
+        try:
+            return await self._decision_service.apply_photo_taste(
+                decision, float(result["score"]), float(result["score"]) >= threshold,
+                str(result.get("model_version") or ""),
+            )
+        except Exception as e:
+            logger.error(f"PhotoTaste: не удалось записать решение: {e!r}")
+            return decision
+
     #: Сколько ждать фонового расчёта этой карточки, прежде чем считать самим.
     PHOTO_SHADOW_WAIT_SEC = 15.0
 
@@ -2149,16 +2220,7 @@ class DvinchikCollector:
             return decision
         try:
             hit = None
-            pending = getattr(self, "_photo_shadow_pending", {})
-            shadow_task = pending.get(card_key) if card_key is not None else None
-            shadow_result = None
-            if shadow_task is not None:
-                try:
-                    shadow_result = await asyncio.wait_for(
-                        asyncio.shield(shadow_task), timeout=self.PHOTO_SHADOW_WAIT_SEC,
-                    )
-                except Exception as e:
-                    logger.debug(f"PhotoVice: теневой расчёт не дождались: {e!r}")
+            shadow_result = await self._photo_result_for(card_key)
             if shadow_result and shadow_result.get("smoke") is not None:
                 hit = detector.best_hit([{
                     "smoke": shadow_result.get("smoke") or 0.0,
@@ -2255,6 +2317,9 @@ class DvinchikCollector:
             logger.info(
                 f"PhotoShadow: profile #{profile_id} → {result['verdict']} "
                 f"(score {result['score']:.2f}, фото {result['n_photos']})"
+            )
+            self._remember_photo_result(
+                (account_session or "", chat_id, message_id), result,
             )
             return result
         except Exception as e:
@@ -2436,6 +2501,16 @@ class DvinchikCollector:
                                                 # на фото → 👎. Проверяем ТОЛЬКО будущие
                                                 # лайки (остальные и так 👎) — лента не
                                                 # замедляется.
+                                                # Режим decide: лайк решает модель вкуса
+                                                # по фото (текстовые запреты главнее).
+                                                decision = await self._apply_photo_taste(
+                                                    decision,
+                                                    (
+                                                        account_session or "",
+                                                        chat_id,
+                                                        task.message_id,
+                                                    ),
+                                                )
                                                 if decision.decision == AIDecision.LIKE:
                                                     decision = await self._apply_photo_vice(
                                                         decision, msg,

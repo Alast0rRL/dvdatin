@@ -328,6 +328,12 @@ class PhotoTasteConfig(BaseModel):
 
     enabled: bool = False
     model_path: str = "data/ml/taste_model.json"
+    # shadow — только пишет вердикт (photo_scores), действия не меняет;
+    # decide — решает лайк сам (после текстовых запретов): верхние like_share
+    # анкет по вкусу → LIKE, остальные → DISLIKE (одобрено владельцем 2026-10-23).
+    mode: str = "shadow"
+    # Доля анкет, которые лайкаем в режиме decide (0.20 = верхние 20% по вкусу).
+    like_share: float = 0.20
     # Сколько фото карточки (альбома) учитывать (CLIP на CPU ~1.5 с на фото).
     max_photos: int = 3
     # Сколько карточек может ждать фонового расчёта; лишние пропускаются,
@@ -338,6 +344,20 @@ class PhotoTasteConfig(BaseModel):
     backfill: bool = True
     # Пауза между анкетами досчёта (не грузим Telegram и CPU).
     backfill_pause_sec: float = 2.0
+
+    @field_validator("mode")
+    @classmethod
+    def mode_valid(cls, v: str) -> str:
+        v = (v or "shadow").strip().lower()
+        if v not in {"shadow", "decide"}:
+            msg = f"photo_taste.mode должен быть shadow или decide, получено: {v}"
+            raise ValueError(msg)
+        return v
+
+    @property
+    def decides(self) -> bool:
+        """Модель вкуса сама решает лайк (а не только пишет теневой вердикт)."""
+        return self.enabled and self.mode == "decide"
 
 
 class DecisionConfig(BaseModel):

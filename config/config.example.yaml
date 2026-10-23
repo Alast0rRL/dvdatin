@@ -156,6 +156,8 @@ photo_check:
 photo_taste:
   enabled: false
   model_path: "data/ml/taste_model.json"
+  mode: shadow             # shadow — только вердикт; decide — модель решает лайк
+  like_share: 0.20         # decide: лайкаем верхние 20% анкет по вкусу
   max_photos: 3            # CLIP на CPU ~1.5 с на фото
   max_pending: 20
   backfill: true           # фоновый досчёт старых анкет (вердикт + отпечаток)

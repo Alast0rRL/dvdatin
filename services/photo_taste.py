@@ -46,6 +46,8 @@ class PhotoTasteModel:
         self._bias = 0.0
         self._like_thr = 1.0
         self._dislike_thr = 0.0
+        # Порог score для «верхних N% анкет» (из обучения: like_thresholds).
+        self._like_by_share: dict[float, float] = {}
         self.version = ""
         self._failed = False
         self._mtime = 0.0
@@ -70,7 +72,7 @@ class PhotoTasteModel:
             return
         if mtime != self._mtime:
             backup = (self._weights, self._bias, self._like_thr, self._dislike_thr,
-                      self.version, self._mtime)
+                      self.version, self._mtime, self._like_by_share)
             old = self.version
             self._weights = None
             if self.load():
@@ -78,7 +80,7 @@ class PhotoTasteModel:
             else:
                 # Битый файл — остаёмся на прежней модели, попробуем позже.
                 (self._weights, self._bias, self._like_thr, self._dislike_thr,
-                 self.version, _) = backup
+                 self.version, _, self._like_by_share) = backup
                 self._mtime = mtime
                 self._failed = False
 
@@ -95,6 +97,9 @@ class PhotoTasteModel:
             self._bias = float(data["bias"])
             self._like_thr = float(data["like_threshold"])
             self._dislike_thr = float(data["dislike_threshold"])
+            self._like_by_share = {
+                float(k): float(v) for k, v in (data.get("like_thresholds") or {}).items()
+            }
             self.version = str(data.get("version", ""))
             logger.info(
                 f"PhotoTaste: модель {self.version} загружена "
@@ -105,6 +110,16 @@ class PhotoTasteModel:
             self._failed = True
             logger.warning(f"PhotoTaste: модель не загружена ({self._cfg.model_path}): {e!r}")
             return False
+
+    def like_threshold(self, share: float) -> float | None:
+        """Порог score, выше которого — верхние ``share`` анкет (ближайшая
+        доля из обучения; нет таблицы — порог зоны LIKE)."""
+        if not self.load():
+            return None
+        if not self._like_by_share:
+            return self._like_thr
+        nearest = min(self._like_by_share, key=lambda k: abs(k - share))
+        return self._like_by_share[nearest]
 
     def score(self, emb: np.ndarray) -> TasteVerdict | None:
         """Score по эмбеддингам фото карточки (строка = фото)."""
@@ -148,6 +163,9 @@ class PhotoShadowScorer:
     @property
     def enabled(self) -> bool:
         return self._taste.enabled and not self._encoder.failed
+
+    def like_threshold(self, share: float) -> float | None:
+        return self._taste.like_threshold(share)
 
     def score_images(self, images: list[bytes]) -> dict | None:
         emb, index = self._encoder.encode_images(images)
