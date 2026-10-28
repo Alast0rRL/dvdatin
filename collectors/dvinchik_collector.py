@@ -97,6 +97,12 @@ HISTORY_SYNC_MIN_AGE_SEC: float = 120.0
 #: Нажимаем ТОЛЬКО кнопку с этим фрагментом («Активировать» — никогда).
 PREMIUM_DECLINE_FRAGMENT: str = "без premium"
 
+#: Проверка Leo «<имя>, ты живешь в Питере?» с кнопками [Да, Нет] (прод
+#: 2026-10-27/29: лента вставала до ручного ответа). По просьбе владельца
+#: всегда отвечаем «Нет». Узнаём по фрагменту текста + кнопке «Нет».
+CITY_CHECK_FRAGMENTS: tuple[str, ...] = ("живешь в", "живёшь в")
+CITY_CHECK_ANSWER: str = "нет"
+
 #: Карточка взаимного лайка Leo: «Ты понравился 3 девушке, показать её?» с
 #: кнопками [«1. Показать.», «2. Не хочу больше никого смотреть.»]. Бот НЕ
 #: жмёт ни одну кнопку: такая карточка ОСТАНАВЛИВАЕТ поиск (режим → OBSERVE,
@@ -134,6 +140,8 @@ MANUAL_MESSAGE_EXCLUDE: frozenset[str] = frozenset(
         "Активировать Premium",
         "Пока без Premium",
         "Показать девушку",
+        "Да",
+        "Нет",
     }
 )
 
@@ -892,13 +900,15 @@ class DvinchikCollector:
 
     async def _continue_stream_if_needed(self, history: list) -> bool:
         """Продолжает ленту Leo одной кнопкой: «Смотреть анкеты» → отказ от
-        Premium → «1 🚀» в меню. Останавливается на первой нажатой — после
+        Premium → «Нет» на «ты живешь в …?» → «1 🚀» в меню. Останавливается
+        на первой нажатой — после
         нажатия ``history`` устарела, следующий шаг сделает уже новое
         сообщение Leo. Все проверки — по одной выборке истории.
         """
         for press in (
             self._press_view_button_if_needed,
             self._press_premium_decline_if_needed,
+            self._answer_city_check_if_needed,
             self._press_menu_view_if_needed,
         ):
             if await press(history):
@@ -1095,6 +1105,47 @@ class DvinchikCollector:
             return True
         except Exception as e:
             logger.error(f"AutoAction: ошибка нажатия кнопки Premium-промо: {e}")
+            return False
+
+    async def _answer_city_check_if_needed(
+        self, history: list | None = None,
+    ) -> bool:
+        """Отвечает «Нет» на проверку Leo «<имя>, ты живешь в Питере?».
+
+        Только если это САМАЯ СВЕЖАЯ входящая карточка с кнопками (активная
+        клавиатура) и после неё нет нашего исходящего (уже ответили — сами
+        или владелец вручную).
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            if history is None:
+                history = await self._recent_history()
+            for msg in history:  # новые → старые
+                if getattr(msg, "out", False):
+                    return False  # после последней клавиатуры уже ответили
+                texts = self._extract_button_texts(msg)
+                if not texts:
+                    continue
+                text = (getattr(msg, "text", "") or "").lower()
+                if not any(f in text for f in CITY_CHECK_FRAGMENTS):
+                    return False  # активная клавиатура — не эта проверка
+                answer = next(
+                    (t for t in texts if t.strip().lower() == CITY_CHECK_ANSWER),
+                    None,
+                )
+                if answer is None:
+                    return False
+                logger.info(
+                    f"AutoAction: проверка «ты живешь в …?» (msg={msg.id}) — "
+                    f"отвечаю «{answer}», продолжаю ленту"
+                )
+                await self._auto_engine.send_text(answer)
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка ответа на проверку города: {e}")
             return False
 
     @staticmethod

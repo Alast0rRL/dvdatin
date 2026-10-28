@@ -2921,6 +2921,70 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
 
+    def test_start_stream_city_check_answers_no(self) -> None:
+        """«Борюсь с эгоизмом, ты живешь в Питере?» [Да, Нет] → «Нет»."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 37216, "Борюсь с эгоизмом, ты живешь в Питере?",
+                buttons=["Да", "Нет"],
+            )
+            yield self._iter_msg(auto_client, 37215, "\U0001F44E", out=True)
+            yield self._iter_msg(auto_client, 37214, "Катя, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, "Нет")
+
+    def test_start_stream_city_check_already_answered(self) -> None:
+        """После проверки уже есть наш ответ (вручную «Да») — не жмём."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(auto_client, 744, "Да", out=True)
+            yield self._iter_msg(
+                auto_client, 743, "Мелан, ты живешь в Питере?", buttons=["Да", "Нет"],
+            )
+
+        auto_client.iter_messages = iter_messages
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+
+    def test_start_stream_stale_city_check_ignored(self) -> None:
+        """Старая проверка под более свежей клавиатурой — не отвечаем."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 751, "Какая-то реклама", buttons=["Ок", "Нет"],
+            )
+            yield self._iter_msg(
+                auto_client, 750, "ты живешь в Питере?", buttons=["Да", "Нет"],
+            )
+
+        auto_client.iter_messages = iter_messages
+        asyncio.get_event_loop().run_until_complete(collector.start_auto_stream())
+        auto_client.send_message.assert_not_called()
+
     def test_start_stream_premium_promo_without_decline_does_nothing(self) -> None:
         """Premium-промо БЕЗ отказной кнопки («Активировать»/«⭐️») — не трогаем."""
         auto_client = AsyncMock()
