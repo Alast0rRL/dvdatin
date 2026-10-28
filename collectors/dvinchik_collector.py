@@ -654,6 +654,7 @@ class DvinchikCollector:
                 await self.sync_chat_history()
             except Exception as e:
                 logger.error(f"Сверка истории чата: {e}")
+            await self.retry_match_greetings()
 
     async def _stream_snapshot(
         self, limit: int = STREAM_ERROR_SNAPSHOT_LIMIT
@@ -1176,15 +1177,49 @@ class DvinchikCollector:
         except Exception as e:
             logger.error(f"MatchGreeting error: {e}")
             return
+        await self._notify_greeting(session, match, status)
+
+    async def _notify_greeting(
+        self, session: str, match: ParsedMatch, status: str, *,
+        delayed: bool = False,
+    ) -> None:
+        """Уведомление владельцу: стикер ушёл / аккаунт в спам-блоке."""
+        who = (
+            f"@{match.telegram_username}" if match.telegram_username
+            else f"id {match.telegram_user_id}"
+        )
         if status == "SENT":
-            who = (
-                f"@{match.telegram_username}" if match.telegram_username
-                else f"id {match.telegram_user_id}"
-            )
+            tail = " (из очереди после спам-блока)" if delayed else ""
             await self._auto_engine.notify_owner(
                 f"🔥 Взаимный лайк: {match.name} ({who}) — отправил ей "
-                f"стикер-привет с {session or 'аккаунта'}"
+                f"стикер-привет с {session or 'аккаунта'}{tail}"
             )
+        elif status == "SPAM_BLOCK":
+            until = await self._match_greeter.paused_until(session)
+            when = (
+                until.astimezone().strftime("%d.%m %H:%M") if until else "—"
+            )
+            await self._auto_engine.notify_owner(
+                f"⛔ {session or 'Аккаунт'} в спам-блоке Telegram (нельзя "
+                f"писать незнакомым): приветствия на паузе до {when}. "
+                f"{match.name} ({who}) — в очереди, допишу после паузы. "
+                "Проверь @SpamBot."
+            )
+
+    async def retry_match_greetings(self) -> None:
+        """Дописывает девушкам, отложенным из-за спам-блока (после паузы)."""
+        for client, session in zip(self._clients, self._client_sessions):
+            try:
+                results = await self._match_greeter.retry_queued(
+                    client, session, self.mode.value,
+                )
+            except Exception as e:
+                logger.error(f"MatchGreeting: дозапись очереди {session}: {e}")
+                continue
+            for match, status in results:
+                await self._notify_greeting(
+                    session, match, status, delayed=True,
+                )
 
     def _halt_on_match_card(self, card_msg: object) -> bool:
         """Синхронная часть остановки: режим OBSERVE + снятие цепочек.
