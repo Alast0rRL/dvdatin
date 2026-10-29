@@ -153,7 +153,7 @@ auto_actions:
     reply_delay_sec: [60, 180]
     quiet_hours: [1, 9]
     utc_offset_hours: 3
-    delete_for_both: false
+    delete_for_both: true
     texts:
       card_here: ["Пусть лежит здесь"]
       convenient: ["Это так-то удобно"]

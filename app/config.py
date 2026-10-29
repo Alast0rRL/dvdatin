@@ -265,8 +265,8 @@ class MatchScriptConfig(BaseModel):
     quiet_hours: list[int] = [1, 9]
     #: Смещение местного времени от UTC (Питер — +3).
     utc_offset_hours: float = 3.0
-    #: Удалять чат и у неё (revoke). По умолчанию — только у себя.
-    delete_for_both: bool = False
+    #: Удалять чат и у неё (revoke). По умолчанию — у обоих (2026-10-30).
+    delete_for_both: bool = True
     texts: MatchScriptTexts = MatchScriptTexts()
 
 

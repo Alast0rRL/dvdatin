@@ -265,15 +265,15 @@ class TestMatchScript:
         script = make_script(db, reply_delay_sec=[600, 600])
         client, results = reply(db, script, "не пиши мне")
         client.delete_dialog.assert_awaited_once()
-        assert client.delete_dialog.await_args.kwargs["revoke"] is False
+        assert client.delete_dialog.await_args.kwargs["revoke"] is True
         client.send_message.assert_not_called()
         assert row(db)["script_step"] == R.DELETED
         assert results[0][1] == R.DELETED
 
-    def test_delete_for_both(self, db: Database) -> None:
+    def test_delete_only_mine(self, db: Database) -> None:
         step_to(db, R.TELL_ME)
-        client, _ = reply(db, make_script(db, delete_for_both=True), "отвали")
-        assert client.delete_dialog.await_args.kwargs["revoke"] is True
+        client, _ = reply(db, make_script(db, delete_for_both=False), "отвали")
+        assert client.delete_dialog.await_args.kwargs["revoke"] is False
 
     def test_asks_bot_hands_off_without_lying(self, db: Database) -> None:
         step_to(db, R.AFTER_PIN)

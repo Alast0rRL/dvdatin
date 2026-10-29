@@ -682,7 +682,7 @@ tests/test_match_script.py::TestMatchScript::test_not_damochka
 tests/test_match_script.py::TestMatchScript::test_about_what_ab_variant_recorded
 tests/test_match_script.py::TestMatchScript::test_her_story_goes_to_owner
 tests/test_match_script.py::TestMatchScript::test_go_away_deletes_chat_at_once
-tests/test_match_script.py::TestMatchScript::test_delete_for_both
+tests/test_match_script.py::TestMatchScript::test_delete_only_mine
 tests/test_match_script.py::TestMatchScript::test_asks_bot_hands_off_without_lying
 tests/test_match_script.py::TestMatchScript::test_owner_wrote_silences_bot
 tests/test_match_script.py::TestMatchScript::test_pin_service_message_is_not_owner
