@@ -283,15 +283,25 @@ class DialogLogger:
         limit = SYNC_NEXT_LIMIT if last_tm else SYNC_FIRST_LIMIT
         messages: list[Any] = []
         try:
-            peer = await client.get_input_entity(row.get("username") or user_id)
+            peer = await self._peer(client, user_id, row.get("username") or "")
+            if peer is None:
+                # Девушка сменила/удалила @username, а в кэше сессии её нет —
+                # штатная ситуация, не ошибка бота; повтор через час.
+                logger.warning(
+                    f"DialogLog: чат {user_id} не найти "
+                    f"(@{row.get('username') or '—'} больше не существует)"
+                )
+                await self._db.mark_dialog_synced(account_session, user_id)
+                return 0
             async for msg in client.iter_messages(
                 peer, limit=limit, min_id=last_tm,
             ):
                 messages.append(msg)
         except Exception as e:
-            logger.error(f"DialogLog: сверка чата {user_id}: {e}")
             if flood_pause_sec(e) is not None:
+                logger.warning(f"DialogLog: FloodWait при сверке чата {user_id}")
                 return None
+            logger.error(f"DialogLog: сверка чата {user_id}: {e}")
             await self._db.mark_dialog_synced(account_session, user_id)
             return 0
         added = 0
@@ -305,6 +315,25 @@ class DialogLogger:
                 added += 1
         await self._db.mark_dialog_synced(account_session, user_id)
         return added
+
+    @staticmethod
+    async def _peer(client: Any, user_id: int, username: str) -> Any | None:
+        """Чат девушки: сначала по user_id (кэш сессии, без запроса к
+        Telegram), затем по @username. None — не найти ни так, ни так.
+        FloodWait пробрасывается — проход прерывается."""
+        last_error: Exception | None = None
+        for key in (user_id, username):
+            if not key:
+                continue
+            try:
+                return await client.get_input_entity(key)
+            except Exception as e:
+                if flood_pause_sec(e) is not None:
+                    raise
+                last_error = e
+        if last_error is not None:
+            logger.debug(f"DialogLog: чат {user_id} не резолвится: {last_error}")
+        return None
 
     @staticmethod
     def _history_sender(msg: Any) -> str:

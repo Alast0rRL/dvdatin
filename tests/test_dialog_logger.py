@@ -244,6 +244,38 @@ class TestDialogLogger:
         # Не сверенные чаты остаются в очереди.
         assert len(run(db.get_dialog_sync_queue("dvai", older_than="9999"))) == 2
 
+    def test_sync_prefers_user_id_over_username(self, db) -> None:
+        """Сначала user_id из кэша сессии — без запроса по @username."""
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77,
+                                                 telegram_username="roza")))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value="peer")
+        client.iter_messages = History([tg_msg(1, "привет")])
+        assert run(log.sync(client, "dvai")) == 1
+        assert client.get_input_entity.await_args_list[0].args == (77,)
+
+    def test_sync_vanished_username_is_warning_not_error(self, db) -> None:
+        """Прод 2026-10-29: «No user has "staywithmepleas" as username» —
+        девушка сменила @username. Пробуем оба ключа, ERROR не пишем."""
+        from loguru import logger as _logger
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77,
+                                                 telegram_username="gone")))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(side_effect=ValueError(
+            'No user has "gone" as username'))
+        levels: list[str] = []
+        sink = _logger.add(lambda m: levels.append(m.record["level"].name))
+        try:
+            assert run(log.sync(client, "dvai")) == 0
+        finally:
+            _logger.remove(sink)
+        assert client.get_input_entity.await_count == 2
+        assert "ERROR" not in levels and "WARNING" in levels
+        # Помечен сверенным — не долбим каждый проход.
+        assert run(db.get_dialog_sync_queue("dvai", older_than="0000")) == []
+
     def test_sync_adds_old_matches(self, db) -> None:
         run(db.save_raw_message(
             telegram_message_id=500, chat_id=LEO, sender_id=LEO,
