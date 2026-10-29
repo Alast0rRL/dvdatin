@@ -98,7 +98,9 @@ class TestAutoActionAudit:
         from models.decision import AIDecision
         from unittest.mock import AsyncMock
 
-        client = AsyncMock()
+        from tests.mocks import make_tg_client
+
+        client = make_tg_client()
         client.send_message = AsyncMock(side_effect=RuntimeError("network"))
         engine = AutoActionEngine(client, AutoActionsConfig(enabled=True, interval_sec=0), Mode.SEMI_AUTO, 1)
         try:

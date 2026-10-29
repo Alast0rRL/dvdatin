@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+from tests.mocks import make_tg_client
+
 from app.config import AppConfig
 from collectors.auto_action import AutoActionEngine
 from core.types import Mode
@@ -26,7 +28,7 @@ def make_bot(
     config: AppConfig | None = None,
     db=None,
 ) -> tuple[ControlBot, AsyncMock, object]:
-    client = AsyncMock()
+    client = make_tg_client()
     if collector is None:
         collector = _make_mock_collector()
     if db is None:

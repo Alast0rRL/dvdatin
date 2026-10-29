@@ -96,8 +96,6 @@ MATCH → dialog_contacts → MatchGreeter (стикер) → её ответ
 
 **Техдолг**
 - Разделить `collectors/dvinchik_collector.py` (~3700 строк) и `database/database.py` (~2700 строк)
-- Убрать ~120 предупреждений «coroutine was never awaited» в тестах
-- Обновить `tests/baseline/baseline_tests.txt` (770 строк против ~950 тестов)
 
 **Stage 10: Production**
 - Частично есть: отладочная консоль, баннеры сбоев, ошибки бота в Telegram
