@@ -157,6 +157,32 @@ class AccountEnginesMixin:
             logger.error(f"Не удалось сохранить режим в config.yaml: {e}")
         return new
 
+    def redirect_for(self, session: str | None) -> str:
+        """Куда перенаправлена личка аккаунта ('' — пишем с него самого).
+
+        Цель учитывается, только если это ДРУГОЙ вошедший аккаунт: без
+        клиента писать не с чего — тогда пишем как раньше, со своего.
+        """
+        target = (self._config.auto_actions.account_redirects or {}).get(
+            session or "", "",
+        )
+        if not target or target == session or target not in self._client_sessions:
+            return ""
+        return target
+
+    def set_redirect(self, session: str, target: str) -> None:
+        """Меняет перенаправление лички на лету (сайт сохраняет его в config.yaml)."""
+        redirects = dict(self._config.auto_actions.account_redirects or {})
+        if target and target != session:
+            redirects[session] = target
+        else:
+            redirects.pop(session, None)
+        self._config.auto_actions.account_redirects = redirects
+        logger.info(
+            f"{session}: личка → {target}" if session in redirects
+            else f"{session}: перенаправление лички снято"
+        )
+
     def set_mode(self, mode: Mode, session: str | None = None) -> None:
         """Старый интерфейс режима (ControlBot, стоп на лайке, «Продолжить»).
 

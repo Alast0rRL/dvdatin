@@ -97,6 +97,8 @@ auto_actions:
   # account_controls:
   #   dvai: {scroll: false, auto: true}
   #   dvai_2: {scroll: true, auto: false}
+  # account_redirects:          # стрелка в шапке: аккаунт в бане → после матча
+  #   dvai: dvai_2               # стикер-привет и автопереписка идут с dvai_2
   interval_sec: 2.0
   notify_chat_id: 0
   notify_dislikes: true

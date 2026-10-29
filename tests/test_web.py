@@ -1094,6 +1094,58 @@ class TestAccountSettings:
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         assert "account_controls" not in cfg["auto_actions"]
 
+    def test_redirect_arrow_toggles(self, client, tmp_path) -> None:
+        """Стрелка у аккаунта: личка после матча — с другого аккаунта, повтор — снять."""
+        import re
+        import yaml
+        from web import actions as web_actions
+
+        self._write_config(tmp_path)
+        calls: list = []
+
+        class _Fake:
+            def set_redirect(self, session, target):
+                calls.append((session, target))
+
+        _login(client)
+        web_actions.set_collector(_Fake())
+        try:
+            data = client.get("/").get_data(as_text=True)
+            assert data.count('class="redirect-form"') == 2
+            with client.session_transaction() as sess:
+                token = sess.get("_csrf_token", "")
+            form = {"account_session": "dvai", "csrf_token": token}
+            client.post("/settings/redirect", data=form)
+            cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert cfg["auto_actions"]["account_redirects"] == {"dvai": "dvai_2"}
+            data = client.get("/").get_data(as_text=True)
+            row1 = data[data.index('data-account="dvai"'):data.index('data-account="dvai_2"')]
+            assert re.search(r'redirect-form__btn is-active', row1)
+            assert '<span class="redirect-form__to">dvai_2</span>' in row1
+            client.post("/settings/redirect", data=form)
+            cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert "account_redirects" not in cfg["auto_actions"]
+        finally:
+            web_actions.set_collector(None)
+        assert calls == [("dvai", "dvai_2"), ("dvai", "")]
+
+    def test_redirect_unknown_account_refused(self, client, tmp_path) -> None:
+        import yaml
+        self._write_config(tmp_path)
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        client.post(
+            "/settings/redirect",
+            data={"account_session": "nope", "csrf_token": token},
+        )
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert "account_redirects" not in cfg["auto_actions"]
+
+    def test_no_redirect_arrow_with_one_account(self, client) -> None:
+        _login(client)
+        assert 'class="redirect-form"' not in client.get("/").get_data(as_text=True)
+
     def test_account_dropdown_in_app_drawer(self, client, tmp_path) -> None:
         self._write_config(tmp_path)
         _login(client)

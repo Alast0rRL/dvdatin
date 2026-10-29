@@ -243,6 +243,21 @@ def set_mode_sync(mode: "Mode", session: str | None = None) -> str:
     return "OK"
 
 
+def set_redirect_sync(session: str, target: str) -> str:
+    """Перенаправление лички аккаунта на живом коллекторе.
+
+    Статус: "OK", "DISABLED" (нет коллектора), "ERROR".
+    """
+    if _collector is None:
+        return "DISABLED"
+    try:
+        _collector.set_redirect(session, target)
+    except Exception as e:
+        logger.error(f"Redirect bridge: set_redirect failed: {type(e).__name__}: {e!r}")
+        return "ERROR"
+    return "OK"
+
+
 def set_controls_sync(session: str | None, scroll: bool, auto: bool) -> str:
     """«Скроллинг»/«Авто» аккаунта на живом коллекторе (+ толчок ленты).
 

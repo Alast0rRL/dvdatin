@@ -312,6 +312,10 @@ class AutoActionsConfig(BaseModel):
     # Нет записи → у основного (account_session) из project.mode, у остальных
     # всё выключено. См. AppConfig.controls_for / persist_account_controls.
     account_controls: dict[str, AccountControls] = {}
+    # Перенаправление лички ({session: другой session}): матч на аккаунте
+    # session (например, он в спам-блоке) → стикер-привет и автопереписка
+    # идут с другого аккаунта. Кнопка-стрелка в шапке сайта.
+    account_redirects: dict[str, str] = {}
     # Устаревшее (режим на аккаунт, 2026-10-29 до переключателей): только чтение.
     account_modes: dict[str, Mode] = {}
     # Интервал между действиями в секундах. Держим МАЛЫМ (по умолчанию 2 с):
@@ -652,6 +656,35 @@ class AppConfig(BaseModel):
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
         self.auto_actions.account_controls[session] = controls.model_copy()
         self.auto_actions.account_modes.pop(session, None)
+
+    def persist_account_redirect(
+        self, path: Path, session: str, target: str,
+    ) -> None:
+        """Сохраняет перенаправление лички аккаунта ``session`` на ``target``.
+
+        Пустой ``target`` — перенаправление снято (запись удаляется).
+        """
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        else:
+            raw = {}
+        auto_actions = raw.get("auto_actions") or {}
+        stored = dict(auto_actions.get("account_redirects") or {})
+        if target and target != session:
+            stored[session] = target
+        else:
+            stored.pop(session, None)
+        if stored:
+            auto_actions["account_redirects"] = stored
+        else:
+            auto_actions.pop("account_redirects", None)
+        raw["auto_actions"] = auto_actions
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+        self.auto_actions.account_redirects = {
+            str(k): str(v) for k, v in stored.items()
+        }
 
     def persist_account_session(self, path: Path, session: str) -> None:
         """Сохраняет auto_actions.account_session в YAML-файл.

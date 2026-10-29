@@ -950,3 +950,10 @@ tests/test_web.py::TestDialogsPage::test_list_shows_girl_and_last_message
 tests/test_web.py::TestDialogsPage::test_dialog_page_shows_whole_chat
 tests/test_web.py::TestDialogsPage::test_unknown_dialog_404
 tests/test_web.py::TestDialogsPage::test_export_json
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirected_account_greets_from_target
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirect_to_unknown_account_greets_from_own
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirect_failure_notifies_owner
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_set_redirect_live
+tests/test_web.py::TestAccountSettings::test_redirect_arrow_toggles
+tests/test_web.py::TestAccountSettings::test_redirect_unknown_account_refused
+tests/test_web.py::TestAccountSettings::test_no_redirect_arrow_with_one_account

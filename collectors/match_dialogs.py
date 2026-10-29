@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime
 
 from loguru import logger
@@ -24,33 +25,52 @@ class MatchDialogsMixin:
         Всем матчам: и после лайка бота, и после ручного лайка владельца
         (в т.ч. в OBSERVE). Пишем с того аккаунта, на котором случился матч
         (у неё матч именно с ним). Режимы — ``match_greeting.modes``.
+
+        Перенаправление (стрелка в шапке, ``auto_actions.account_redirects``):
+        аккаунт в бане → пишем девушке с другого аккаунта, и вся дальнейшая
+        переписка (журнал, автопереписка) живёт на нём.
         """
         client = getattr(msg, "client", None) if msg is not None else None
         if client is None or task.chat_id != self._dvinchik_chat_id:
             return
         session = task.account_session or self._session_for_client(client)
-        # Реестр переписок — ДО привета: стикер бота сразу ляжет в журнал.
-        await self._track_dialog(client, session, match)
-        try:
-            status = await self._match_greeter.greet(
-                client, session, match, self._dialog_mode(session),
-            )
-        except Exception as e:
-            logger.error(f"MatchGreeting error: {e}")
-            return
-        await self._notify_greeting(session, match, status)
-        if status == "SENT":
-            await self._enroll_match_intro(client, session, match)
+        source = ""
+        target = self.redirect_for(session)
+        if target:
+            target_client, _ = self._clients_for_session(target)
+            if target_client is not None:
+                source, session, client = session, target, target_client
+        scope = self._session_scope(session) if source else nullcontext()
+        with scope:
+            # Реестр переписок — ДО привета: стикер бота сразу ляжет в журнал.
+            await self._track_dialog(client, session, match, source=source)
+            try:
+                status = await self._match_greeter.greet(
+                    client, session, match, self._dialog_mode(session),
+                )
+            except Exception as e:
+                logger.error(f"MatchGreeting error: {e}")
+                return
+            await self._notify_greeting(session, match, status, source=source)
+            if status == "SENT":
+                await self._enroll_match_intro(
+                    client, session, match, source=source,
+                )
 
     async def _track_dialog(
-        self, client: object, session: str, match: ParsedMatch,
+        self, client: object, session: str, match: ParsedMatch, *,
+        source: str = "",
     ) -> None:
-        """Матч → девушка в журнале переписок (каждый матч, любой режим)."""
+        """Матч → девушка в журнале переписок (каждый матч, любой режим).
+
+        ``source`` — аккаунт, на котором был матч, если личка перенаправлена:
+        её анкету ищем в его ленте.
+        """
         if not self._dialog_log.enabled:
             return
         try:
             profile_id = await self._db.find_match_profile(
-                match.name, self._dvinchik_chat_id, session,
+                match.name, self._dvinchik_chat_id, source or session,
             )
             await self._dialog_log.track(client, session, match, profile_id)
         except Exception as e:
@@ -69,12 +89,15 @@ class MatchDialogsMixin:
 
     async def _enroll_match_intro(
         self, client: object, session: str, match: ParsedMatch, *,
-        use_context: bool = True,
+        use_context: bool = True, source: str = "",
     ) -> None:
-        """Привет ушёл → ждём её ответа (автопереписка, ``match_intro``)."""
+        """Привет ушёл → ждём её ответа (автопереписка, ``match_intro``).
+
+        ``source`` — аккаунт матча при перенаправлении (анкета — в его ленте).
+        """
         try:
             profile_id = await self._db.find_match_profile(
-                match.name, self._dvinchik_chat_id, session,
+                match.name, self._dvinchik_chat_id, source or session,
                 use_context=use_context,
             )
             await self._match_intro.enroll(client, session, match, profile_id)
@@ -141,18 +164,29 @@ class MatchDialogsMixin:
 
     async def _notify_greeting(
         self, session: str, match: ParsedMatch, status: str, *,
-        delayed: bool = False,
+        delayed: bool = False, source: str = "",
     ) -> None:
-        """Уведомление владельцу: стикер ушёл / аккаунт в спам-блоке."""
+        """Уведомление владельцу: стикер ушёл / аккаунт в спам-блоке.
+
+        ``source`` — матч был на другом аккаунте, личка перенаправлена.
+        """
         who = (
             f"@{match.telegram_username}" if match.telegram_username
             else f"id {match.telegram_user_id}"
         )
+        via = f" (перенаправлено с {source})" if source else ""
         if status == "SENT":
             tail = " (из очереди после спам-блока)" if delayed else ""
             await self._auto_engine.notify_owner(
                 f"🔥 Взаимный лайк: {match.name} ({who}) — отправил ей "
-                f"стикер-привет с {session or 'аккаунта'}{tail}"
+                f"стикер-привет с {session or 'аккаунта'}{via}{tail}"
+            )
+        elif source and status in ("ERROR", "NO_TARGET"):
+            # С чужого аккаунта без @username её часто не найти (нет
+            # access_hash) — владелец должен знать, что привет не ушёл.
+            await self._auto_engine.notify_owner(
+                f"⚠️ Взаимный лайк на {source}: {match.name} ({who}) — не смог "
+                f"написать с {session}{via}. Напиши ей сам."
             )
         elif status == "SPAM_BLOCK":
             until = await self._match_greeter.paused_until(session)

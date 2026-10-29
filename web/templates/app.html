@@ -49,6 +49,26 @@
             <span class="account-form__text">{{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}</span>
         </button>
     </form>
+    {% if rows|length > 1 %}
+    {# Стрелка: аккаунт в бане → девушкам после матча пишет другой аккаунт. #}
+    {% set to = acc.redirect if acc.redirect is defined else '' %}
+    <form method="POST" action="{{ url_for('settings.update_redirect') }}" class="redirect-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+        <input type="hidden" name="account_session" value="{{ acc.session }}">
+        <button type="submit" class="redirect-form__btn {% if to %}is-active{% endif %}"
+                aria-pressed="{{ 'true' if to else 'false' }}"
+                aria-label="Перенаправление лички {{ acc.session }}"
+                title="{% if to %}Личка {{ acc.session }} перенаправлена: после матча пишу с {{ to }}. Нажми, чтобы снять{% else %}Перенаправить: после матча на {{ acc.session }} писать девушке с другого аккаунта (если этот в бане){% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"
+                 aria-hidden="true">
+                <path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>
+            </svg>
+            {% if to %}<span class="redirect-form__to">{{ to }}</span>{% endif %}
+        </button>
+    </form>
+    {% endif %}
     {% endif %}
 </div>
 {% endfor %}

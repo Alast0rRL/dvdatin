@@ -254,7 +254,9 @@ class TestSpamBlock:
 
 
 class TestCollectorGreetsOnMatch:
-    def _collector(self, mode: str) -> tuple[DvinchikCollector, AsyncMock, AsyncMock]:
+    def _collector(
+        self, mode: str, redirects: dict[str, str] | None = None,
+    ) -> tuple[DvinchikCollector, AsyncMock, AsyncMock]:
         data = make_config().model_dump()
         data["telegram"] = {
             "accounts": [
@@ -265,6 +267,7 @@ class TestCollectorGreetsOnMatch:
         data["project"] = {"mode": mode}
         data["auto_actions"] = {
             "enabled": True, "account_session": "dvai_2", "interval_sec": 0.0,
+            "account_redirects": redirects or {},
         }
         other, auto = AsyncMock(), AsyncMock()
         collector = DvinchikCollector([other, auto], make_db_mock(), AppConfig(**data))
@@ -308,6 +311,49 @@ class TestCollectorGreetsOnMatch:
         run(collector._process_message(task))
         args = collector._match_greeter.greet.await_args.args
         assert args[0] is other and args[1] == "dvai"
+
+    def test_redirected_account_greets_from_target(self) -> None:
+        """Стрелка в шапке: dvai_2 в бане → привет уходит с dvai."""
+        collector, other, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "dvai"},
+        )
+        collector._engines["dvai"].notify_owner = AsyncMock(return_value=True)
+        collector._db.find_match_profile = AsyncMock(return_value=None)
+        run(collector._process_message(self._task(auto)))
+        args = collector._match_greeter.greet.await_args.args
+        assert args[0] is other and args[1] == "dvai"
+        # Анкету ищем в ленте аккаунта, где был матч.
+        assert collector._db.find_match_profile.await_args.args[2] == "dvai_2"
+        text = collector._engines["dvai"].notify_owner.await_args.args[0]
+        assert "с dvai" in text and "перенаправлено с dvai_2" in text
+
+    def test_redirect_to_unknown_account_greets_from_own(self) -> None:
+        """Цели нет среди вошедших аккаунтов → пишем как раньше, со своего."""
+        collector, _, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "nope"},
+        )
+        run(collector._process_message(self._task(auto)))
+        args = collector._match_greeter.greet.await_args.args
+        assert args[0] is auto and args[1] == "dvai_2"
+
+    def test_redirect_failure_notifies_owner(self) -> None:
+        """С чужого аккаунта не достучались до девушки → владелец узнаёт."""
+        collector, _, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "dvai"},
+        )
+        collector._match_greeter.greet = AsyncMock(return_value="ERROR")
+        collector._engines["dvai"].notify_owner = AsyncMock(return_value=True)
+        run(collector._process_message(self._task(auto)))
+        text = collector._engines["dvai"].notify_owner.await_args.args[0]
+        assert "не смог" in text and "dvai_2" in text
+
+    def test_set_redirect_live(self) -> None:
+        collector, _, _ = self._collector("SEMI_AUTO")
+        assert collector.redirect_for("dvai_2") == ""
+        collector.set_redirect("dvai_2", "dvai")
+        assert collector.redirect_for("dvai_2") == "dvai"
+        collector.set_redirect("dvai_2", "")
+        assert collector.redirect_for("dvai_2") == ""
 
     def test_foreign_chat_does_not_greet(self) -> None:
         collector, _, auto = self._collector("SEMI_AUTO")

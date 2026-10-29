@@ -205,6 +205,69 @@ def _update_controls(
     return redirect(redirect_target)
 
 
+@settings_bp.route("/settings/redirect", methods=["POST"])
+@login_required
+def update_redirect() -> tuple:
+    """Стрелка в строке аккаунта: личка после матча — с другого аккаунта.
+
+    Каждое нажатие — следующий аккаунт по кругу, после последнего — снято
+    (при двух аккаунтах — просто вкл/выкл). Персистит в config.yaml
+    (``auto_actions.account_redirects``) и меняет живой коллектор.
+    """
+    token = request.form.get("csrf_token", "")
+    if token != session.get("_csrf_token"):
+        flash("Ошибка безопасности", "error")
+        return ("CSRF token invalid", 403)
+
+    account = (request.form.get("account_session") or "").strip()
+    redirect_target = request.form.get("next", "")
+    if not redirect_target or not redirect_target.startswith("/") or redirect_target.startswith("//"):
+        redirect_target = url_for("chat.index")
+
+    config_path = _get_config_path()
+    accounts, _ = _get_accounts(config_path)
+    sessions = [a["session"] for a in accounts]
+    if account not in sessions:
+        flash(f"Аккаунт {account!r} не найден", "error")
+        return redirect(redirect_target)
+
+    others = [s for s in sessions if s != account]
+    current = next((a["redirect"] for a in accounts if a["session"] == account), "")
+    if current in others:
+        idx = others.index(current) + 1
+        target = others[idx] if idx < len(others) else ""
+    else:
+        target = others[0] if others else ""
+
+    try:
+        from app.config import AppConfig
+        config = AppConfig.load(config_path)
+        config.persist_account_redirect(config_path, account, target)
+    except Exception as e:
+        flash(f"Ошибка: {e}", "error")
+        return redirect(redirect_target)
+
+    try:
+        from web.actions import set_redirect_sync
+        live_status = set_redirect_sync(account, target)
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"Web redirect switch: {type(e).__name__}: {e!r}")
+        live_status = "ERROR"
+
+    what = (
+        f"{account}: после матча пишу девушкам с {target}" if target
+        else f"{account}: перенаправление снято, пишу со своего аккаунта"
+    )
+    if live_status == "OK":
+        flash(what, "success")
+    elif live_status == "ERROR":
+        flash(f"{what} — сохранено, но не применено на лету", "warning")
+    else:
+        flash(f"{what} (применится после перезапуска)", "warning")
+    return redirect(redirect_target)
+
+
 @settings_bp.route("/settings/account", methods=["POST"])
 @login_required
 def update_account() -> tuple:
@@ -297,6 +360,9 @@ def _get_accounts(config_path: Path) -> tuple[list[dict], str]:
     auto_actions = raw.get("auto_actions") or {}
     account_session = auto_actions.get("account_session", "")
     from app.config import account_controls_from_raw
+    redirects = auto_actions.get("account_redirects") or {}
+    if not isinstance(redirects, dict):
+        redirects = {}
     accounts = []
     for acc in accounts_raw:
         session = acc.get("session") or ""
@@ -308,6 +374,7 @@ def _get_accounts(config_path: Path) -> tuple[list[dict], str]:
                 "session": session, "phone": acc.get("phone", ""),
                 "scroll": controls.scroll, "auto": controls.auto,
                 "mode": controls.legacy_mode.value,
+                "redirect": str(redirects.get(session) or ""),
             })
     return accounts, account_session
 

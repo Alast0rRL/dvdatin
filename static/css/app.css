@@ -247,6 +247,29 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .account-form__name svg { flex: 0 0 auto; }
 .account-form__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-row.is-main .account-form__name { color: var(--text); border-color: var(--accent); }
+/* Стрелка перенаправления лички: включена — залита, рядом имя аккаунта-цели. */
+.redirect-form { display: flex; align-items: center; margin: 0; }
+.redirect-form__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 4px 8px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--bg-soft);
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.redirect-form__btn:hover { color: var(--text); border-color: var(--hover-line); }
+.redirect-form__btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.redirect-form__btn svg { flex: 0 0 auto; }
+.redirect-form__btn.is-active { background: var(--review-bg); border-color: var(--review-line); color: var(--text); }
 
 /* ── Переключатель темы ─────────────────────────────────────────── */
 .theme-toggle { color: var(--muted); }
