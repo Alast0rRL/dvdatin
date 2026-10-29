@@ -24,6 +24,7 @@ from collectors.leo_navigation import LeoNavigationMixin
 from collectors.match_dialogs import MatchDialogsMixin
 from collectors.match_greeter import MatchGreeter
 from collectors.match_intro import MatchIntro
+from collectors.match_script import MatchScript
 from collectors.outgoing import OutgoingMixin
 from collectors.photo_steps import PhotoStepsMixin
 from collectors.raw_worker import DvinchikRawWorker, RawTask
@@ -185,6 +186,8 @@ class DvinchikCollector(
         # Клиенты аккаунтов: анкету, которую видел другой аккаунт (перенаправление
         # лички), автопереписка пересылает через него.
         self._match_intro.clients = dict(zip(self._client_sessions, self._clients))
+        # После анкеты — сценарий знакомства по схеме владельца (AUTO).
+        self._match_script = MatchScript(config.auto_actions.match_script, db)
         # Журнал переписок с девушками-матчами (данные для анализа общения).
         dialog_cfg = config.auto_actions.dialog_log
         self._dialog_log = DialogLogger(db, enabled=dialog_cfg.enabled)
@@ -192,6 +195,7 @@ class DvinchikCollector(
         if self._dialog_log.enabled:
             self._match_greeter.on_sent = self._dialog_log.log_sent
             self._match_intro.on_sent = self._dialog_log.log_sent
+            self._match_script.on_sent = self._dialog_log.log_sent
         self._allowed_chat_ids = set(
             config.sources.allowed_chat_ids
             or ([config.dvinchik.chat_id] if config.dvinchik.chat_id else [])

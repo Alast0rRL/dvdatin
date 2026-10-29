@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~950 total, no linter/formatter configured)
+# Run all tests (~1030 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -20,7 +20,7 @@ python -m pytest tests/test_ai.py -v
 - Поток: Telegram → `raw_messages` (RAW-first) → классификация `dvinchik_parser` (PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN) → `FilterService` (PASS/REJECT/REVIEW) → `DecisionService` (LIKE/REVIEW/DISLIKE) → фото-шаги `_apply_photo_taste` / `_apply_photo_vice` → `ActionPolicyResolver` → `AutoActionEngine` аккаунта.
 - Решение по тексту: `profile_normalizer` → `feature_extractor` (H01–H09 / P01–P04) → `score_engine` → `decision_service`, версия `deterministic-v2`; правила из `config/preferences.yaml`.
 - Решение по фото: `services/photo_taste.py` (модель вкуса, CLIP на CPU, `photo_taste.mode: shadow|decide`, на сервере `decide`) и `services/photo_vice.py` (сигареты/алкоголь, только для LIKE). Общий CLIP — `services/clip_encoder.py`.
-- MATCH → `dialog_logger` (журнал лички) → `match_greeter` (стикер-привет) → `match_intro` (её анкета + закреп, только при «Авто»).
+- MATCH → `dialog_logger` (журнал лички) → `match_greeter` (стикер-привет) → `match_intro` (её анкета + закреп, только при «Авто») → `match_script` (сценарий знакомства по схеме владельца, правила — `services/match_script_rules.py`) → передача владельцу.
 - Фон (`main.py`): `run_history_sync` (60 с: сверка чата Leo, повтор приветствий, автопереписка, сверка переписок), `run_photo_backfill`.
 - Управление: два аккаунта, у каждого свой `AutoActionEngine` и переключатели «Скроллинг» / «Авто» (`auto_actions.account_controls`). Внутри кода `Mode`: OBSERVE = скроллинг выкл, SEMI_AUTO = скроллинг, AUTO = скроллинг + «Авто».
 - UI: Web (`web/`, Flask в daemon-потоке; `/`, `/rate`, `/dialogs`) и `telegram/control_bot.py` (команды только от `control.allowed_user_ids`).
@@ -62,7 +62,10 @@ python -m pytest tests/test_ai.py -v
 - **Проверка истории — одна выборка** (`_recent_history`) на все проверки кнопок; сбой чтения → `[]`, поток не падает. Тесты: `test_start_stream_reads_history_once_for_buttons`, `test_history_read_error_does_not_stop_stream`.
 - **Перенаправление лички** (`auto_actions.account_redirects`, стрелка в шапке): матч на аккаунте → привет/журнал/автопереписка с аккаунта-цели, только если цель — другой вошедший аккаунт; анкета ищется в ленте аккаунта матча; её анкету девушке аккаунт матча пересылает пишущему, тот — ей (`MatchIntro._relay_card`). Тесты: `test_redirected_account_greets_from_target`, `test_redirect_to_unknown_account_greets_from_own`, `test_card_relayed_from_account_that_saw_it`.
 - **Владелец пишет сам — бот молчит**: перед отправкой анкеты проверка её чата; наше исходящее новее привета → `OWNER_CHAT`, анкету не шлём. Тест: `test_owner_chatting_cancels_intro`.
-- **Автопереписка — только то, что попросил владелец** (стикер-привет, её анкета + закреп). Новых шагов диалога не добавлять без явной команды.
+- **Автопереписка — только то, что попросил владелец** (стикер-привет, её анкета + закреп, сценарий `match_script` по его схеме). Новых шагов и фраз не добавлять без явной команды; концы веток и ответы не по сценарию — передача владельцу. Тест: `test_her_story_goes_to_owner`.
+- **Сценарий: бот не отрицает, что он бот** — «ты бот?» → передача владельцу без ответа. Тест: `test_asks_bot_hands_off_without_lying`.
+- **Сценарий: «не пиши» / прямое оскорбление → чат удаляется сразу**, бытовой мат не по адресу — не грубость. Тесты: `test_go_away_deletes_chat_at_once`, `TestClassify`.
+- **Сценарий молчит, если пишет владелец**: исходящее новее последнего сообщения бота (кроме служебного «закрепил») → `owner`. Тесты: `test_owner_wrote_silences_bot`, `test_pin_service_message_is_not_owner`.
 
 ### Web UI
 - **Лента = зеркало чата Leo**: читает только `raw_messages`, строго выбранного аккаунта (без legacy `''`) и только `dvinchik.chat_id`; `sent_messages` / `auto_actions_log` не подмешивать. Тесты: `TestChatFeedMirror`, `test_strict_account_filter`, `test_feed_shows_only_leo_chat`.
@@ -109,7 +112,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-10-29): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (176), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (30), test_match_intro (30), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (21), test_web (161) → **965 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-10-29): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (176), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (30), test_match_intro (30), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (21), test_web (161) → **1034 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

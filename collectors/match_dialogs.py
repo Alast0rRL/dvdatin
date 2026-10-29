@@ -10,6 +10,12 @@ from loguru import logger
 from telethon import events
 
 from collectors.match_intro import INTRO_SENT
+from services.match_script_rules import (
+    ASKS_BOT,
+    DELETED,
+    HANDOFF,
+    STOPPED,
+)
 from collectors.raw_worker import RawTask
 from models.raw import ParsedMatch
 
@@ -125,10 +131,17 @@ class MatchDialogsMixin:
                 session, getattr(event, "message", None), outgoing=False,
                 user_id=chat_id,
             )
-            date = getattr(getattr(event, "message", None), "date", None)
-            await self._match_intro.note_reply(
-                session, sender_id, self._dialog_mode(session),
-                at=date if isinstance(date, datetime) else None,
+            message = getattr(event, "message", None)
+            date = getattr(message, "date", None)
+            at = date if isinstance(date, datetime) else None
+            mode = self._dialog_mode(session)
+            await self._match_intro.note_reply(session, sender_id, mode, at=at)
+            # Сценарий знакомства (после анкеты): текст только разбирается,
+            # в лог не пишется.
+            text = getattr(message, "message", "")
+            await self._match_script.note_message(
+                session, sender_id, text if isinstance(text, str) else "",
+                mode, at=at,
             )
         except Exception as e:
             logger.error(f"MatchIntro: ошибка обработки ответа: {e}")
@@ -152,6 +165,9 @@ class MatchDialogsMixin:
             for row, status in results:
                 if status != INTRO_SENT:
                     continue
+                await self._match_script.start(
+                    session, int(row["user_id"]), row.get("sent_msg_id"),
+                )
                 who = (
                     f"@{row['username']}" if row.get("username")
                     else f"id {row.get('user_id')}"
@@ -161,6 +177,21 @@ class MatchDialogsMixin:
                     f"💬 {row.get('name') or who} ({who}) ответила на привет — "
                     f"отправил ей её анкету{pin} с {session or 'аккаунта'}"
                 )
+            await self._run_match_script_for(client, session)
+
+    async def _run_match_script_for(self, client: object, session: str) -> None:
+        """Проход сценария знакомства по аккаунту + уведомления владельцу."""
+        try:
+            results = await self._match_script.process(
+                client, session, self._dialog_mode(session),
+            )
+        except Exception as e:
+            logger.error(f"MatchScript: проход {session}: {e}")
+            return
+        for row, step, kind in results:
+            text = script_notice(row, step, kind, session)
+            if text:
+                await self._auto_engine.notify_owner(text)
 
     async def _notify_greeting(
         self, session: str, match: ParsedMatch, status: str, *,
@@ -224,3 +255,29 @@ class MatchDialogsMixin:
                     await self._enroll_match_intro(
                         client, session, match, use_context=False,
                     )
+
+
+def script_notice(row: dict, step: str, kind: str, session: str) -> str:
+    """Уведомление владельцу о конце сценария (без текста её сообщений)."""
+    who = (
+        f"@{row['username']}" if row.get("username")
+        else f"id {row.get('user_id')}"
+    )
+    name = f"{row.get('name') or who} ({who})"
+    acct = session or "аккаунта"
+    if step == DELETED:
+        return f"🗑 {name} попросила не писать или грубит — чат удалён на {acct}"
+    if step == STOPPED:
+        return (
+            f"🔕 {name} молчит сутки после «Рассказывайте» — бот больше не "
+            f"пишет ({acct})"
+        )
+    if step != HANDOFF:
+        return ""
+    if kind == ASKS_BOT:
+        why = "спросила, не бот ли ты — ответь сам"
+    elif row.get("script_text"):
+        why = f"бот ответил «{row['script_text']}», дальше ты"
+    else:
+        why = "ответила не по сценарию — дальше ты"
+    return f"💬 {name}: переписка твоя на {acct} — {why}"

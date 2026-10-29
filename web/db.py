@@ -972,6 +972,7 @@ class SyncDB:
         SELECT c.account_session, c.user_id, c.username, c.name, c.profile_id,
                c.matched_at, c.last_message_at, c.synced_at,
                md.status AS intro_status,
+               md.script_step AS script_step,
                p.age AS age, p.normalized_city AS city,
                (SELECT COUNT(*) FROM dialog_messages m
                  WHERE m.account_session = c.account_session

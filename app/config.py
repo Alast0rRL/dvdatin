@@ -226,6 +226,50 @@ class MatchIntroConfig(BaseModel):
     reply_check_hours: float = 72.0
 
 
+class MatchScriptTexts(BaseModel):
+    """Фразы сценария знакомства (несколько вариантов — бот берёт случайный,
+    номер варианта пишется в ``match_dialogs.script_variant`` для сравнения)."""
+
+    #: Она спросила «что это / зачем» про пересланную анкету.
+    card_here: list[str] = ["Пусть лежит здесь"]
+    #: «Много с кем общаешься, чтобы не перепутать?»
+    convenient: list[str] = ["Это так-то удобно"]
+    #: Молчит / не спрашивает про анкету.
+    tell_me: list[str] = ["Рассказывайте, дамочка"]
+    #: «Я не дамочка».
+    who_then: list[str] = ["А кто? Парнишка?"]
+    #: «О чём? / Что?» после «Рассказывайте».
+    about_what: list[str] = [
+        "О себе конечно",
+        "А о чём обычно рассказывают при знакомстве)",
+    ]
+
+
+class MatchScriptConfig(BaseModel):
+    """Сценарий знакомства после анкеты с закрепом (режим AUTO).
+
+    Бот отвечает её фразами по веткам схемы владельца; на концах веток и на
+    ответах не по сценарию переписка передаётся владельцу (уведомление).
+    Грубость / «не пиши» — чат удаляется. См. ``collectors/match_script.py``.
+    """
+
+    enabled: bool = True
+    modes: list[str] = ["AUTO"]
+    #: Молчит столько минут после анкеты → «Рассказывайте, дамочка».
+    silence_min: float = 180.0
+    #: Молчит столько часов после «Рассказывайте» → бот больше не пишет.
+    give_up_hours: float = 24.0
+    #: Пауза перед ответом на её сообщение, секунды [от, до] (случайно).
+    reply_delay_sec: list[float] = [60.0, 180.0]
+    #: Ночью (местное время, [с, до) часов) бот не пишет по таймеру молчания.
+    quiet_hours: list[int] = [1, 9]
+    #: Смещение местного времени от UTC (Питер — +3).
+    utc_offset_hours: float = 3.0
+    #: Удалять чат и у неё (revoke). По умолчанию — только у себя.
+    delete_for_both: bool = False
+    texts: MatchScriptTexts = MatchScriptTexts()
+
+
 class DialogLogConfig(BaseModel):
     """Журнал переписок с девушками после взаимного лайка (сбор данных).
 
@@ -343,6 +387,8 @@ class AutoActionsConfig(BaseModel):
     match_greeting: MatchGreetingConfig = MatchGreetingConfig()
     #: Её ответ на привет → через 30 мин её анкета + закреп (режим AUTO).
     match_intro: MatchIntroConfig = MatchIntroConfig()
+    #: После анкеты — сценарий знакомства по веткам (режим AUTO).
+    match_script: MatchScriptConfig = MatchScriptConfig()
     #: Журнал переписок с матчами (страница сайта /dialogs).
     dialog_log: DialogLogConfig = DialogLogConfig()
 

@@ -596,6 +596,10 @@ tests/test_match_greeter.py::TestSpamBlock::test_retry_still_blocked_requeues
 tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_match_on_auto_account_greets
 tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_observe_greets_after_manual_like
 tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_other_account_greets_from_its_own_client
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirected_account_greets_from_target
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirect_to_unknown_account_greets_from_own
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirect_failure_notifies_owner
+tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_set_redirect_live
 tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_foreign_chat_does_not_greet
 tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_spam_block_notifies_owner
 tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_paused_does_not_notify
@@ -620,12 +624,86 @@ tests/test_match_intro.py::TestMatchIntro::test_pin_disabled
 tests/test_match_intro.py::TestMatchIntro::test_pin_error_still_sent
 tests/test_match_intro.py::TestMatchIntro::test_forward_error_marks_error
 tests/test_match_intro.py::TestMatchIntro::test_flood_postpones
+tests/test_match_intro.py::TestMatchIntro::test_card_relayed_from_account_that_saw_it
+tests/test_match_intro.py::TestMatchIntro::test_relay_copies_not_found_is_error
+tests/test_match_intro.py::TestMatchIntro::test_own_card_preferred_over_other_account
+tests/test_match_intro.py::TestMatchIntro::test_owner_chatting_cancels_intro
+tests/test_match_intro.py::TestMatchIntro::test_only_her_reply_after_greeting_sends
 tests/test_match_intro.py::TestMatchIntro::test_missed_reply_found_in_history
 tests/test_match_intro.py::TestCollectorIntro::test_greeting_sent_enrolls
 tests/test_match_intro.py::TestCollectorIntro::test_greeting_not_sent_does_not_enroll
 tests/test_match_intro.py::TestCollectorIntro::test_private_reply_goes_to_intro
 tests/test_match_intro.py::TestCollectorIntro::test_leo_chat_is_not_a_reply
 tests/test_match_intro.py::TestCollectorIntro::test_run_notifies_owner_on_sent
+tests/test_match_script.py::TestClassify::test_kinds[\u0427\u0442\u043e \u044d\u0442\u043e?-asks_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u0442\u044b \u043c\u043d\u0435 \u043c\u043e\u044e \u0430\u043d\u043a\u0435\u0442\u0443 \u0441\u043a\u0438\u043d\u0443\u043b-asks_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u043d\u0430\u0445\u0440\u0435\u043d\u0430-asks_what]
+tests/test_match_script.py::TestClassify::test_kinds[?-about_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u0447\u0442\u043e?-about_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u041e \u0447\u0451\u043c?-about_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u0447\u0442\u043e \u0440\u0430\u0441\u0441\u043a\u0430\u0437\u044b\u0432\u0430\u0442\u044c-about_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u0421\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \u0441 \u043a\u0435\u043c \u043e\u0431\u0449\u0430\u0435\u0448\u044c\u0441\u044f, \u0440\u0435\u0448\u0438\u043b \u0447\u0442\u043e\u0431\u044b \u043d\u0435 \u043f\u0435\u0440\u0435\u043f\u0443\u0442\u0430\u0442\u044c?-asks_too_many]
+tests/test_match_script.py::TestClassify::test_kinds[\u044f \u043d\u0435 \u0434\u0430\u043c\u043e\u0447\u043a\u0430-not_damochka]
+tests/test_match_script.py::TestClassify::test_kinds[\u041a\u0430\u043a\u0430\u044f \u044f \u0442\u0435\u0431\u0435 \u0434\u0430\u043c\u043e\u0447\u043a\u0430-not_damochka]
+tests/test_match_script.py::TestClassify::test_kinds[\u0442\u044b \u0431\u043e\u0442?-asks_bot]
+tests/test_match_script.py::TestClassify::test_kinds[\u043d\u0435 \u043f\u0438\u0448\u0438 \u043c\u043d\u0435 \u0431\u043e\u043b\u044c\u0448\u0435-go_away]
+tests/test_match_script.py::TestClassify::test_kinds[\u0443 \u043c\u0435\u043d\u044f \u0435\u0441\u0442\u044c \u043f\u0430\u0440\u0435\u043d\u044c-go_away]
+tests/test_match_script.py::TestClassify::test_kinds[\u0438\u0434\u0438 \u043d\u0430\u0445\u0443\u0439-rude]
+tests/test_match_script.py::TestClassify::test_kinds[\u0442\u044b \u0434\u0435\u0431\u0438\u043b-rude]
+tests/test_match_script.py::TestClassify::test_kinds[\u0430\u0445\u0430\u0445 \u043f\u0438\u0437\u0434\u0435\u0446-other]
+tests/test_match_script.py::TestClassify::test_kinds[\u041c\u043d\u0435 20, \u0443\u0447\u0443\u0441\u044c \u0432 \u043f\u043e\u043b\u0438\u0442\u0435\u0445\u0435-other]
+tests/test_match_script.py::TestClassify::test_kinds[-other]
+tests/test_match_script.py::TestClassify::test_kinds[\u0440\u0430\u0431\u043e\u0442\u0430\u044e \u0434\u0438\u0437\u0430\u0439\u043d\u0435\u0440\u043e\u043c-other]
+tests/test_match_script.py::TestClassify::test_strongest_prefers_stop
+tests/test_match_script.py::TestDecide::test_table[after_pin-asks_what-expected0]
+tests/test_match_script.py::TestDecide::test_table[after_pin-about_what-expected1]
+tests/test_match_script.py::TestDecide::test_table[after_pin-asks_too_many-expected2]
+tests/test_match_script.py::TestDecide::test_table[after_pin-other-expected3]
+tests/test_match_script.py::TestDecide::test_table[wait_more-asks_too_many-expected4]
+tests/test_match_script.py::TestDecide::test_table[wait_more-other-expected5]
+tests/test_match_script.py::TestDecide::test_table[wait_more-asks_what-expected6]
+tests/test_match_script.py::TestDecide::test_table[tell_me-not_damochka-expected7]
+tests/test_match_script.py::TestDecide::test_table[tell_me-about_what-expected8]
+tests/test_match_script.py::TestDecide::test_table[tell_me-other-expected9]
+tests/test_match_script.py::TestDecide::test_table[tell_me-go_away-expected10]
+tests/test_match_script.py::TestDecide::test_table[after_pin-rude-expected11]
+tests/test_match_script.py::TestDecide::test_table[after_pin-asks_bot-expected12]
+tests/test_match_script.py::TestDecide::test_silence
+tests/test_match_script.py::TestScriptDb::test_old_db_gets_script_columns
+tests/test_match_script.py::TestScriptDb::test_list_only_active_intro_sent
+tests/test_match_script.py::TestMatchScript::test_start_after_intro
+tests/test_match_script.py::TestMatchScript::test_asks_what_card_here
+tests/test_match_script.py::TestMatchScript::test_too_many_then_convenient
+tests/test_match_script.py::TestMatchScript::test_reply_waits_for_delay
+tests/test_match_script.py::TestMatchScript::test_silence_3h_tell_me
+tests/test_match_script.py::TestMatchScript::test_silence_not_yet
+tests/test_match_script.py::TestMatchScript::test_quiet_hours_hold_nudge
+tests/test_match_script.py::TestMatchScript::test_not_damochka
+tests/test_match_script.py::TestMatchScript::test_about_what_ab_variant_recorded
+tests/test_match_script.py::TestMatchScript::test_her_story_goes_to_owner
+tests/test_match_script.py::TestMatchScript::test_go_away_deletes_chat_at_once
+tests/test_match_script.py::TestMatchScript::test_delete_for_both
+tests/test_match_script.py::TestMatchScript::test_asks_bot_hands_off_without_lying
+tests/test_match_script.py::TestMatchScript::test_owner_wrote_silences_bot
+tests/test_match_script.py::TestMatchScript::test_pin_service_message_is_not_owner
+tests/test_match_script.py::TestMatchScript::test_missed_reply_found_on_silence
+tests/test_match_script.py::TestMatchScript::test_give_up_after_day
+tests/test_match_script.py::TestMatchScript::test_specific_reply_not_overridden_by_chatter
+tests/test_match_script.py::TestMatchScript::test_only_in_auto[OBSERVE]
+tests/test_match_script.py::TestMatchScript::test_only_in_auto[SEMI_AUTO]
+tests/test_match_script.py::TestMatchScript::test_ignored_before_script_start
+tests/test_match_script.py::TestMatchScript::test_old_message_ignored
+tests/test_match_script.py::TestMatchScript::test_flood_postpones
+tests/test_match_script.py::TestMatchScript::test_error_marks_row_and_continues
+tests/test_match_script.py::TestMatchScript::test_disabled
+tests/test_match_script.py::TestCollectorScript::test_intro_sent_starts_script
+tests/test_match_script.py::TestCollectorScript::test_handoff_notifies_owner
+tests/test_match_script.py::TestCollectorScript::test_private_message_text_goes_to_script
+tests/test_match_script.py::TestScriptNotice::test_deleted
+tests/test_match_script.py::TestScriptNotice::test_bot_question
+tests/test_match_script.py::TestScriptNotice::test_owner_takeover_is_silent
+tests/test_match_script.py::TestScriptNotice::test_notice_has_no_her_text
+tests/test_match_script.py::TestDialogsLabel::test_script_step_shown_after_intro
 tests/test_parser.py::TestClassify::test_profiles[\u0441\u0430\u0448\u043a, 19, \u0441\u043f\u0431 \u2013 \u0437\u043d\u0430\u044e \u043b\u044e\u0431\u0432\u0438 \u043d\u0435 \u0431\u044b\u0432\u0430\u0435\u0442]
 tests/test_parser.py::TestClassify::test_profiles[\u041c\u0430\u0439\u044f, 18, \u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestClassify::test_profiles[*)))^, 18, \u0421\u0430\u043d\u043a\u0442 \u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433 \u2013 \u0412 \u043f\u043b\u0430\u043d\u0430\u0445]
@@ -692,6 +770,7 @@ tests/test_parser.py::TestMediaDetection::test_detect_media_type_no_media_attr
 tests/test_photo_taste.py::TestTasteModel::test_zones
 tests/test_photo_taste.py::TestTasteModel::test_photos_are_averaged_then_normalized
 tests/test_photo_taste.py::TestTasteModel::test_mean_prob_scores_each_photo
+tests/test_photo_taste.py::TestTasteModel::test_max_prob_one_good_photo_is_enough
 tests/test_photo_taste.py::TestTasteModel::test_old_model_keeps_mean_emb
 tests/test_photo_taste.py::TestTasteModel::test_missing_file_disables
 tests/test_photo_taste.py::TestTasteModel::test_disabled_does_not_read_file
@@ -850,6 +929,9 @@ tests/test_web.py::TestAccountSettings::test_toggle_scroll_for_one_account
 tests/test_web.py::TestAccountSettings::test_toggle_auto_independent_of_scroll
 tests/test_web.py::TestAccountSettings::test_both_off_is_observe
 tests/test_web.py::TestAccountSettings::test_update_mode_unknown_account_refused
+tests/test_web.py::TestAccountSettings::test_redirect_arrow_toggles
+tests/test_web.py::TestAccountSettings::test_redirect_unknown_account_refused
+tests/test_web.py::TestAccountSettings::test_no_redirect_arrow_with_one_account
 tests/test_web.py::TestAccountSettings::test_account_dropdown_in_app_drawer
 tests/test_web.py::TestAccountSettings::test_update_account_persists
 tests/test_web.py::TestAccountSettings::test_update_account_unknown_skipped
@@ -950,16 +1032,3 @@ tests/test_web.py::TestDialogsPage::test_list_shows_girl_and_last_message
 tests/test_web.py::TestDialogsPage::test_dialog_page_shows_whole_chat
 tests/test_web.py::TestDialogsPage::test_unknown_dialog_404
 tests/test_web.py::TestDialogsPage::test_export_json
-tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirected_account_greets_from_target
-tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirect_to_unknown_account_greets_from_own
-tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_redirect_failure_notifies_owner
-tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_set_redirect_live
-tests/test_web.py::TestAccountSettings::test_redirect_arrow_toggles
-tests/test_web.py::TestAccountSettings::test_redirect_unknown_account_refused
-tests/test_web.py::TestAccountSettings::test_no_redirect_arrow_with_one_account
-tests/test_photo_taste.py::TestTasteModel::test_max_prob_one_good_photo_is_enough
-tests/test_match_intro.py::TestMatchIntro::test_card_relayed_from_account_that_saw_it
-tests/test_match_intro.py::TestMatchIntro::test_relay_copies_not_found_is_error
-tests/test_match_intro.py::TestMatchIntro::test_own_card_preferred_over_other_account
-tests/test_match_intro.py::TestMatchIntro::test_owner_chatting_cancels_intro
-tests/test_match_intro.py::TestMatchIntro::test_only_her_reply_after_greeting_sends

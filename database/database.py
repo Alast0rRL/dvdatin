@@ -246,6 +246,9 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- анкету из чата Leo и закрепляет у обоих → INTRO_SENT. Ключ — аккаунт +
 -- user_id девушки (у каждого аккаунта своя переписка).
 -- status: WAITING_REPLY | SCHEDULED | INTRO_SENT | NO_PROFILE | OWNER_CHAT | ERROR
+-- script_*: сценарий знакомства после анкеты (collectors/match_script.py):
+-- шаг, время последнего сообщения бота, отложенный ответ (вид + срок), id
+-- последнего сообщения бота (новее исходящее = пишет владелец), варианты фраз.
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -259,6 +262,12 @@ CREATE TABLE IF NOT EXISTS match_dialogs (
     sent_at TEXT,
     pinned INTEGER NOT NULL DEFAULT 0,
     error TEXT NOT NULL DEFAULT '',
+    script_step TEXT NOT NULL DEFAULT '',
+    script_at TEXT NOT NULL DEFAULT '',
+    script_due_at TEXT NOT NULL DEFAULT '',
+    script_pending TEXT NOT NULL DEFAULT '',
+    script_msg_id INTEGER NOT NULL DEFAULT 0,
+    script_variant TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -453,9 +462,36 @@ class Database:
         # chat_id (свои диапазоны message id), общий контекст связывал MEDIA_ONLY
         # с карточкой другого аккаунта.
         await self._ensure_chat_context_account_session()
+        # Сценарий знакомства: колонки script_* в match_dialogs.
+        await self._ensure_match_dialogs_script_columns()
         # Логирование переписок: девушки из автопереписки (до появления
         # dialog_contacts) тоже попадают в реестр.
         await self._backfill_dialog_contacts()
+
+    #: Колонки сценария знакомства (старые БД) → тип.
+    _MATCH_SCRIPT_COLUMNS: dict[str, str] = {
+        "script_step": "TEXT NOT NULL DEFAULT ''",
+        "script_at": "TEXT NOT NULL DEFAULT ''",
+        "script_due_at": "TEXT NOT NULL DEFAULT ''",
+        "script_pending": "TEXT NOT NULL DEFAULT ''",
+        "script_msg_id": "INTEGER NOT NULL DEFAULT 0",
+        "script_variant": "TEXT NOT NULL DEFAULT ''",
+    }
+
+    async def _ensure_match_dialogs_script_columns(self) -> None:
+        """Добавляет в match_dialogs колонки сценария (идемпотентно)."""
+        cols = await self._connection.execute("PRAGMA table_info(match_dialogs)")
+        names = {row[1] for row in await cols.fetchall()}
+        for col, decl in self._MATCH_SCRIPT_COLUMNS.items():
+            if col in names:
+                continue
+            try:
+                await self._connection.execute(
+                    f"ALTER TABLE match_dialogs ADD COLUMN {col} {decl}"
+                )
+                await self._connection.commit()
+            except Exception as e:
+                logger.warning(f"match_dialogs.{col}: {e}")
 
     async def _backfill_dialog_contacts(self) -> None:
         """Переносит девушек из match_dialogs в dialog_contacts (идемпотентно)."""
@@ -1806,6 +1842,8 @@ class Database:
     _MATCH_DIALOG_FIELDS: frozenset[str] = frozenset({
         "username", "name", "profile_id", "status", "replied_at", "due_at",
         "sent_at", "pinned", "error",
+        "script_step", "script_at", "script_due_at", "script_pending",
+        "script_msg_id", "script_variant",
     })
 
     async def add_match_dialog(
@@ -1880,6 +1918,24 @@ class Database:
             WHERE account_session = ? AND status = ?
             ORDER BY greeted_at LIMIT ?""",
             (account_session or "", status, int(limit)),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
+
+    async def list_match_script_dialogs(
+        self, account_session: str, steps: tuple[str, ...], limit: int = 100,
+    ) -> list[dict]:
+        """Переписки аккаунта, идущие по сценарию (анкета отправлена, шаг
+        из ``steps``)."""
+        if not steps:
+            return []
+        marks = ", ".join("?" for _ in steps)
+        cursor = await self._connection.execute(
+            f"""SELECT * FROM match_dialogs
+            WHERE account_session = ? AND status = 'INTRO_SENT'
+              AND script_step IN ({marks})
+            ORDER BY script_at LIMIT ?""",
+            (account_session or "", *steps, int(limit)),
         )
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]

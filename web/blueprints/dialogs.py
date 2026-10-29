@@ -43,6 +43,26 @@ INTRO_LABELS: dict[str, str] = {
     "ERROR": "ошибка автопереписки",
 }
 
+#: Шаги сценария знакомства (match_dialogs.script_step) по-русски.
+SCRIPT_LABELS: dict[str, str] = {
+    "after_pin": "сценарий: ждём ответа на анкету",
+    "wait_more": "сценарий: ответил про анкету",
+    "tell_me": "сценарий: «Рассказывайте, дамочка»",
+    "handoff": "сценарий пройден — пишешь ты",
+    "owner": "пишешь сам — бот замолчал",
+    "stopped": "молчит — бот больше не пишет",
+    "deleted": "чат удалён (не пиши / грубость)",
+    "error": "ошибка сценария",
+}
+
+
+def intro_label(row: dict[str, Any]) -> str:
+    """Подпись автопереписки: шаг сценария, если он начат, иначе статус."""
+    step = row.get("script_step") or ""
+    if row.get("intro_status") == "INTRO_SENT" and step in SCRIPT_LABELS:
+        return SCRIPT_LABELS[step]
+    return INTRO_LABELS.get(row.get("intro_status") or "", "")
+
 
 def _get_db() -> SyncDB:
     return current_app.config["SYNC_DB"]
@@ -68,7 +88,7 @@ def index() -> str:
     accounts = sorted({g["account_session"] for g in db.get_dialog_list()})
     for g in girls:
         g["who"] = _who(g)
-        g["intro_label"] = INTRO_LABELS.get(g.get("intro_status") or "", "")
+        g["intro_label"] = intro_label(g)
     return render_template(
         "dialogs.html",
         girls=girls,
@@ -99,5 +119,5 @@ def dialog(session_name: str, user_id: int) -> str:
     if data is None:
         abort(404)
     data["who"] = _who(data)
-    data["intro_label"] = INTRO_LABELS.get(data.get("intro_status") or "", "")
+    data["intro_label"] = intro_label(data)
     return render_template("dialog.html", d=data)

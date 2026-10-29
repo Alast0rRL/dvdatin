@@ -291,6 +291,14 @@ class MatchIntro:
                     error = f"pin: {e}"[:300]
                     logger.error(f"MatchIntro: не закрепил анкету {name}: {e}")
         row["pinned"] = pinned
+        # Последнее сообщение бота в её чате — граница для сценария знакомства.
+        ids_sent = [
+            getattr(m, "id", None)
+            for m in (sent if isinstance(sent, list) else [sent])
+        ]
+        row["sent_msg_id"] = max(
+            (i for i in ids_sent if isinstance(i, int)), default=0,
+        )
         await self._update(
             account_session, user_id,
             status=INTRO_SENT, sent_at=_now().isoformat(),
