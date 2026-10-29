@@ -16,6 +16,7 @@ from collectors.match_intro import (
     ERROR,
     INTRO_SENT,
     NO_PROFILE,
+    OWNER_CHAT,
     SCHEDULED,
     WAITING_REPLY,
     MatchIntro,
@@ -315,6 +316,48 @@ class TestMatchIntro:
         assert run(intro.send_intro(client, "dvai_2", due_row())) == INTRO_SENT
         src.forward_messages.assert_not_called()
         assert client.forward_messages.await_args.kwargs["from_peer"] == LEO
+
+    @staticmethod
+    def _chat(*msgs: tuple[bool, str]) -> MagicMock:
+        """История её чата (новые первыми): (наше исходящее?, время ISO)."""
+        items = [
+            SimpleNamespace(out=out, date=datetime.fromisoformat(at))
+            for out, at in msgs
+        ]
+
+        def iter_messages(*args, **kwargs):
+            async def gen():
+                for m in items:
+                    yield m
+            return gen()
+
+        return MagicMock(side_effect=iter_messages)
+
+    def test_owner_chatting_cancels_intro(self) -> None:
+        """Прод 2026-10-29 (@stfu_ckup): она ответила на стикер, владелец сам
+        с ней переписывается — анкету посреди разговора не шлём."""
+        db = make_db()
+        client = make_client()
+        client.iter_messages = self._chat(
+            (False, "2026-10-29T10:03:00+00:00"),
+            (True, "2026-10-29T10:02:00+00:00"),   # владелец
+            (False, "2026-10-29T10:01:00+00:00"),  # её ответ
+            (True, "2026-10-29T09:59:59+00:00"),   # стикер-привет бота
+        )
+        status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == OWNER_CHAT
+        client.forward_messages.assert_not_called()
+        assert db.update_match_dialog.await_args.kwargs["status"] == OWNER_CHAT
+
+    def test_only_her_reply_after_greeting_sends(self) -> None:
+        db = make_db()
+        client = make_client()
+        client.iter_messages = self._chat(
+            (False, "2026-10-29T10:01:00+00:00"),
+            (True, "2026-10-29T09:59:59+00:00"),   # стикер-привет бота
+        )
+        status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
 
     def test_missed_reply_found_in_history(self) -> None:
         """Ответ пришёл, пока бот лежал — сверка по истории планирует анкету."""

@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- status SCHEDULED + due_at (через delay_min); в срок бот пересылает ей её же
 -- анкету из чата Leo и закрепляет у обоих → INTRO_SENT. Ключ — аккаунт +
 -- user_id девушки (у каждого аккаунта своя переписка).
--- status: WAITING_REPLY | SCHEDULED | INTRO_SENT | NO_PROFILE | ERROR
+-- status: WAITING_REPLY | SCHEDULED | INTRO_SENT | NO_PROFILE | OWNER_CHAT | ERROR
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,

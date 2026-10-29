@@ -19,6 +19,9 @@
   планируются, а запланированное ждёт;
 - один раз на девушку и аккаунт;
 - спам-блок/FloodWait — не ошибка: срок сдвигается на паузу, повтор позже;
+- владелец сам написал ей после привета (наше исходящее новее привета) —
+  анкету не шлём, статус OWNER_CHAT (прод 2026-10-29: анкета ушла посреди
+  его переписки);
 - ошибки не ломают pipeline (всё в try/except, лог ERROR).
 """
 
@@ -42,6 +45,8 @@ WAITING_REPLY: str = "WAITING_REPLY"
 SCHEDULED: str = "SCHEDULED"
 INTRO_SENT: str = "INTRO_SENT"
 NO_PROFILE: str = "NO_PROFILE"
+#: Владелец сам написал ей после привета — анкету не шлём (переписку ведёт он).
+OWNER_CHAT: str = "OWNER_CHAT"
 ERROR: str = "ERROR"
 
 #: Сверка ответов по истории — не чаще, чем раз в столько секунд.
@@ -50,6 +55,9 @@ REPLY_CHECK_INTERVAL_SEC: float = 600.0
 REPLY_CHECK_BATCH: int = 20
 #: Сколько последних сообщений её чата смотреть при сверке.
 REPLY_CHECK_HISTORY: int = 10
+#: Сколько последних сообщений её чата смотреть перед отправкой анкеты:
+#: есть ли там сообщения владельца после привета.
+OWNER_CHECK_HISTORY: int = 50
 
 
 #: Копии анкеты от другого аккаунта ищем среди сообщений не старше этого.
@@ -200,6 +208,29 @@ class MatchIntro:
         NO_PROFILE / ERROR / FLOOD (повтор позже)."""
         user_id = int(row["user_id"])
         name = row.get("name") or str(user_id)
+        try:
+            peer = await client.get_input_entity(row.get("username") or user_id)
+            owner_wrote = await self._owner_wrote(client, peer, row)
+        except Exception as e:
+            pause = flood_pause_sec(e)
+            if pause is not None:
+                due = _now() + timedelta(seconds=pause)
+                await self._update(
+                    account_session, user_id, due_at=due.isoformat(),
+                    error=str(e)[:300],
+                )
+                return "FLOOD"
+            logger.error(f"MatchIntro: не прочитал чат {name}: {e}")
+            await self._update(
+                account_session, user_id, status=ERROR, error=str(e)[:300],
+            )
+            return ERROR
+        if owner_wrote:
+            logger.info(
+                f"MatchIntro: с {name} уже переписывается владелец — анкету не шлю"
+            )
+            await self._update(account_session, user_id, status=OWNER_CHAT)
+            return OWNER_CHAT
         source, ids = await self._find_card(row.get("profile_id"), account_session)
         if not ids:
             logger.warning(
@@ -221,7 +252,6 @@ class MatchIntro:
                         error=f"relay from {source}: no messages",
                     )
                     return ERROR
-            peer = await client.get_input_entity(row.get("username") or user_id)
             sent = await client.forward_messages(peer, ids, from_peer=from_peer)
         except Exception as e:
             pause = flood_pause_sec(e)
@@ -271,6 +301,28 @@ class MatchIntro:
             f"{' и закрепил 📌' if pinned else ''}"
         )
         return INTRO_SENT
+
+    @staticmethod
+    async def _owner_wrote(client: Any, peer: Any, row: dict) -> bool:
+        """Есть ли в её чате наше исходящее новее привета (пишет владелец).
+
+        Стикер-привет отправлен ДО ``greeted_at``, а анкету бот ещё не слал —
+        значит любое исходящее позже ``greeted_at`` написал владелец.
+        """
+        greeted = _parse_dt(row.get("greeted_at"))
+        if greeted is None:
+            return False
+        async for msg in client.iter_messages(peer, limit=OWNER_CHECK_HISTORY):
+            date = getattr(msg, "date", None)
+            if not isinstance(date, datetime):
+                continue
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            if date <= greeted:
+                break
+            if getattr(msg, "out", False):
+                return True
+        return False
 
     async def _find_card(
         self, profile_id: object, account_session: str,

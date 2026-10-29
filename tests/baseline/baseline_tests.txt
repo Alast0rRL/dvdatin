@@ -961,3 +961,5 @@ tests/test_photo_taste.py::TestTasteModel::test_max_prob_one_good_photo_is_enoug
 tests/test_match_intro.py::TestMatchIntro::test_card_relayed_from_account_that_saw_it
 tests/test_match_intro.py::TestMatchIntro::test_relay_copies_not_found_is_error
 tests/test_match_intro.py::TestMatchIntro::test_own_card_preferred_over_other_account
+tests/test_match_intro.py::TestMatchIntro::test_owner_chatting_cancels_intro
+tests/test_match_intro.py::TestMatchIntro::test_only_her_reply_after_greeting_sends
