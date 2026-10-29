@@ -1584,6 +1584,54 @@ class TestStreamErrorBanner:
         parsed = sync.get_stream_error()
         assert parsed and parsed["reason"] == "Leo ждёт текст в композере"
 
+    def _seed_match_stop(self, db) -> None:
+        import json
+
+        payload = {
+            "kind": "match_stop",
+            "message": "Поиск остановлен: тебя лайкнули",
+            "reason": "Ты понравился 1 девушке, показать её?",
+            "at": "2026-10-29T04:18:31+00:00",
+        }
+        asyncio.get_event_loop().run_until_complete(
+            db.set_state("stream_error", json.dumps(payload, ensure_ascii=False))
+        )
+
+    def test_match_stop_banner_has_resume_button(self, client, sync_db) -> None:
+        _login(client)
+        _, _, db = sync_db
+        self._seed_match_stop(db)
+        banner = client.get("/chat/feed?page=1").get_json()["banner"]
+        assert 'id="resume-search"' in banner
+        assert 'action="/chat/resume"' in banner
+
+    def test_generic_banner_has_no_resume_button(self, client, sync_db) -> None:
+        _login(client)
+        _, _, db = sync_db
+        self._seed(db)
+        banner = client.get("/chat/feed?page=1").get_json()["banner"]
+        assert 'id="resume-search"' not in banner
+
+    def test_resume_route_calls_bridge(self, client, monkeypatch) -> None:
+        _login(client)
+        calls: list[int] = []
+
+        def fake_resume() -> str:
+            calls.append(1)
+            return "OK"
+
+        monkeypatch.setattr("web.actions.resume_search_sync", fake_resume)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        resp = client.post("/chat/resume", data={"csrf_token": token})
+        assert resp.status_code == 302
+        assert calls == [1]
+
+    def test_resume_route_requires_csrf(self, client) -> None:
+        _login(client)
+        resp = client.post("/chat/resume", data={"csrf_token": "bad"})
+        assert resp.status_code == 403
+
 
 class TestFeedAlbums:
     """Анкета-альбом (фото + подпись, затем фото без текста) — одна строка, как в TG."""

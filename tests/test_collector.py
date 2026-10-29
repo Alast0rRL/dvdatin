@@ -3145,6 +3145,67 @@ class TestCollectorAutoActions:
         assert collector.mode is Mode.OBSERVE
         notify.assert_not_awaited()
 
+    def test_resume_after_match_stop_presses_show(self) -> None:
+        """«Продолжить»: прежний режим (AUTO) + «Показать» на карточке лайка."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        collector._auto_engine.mode = Mode.AUTO
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 801, "Ты понравился 1 девушке, показать её?",
+                buttons=["1 👍", "2 💤"],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        self._run_stream_with_match_stop(collector, auto_client)
+        assert collector.mode is Mode.OBSERVE
+        stored = {c.args[0]: c.args[1] for c in collector._db.set_state.call_args_list}
+        assert stored.get("match_stop_prev_mode") == "AUTO"
+        assert '"kind": "match_stop"' in stored["stream_error"]
+
+        with patch.object(AppConfig, "persist_mode"):
+            ok = asyncio.get_event_loop().run_until_complete(
+                collector.resume_after_match_stop()
+            )
+        assert ok is True
+        assert collector.mode is Mode.AUTO
+        auto_client.send_message.assert_called_once_with(1234060895, "1 👍")
+        deleted = [c.args[0] for c in collector._db.delete_state.call_args_list]
+        assert "match_stop_prev_mode" in deleted
+
+    def test_resume_after_match_stop_default_semi_auto(self) -> None:
+        """Режим до стопа неизвестен (рестарт, пустой app_state) → SEMI_AUTO."""
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, other_client
+        )
+        collector._auto_engine.mode = Mode.OBSERVE
+        collector._db.get_state = AsyncMock(return_value=None)
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 801, "Ты понравился 1 девушке, показать её?",
+                buttons=["1. Показать.", "2. Не хочу больше никого смотреть."],
+            )
+
+        auto_client.iter_messages = iter_messages
+
+        with patch.object(AppConfig, "persist_mode"):
+            ok = asyncio.get_event_loop().run_until_complete(
+                collector.resume_after_match_stop()
+            )
+        assert ok is True
+        assert collector.mode is Mode.SEMI_AUTO
+        auto_client.send_message.assert_called_once_with(1234060895, "1. Показать.")
+
     def test_start_stream_main_menu_presses_rocket(self) -> None:
         """Главное меню Leo ([«1 🚀», «2», «3», «4»]) → жмём «1 🚀».
 

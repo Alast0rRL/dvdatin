@@ -1,6 +1,8 @@
 {# Красный баннер: бот не смог продолжить ленту анкет (сбой автопотока).
    Пишется коллектором в app_state.stream_error, сюда попадает через
-   web/db.SyncDB.get_stream_error(). Обновляется polling'ом (chat.feed). #}
+   web/db.SyncDB.get_stream_error(). Обновляется polling'ом (chat.feed).
+   kind == "match_stop" — остановка на карточке «Ты понравился…»: режим уже
+   OBSERVE, кнопка «Продолжить» (POST /chat/resume) возвращает режим и ленту. #}
 {% if stream_error %}
 <div class="stream-error" role="alert">
     <div class="stream-error__title">
@@ -9,8 +11,18 @@
     {% if stream_error.reason %}
     <div class="stream-error__reason">Последнее в чате — {{ stream_error.reason }}</div>
     {% endif %}
+    {% if stream_error.kind == 'match_stop' or stream_error.message == 'Поиск остановлен: тебя лайкнули' %}
+    <div class="stream-error__hint">
+        Режим переключён на OBSERVE. «Продолжить» откроет её анкету и вернёт прежний режим.
+    </div>
+    <form method="post" action="{{ url_for('chat.resume_search') }}" class="stream-error__actions">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn--sm btn--primary" id="resume-search">▶ Продолжить</button>
+    </form>
+    {% else %}
     <div class="stream-error__hint">
         Проверь чат с Leo — возможно, нужно нажать кнопку или ответить вручную.
     </div>
+    {% endif %}
 </div>
 {% endif %}

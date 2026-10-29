@@ -79,6 +79,9 @@ STREAM_ERROR_SNAPSHOT_LIMIT: int = 12
 #: Ключ app_state: карточка «Ты понравился…», на которой остановлен поиск
 #: (``<account_session>:<message_id>``) — чтобы уведомлять владельца один раз.
 MATCH_STOP_STATE_KEY: str = "match_stop_card"
+#: Режим до остановки на карточке взаимного лайка — его возвращает кнопка
+#: «Продолжить» на сайте (``resume_after_match_stop``).
+MATCH_STOP_PREV_MODE_KEY: str = "match_stop_prev_mode"
 
 #: Штатные сообщения Leo, которые парсер не относит ни к одному типу, но
 #: которые приходят на КАЖДОЙ анкете: в лог — DEBUG, а не WARNING.
@@ -302,6 +305,8 @@ class DvinchikCollector:
         # ключуются парой (account_session, chat_id) — иначе MEDIA_ONLY одного
         # аккаунта привязывался к карточке другого.
         self._pending_profiles: dict[tuple[str, int], int] = {}
+        # Режим до остановки на карточке взаимного лайка («Продолжить»).
+        self._mode_before_match_stop: Mode | None = None
         self._stats = stats
         # C: per-chat блокировка для гарантии порядка PROFILE → MEDIA_ONLY
         # при конкурентных handlers (без глобальной блокировки).
@@ -1292,6 +1297,7 @@ class DvinchikCollector:
         )
         self._auto_engine.note_card(self._dvinchik_chat_id, card_msg.id)
         self._auto_engine.abort_like_chains(self._dvinchik_chat_id)
+        self._mode_before_match_stop = self.mode
         self.set_mode(Mode.OBSERVE)
         return True
 
@@ -1314,10 +1320,14 @@ class DvinchikCollector:
             if await self._db.get_state(MATCH_STOP_STATE_KEY) == card_key:
                 notify = False
             await self._db.set_state(MATCH_STOP_STATE_KEY, card_key)
+            prev_mode = self._mode_before_match_stop
+            if prev_mode is not None and prev_mode != Mode.OBSERVE:
+                await self._db.set_state(MATCH_STOP_PREV_MODE_KEY, prev_mode.value)
             await self._db.set_state(
                 STREAM_ERROR_STATE_KEY,
                 json.dumps(
                     {
+                        "kind": "match_stop",
                         "message": "Поиск остановлен: тебя лайкнули",
                         "reason": card_text,
                         "snapshot": [f"Leo: {card_text[:120]}"],
@@ -1331,8 +1341,64 @@ class DvinchikCollector:
         if notify:
             await self._auto_engine.notify_owner(
                 f"💘 {card_text}\n\nПоиск остановлен (режим OBSERVE) — посмотри "
-                "сам в Дайвинчике. Продолжить: /mode on или режим на сайте."
+                "сам в Дайвинчике. Продолжить: кнопка «Продолжить» на сайте "
+                "или /mode on."
             )
+
+    async def _match_stop_prev_mode(self) -> Mode:
+        """Режим, который был до остановки на карточке лайка (иначе SEMI_AUTO)."""
+        prev = self._mode_before_match_stop
+        if prev is None and self._db is not None:
+            try:
+                raw = await self._db.get_state(MATCH_STOP_PREV_MODE_KEY)
+                if raw:
+                    prev = Mode(raw)
+            except Exception as e:
+                logger.error(f"AutoAction: не удалось прочитать режим до стопа: {e}")
+        if prev is None or prev == Mode.OBSERVE:
+            prev = Mode.SEMI_AUTO
+        return prev
+
+    async def resume_after_match_stop(self) -> bool:
+        """Кнопка «Продолжить» после остановки на карточке «Ты понравился…».
+
+        Возвращает режим, который был до остановки (по умолчанию SEMI_AUTO),
+        снимает баннер и продолжает ленту. Если карточка всё ещё активна
+        (после неё нет нашего ответа), жмёт «Показать» — иначе
+        ``start_auto_stream`` снова увидел бы её и остановил поиск. Анкету
+        лайкнувшей Leo пришлёт обычной карточкой, её оценит pipeline.
+        True — лента продолжена.
+        """
+        mode = await self._match_stop_prev_mode()
+        self._mode_before_match_stop = None
+        self.set_mode(mode)
+        if self._db is not None:
+            try:
+                await self._db.delete_state(MATCH_STOP_PREV_MODE_KEY)
+            except Exception as e:
+                logger.error(f"AutoAction: не удалось сбросить режим до стопа: {e}")
+        await self._clear_stream_error()
+        if self._auto_engine is None or not self._auto_engine.enabled:
+            return False
+        logger.info(f"AutoAction: «Продолжить» — режим {mode.value}, продолжаю поиск")
+
+        for msg in await self._recent_history():  # новые → старые
+            if getattr(msg, "out", False):
+                break  # после последней карточки уже ответили
+            if not self._is_match_card(msg):
+                continue
+            button = next(
+                (t for t in self._extract_button_texts(msg)
+                 if self._is_match_show_button(t)),
+                None,
+            )
+            if button is None:
+                break
+            logger.info(
+                f"AutoAction: карточка лайка (msg={msg.id}) — жму «{button}»"
+            )
+            return await self._auto_engine.send_text(button)
+        return await self.start_auto_stream()
 
     async def _handle_captcha(self, msg: object | None = None) -> bool:
         """Разруливает капчу/проверку Leo (Stage 7.6 «память капч»).

@@ -288,6 +288,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .stream-error__reason,
 .stream-error__hint { margin-top: 5px; font-size: 13px; }
 .stream-error__hint { color: var(--text-soft); }
+.stream-error__actions { margin-top: 10px; }
 
 /* Строка события: колонка времени + содержимое. */
 .row {

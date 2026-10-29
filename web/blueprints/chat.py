@@ -340,6 +340,33 @@ def captcha_delete(captcha_id: int) -> tuple:
     return redirect(_safe_next())
 
 
+@chat_bp.route("/chat/resume", methods=["POST"])
+@login_required
+def resume_search() -> tuple:
+    """«Продолжить» в баннере «Поиск остановлен: тебя лайкнули».
+
+    Возвращает режим до остановки, жмёт «Показать» на карточке лайка
+    (если она ещё активна) и продолжает ленту.
+    """
+    if request.form.get("csrf_token", "") != session.get("_csrf_token"):
+        flash("Ошибка безопасности", "error")
+        return ("CSRF token invalid", 403)
+
+    from web.actions import resume_search_sync
+
+    try:
+        status = resume_search_sync()
+    except Exception:
+        status = "ERROR"
+    if status == "OK":
+        flash("Поиск продолжен", "success")
+    elif status == "DISABLED":
+        flash("Бот не запущен — поиск не продолжен", "warning")
+    else:
+        flash("Не удалось продолжить поиск — см. отладку", "error")
+    return redirect(_safe_next())
+
+
 # ── Ручное решение по REVIEW-анкете ────────────────────────────────
 
 @chat_bp.route("/chat/profile/<int:profile_id>/<action>", methods=["POST"])

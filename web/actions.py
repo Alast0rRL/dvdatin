@@ -192,3 +192,27 @@ def set_mode_sync(mode: "Mode") -> str:
             f"(loop.running={loop.is_running()})"
         )
     return "OK"
+
+
+def resume_search_sync() -> str:
+    """Кнопка «Продолжить» в баннере остановки поиска (карточка лайка).
+
+    Возвращает режим до остановки и продолжает ленту
+    (``DvinchikCollector.resume_after_match_stop``). Статус: "OK",
+    "DISABLED" (нет коллектора/цикла), "ERROR".
+    """
+    if _collector is None:
+        return "DISABLED"
+    loop = _loop()
+    if loop is None or loop.is_closed():
+        logger.warning("Resume bridge: loop unavailable")
+        return "DISABLED"
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _collector.resume_after_match_stop(), loop,
+        )
+        future.result(timeout=30)
+    except Exception as e:
+        logger.error(f"Resume bridge: {type(e).__name__}: {e!r}")
+        return "ERROR"
+    return "OK"
