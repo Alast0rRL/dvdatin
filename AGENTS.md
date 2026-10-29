@@ -79,8 +79,9 @@ filters:
 - **Class-based test organization** (not function-level).
 - **Factory helpers** per test file: `make_config()`, `make_profile()`, `make_parsed()`, `make_event()`.
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
-- **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB.
-- Current counts: test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (166), test_control_bot (17), test_decision (23), test_deterministic_scoring (84), test_filter (26), test_manual_review (13), test_match_greeter (26), test_match_intro (25), test_parser (63), test_preferences (26), test_profile (21), test_error_reporter (8), test_photo_taste (33), test_photo_vice (13), test_web (148), test_dialog_logger (25) → **~950 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
+- **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
+- Current counts (2026-10-29): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (176), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (26), test_match_intro (25), test_parser (63), test_photo_taste (43), test_photo_vice (13), test_preferences (26), test_profile (21), test_web (158) → **952 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Gotchas
 

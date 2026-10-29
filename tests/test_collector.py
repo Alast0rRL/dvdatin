@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from tests.mocks import make_tg_client
+
 import pytest
 
 from collectors.dvinchik_collector import (
@@ -2404,9 +2406,8 @@ class TestCollectorAutoActions:
     def test_like_decision_sends_composer_button_on_auto_account(self) -> None:
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config()
 
@@ -2443,9 +2444,8 @@ class TestCollectorAutoActions:
         """
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config(like_message_enabled=True)
 
@@ -2478,9 +2478,8 @@ class TestCollectorAutoActions:
         """Неинформативная анкета тоже получает цепочку «Берем)» (LIKE_ONLY удалён)."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config(like_message_enabled=True)
 
@@ -2507,9 +2506,8 @@ class TestCollectorAutoActions:
         """Пока композер открыт, «👎» на новую карточку не уходит в него."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config(like_message_enabled=True)
 
@@ -2549,9 +2547,8 @@ class TestCollectorAutoActions:
     def test_logged_profile_is_not_sent_twice(self) -> None:
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), self._make_decision(AIDecision.DISLIKE),
@@ -2591,9 +2588,8 @@ class TestCollectorAutoActions:
         """
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), self._make_decision(AIDecision.DISLIKE),
@@ -2624,9 +2620,8 @@ class TestCollectorAutoActions:
     def test_no_action_when_message_on_other_account(self) -> None:
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config()
 
@@ -2650,9 +2645,8 @@ class TestCollectorAutoActions:
     def test_observe_mode_no_action_even_if_enabled(self) -> None:
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         config = self._make_config(mode="OBSERVE", enabled=True)
 
@@ -2706,9 +2700,8 @@ class TestCollectorAutoActions:
 
     def test_filter_reject_sends_dislike_to_keep_stream_moving(self) -> None:
         """Фильтровый REJECT на авто-аккаунте → 👎 (лента не замирает)."""
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector_reject(
             self._make_config(), auto_client, other_client, "REJECT"
@@ -2732,9 +2725,8 @@ class TestCollectorAutoActions:
 
     def test_filter_review_sends_dislike_to_keep_stream_moving(self) -> None:
         """Фильтровый REVIEW на авто-аккаунте → 👎 (лента не замирает)."""
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector_reject(
             self._make_config(), auto_client, other_client, "REVIEW"
@@ -2758,9 +2750,8 @@ class TestCollectorAutoActions:
 
     def test_filter_reject_no_action_on_other_account(self) -> None:
         """REJECT на НЕ-авто-аккаунте → никакого действия."""
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector_reject(
             self._make_config(), auto_client, other_client, "REJECT"
@@ -2810,8 +2801,7 @@ class TestCollectorAutoActions:
         """Есть активная анкета — обрабатываем её, ✨🔍 не шлём."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
         collector = self._make_collector(
@@ -2845,8 +2835,7 @@ class TestCollectorAutoActions:
         """Активной анкеты нет — ✨🔍 не отправляется, ничего не делаем."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
         collector = self._make_collector(
@@ -2870,8 +2859,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_presses_view_button_when_promo(self) -> None:
         """Активной анкеты нет, Leo прислал промо «Смотреть анкеты» — жмём кнопку."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -2897,8 +2885,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_no_button_press_when_already_sent(self) -> None:
         """Кнопка уже нажата (после промо есть исходящий текст кнопки) — повторно нет."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -2923,8 +2910,7 @@ class TestCollectorAutoActions:
     def test_start_stream_premium_promo_presses_decline(self) -> None:
         """Premium-промо после реакции [⭐️Активировать, Пока без Premium]:
         нажимаем отказную кнопку («Активировать» никогда) — лента продолжается."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -2951,8 +2937,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_premium_decline_already_sent(self) -> None:
         """Отказ «Пока без Premium» уже отправлен после промо — повторно не шлём."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -2977,8 +2962,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_city_check_answers_no(self) -> None:
         """«Борюсь с эгоизмом, ты живешь в Питере?» [Да, Нет] → «Нет»."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         collector = self._make_collector(
             self._make_config(), None, auto_client, AsyncMock()
         )
@@ -3000,8 +2984,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_city_check_already_answered(self) -> None:
         """После проверки уже есть наш ответ (вручную «Да») — не жмём."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         collector = self._make_collector(
             self._make_config(), None, auto_client, AsyncMock()
         )
@@ -3021,8 +3004,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_stale_city_check_ignored(self) -> None:
         """Старая проверка под более свежей клавиатурой — не отвечаем."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         collector = self._make_collector(
             self._make_config(), None, auto_client, AsyncMock()
         )
@@ -3041,8 +3023,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_premium_promo_without_decline_does_nothing(self) -> None:
         """Premium-промо БЕЗ отказной кнопки («Активировать»/«⭐️») — не трогаем."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3066,8 +3047,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_unknown_captcha_waits_for_owner(self) -> None:
         """Неизвестная капча: кнопку НЕ жмём, капча записывается (на сайт)."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3125,8 +3105,7 @@ class TestCollectorAutoActions:
         стоит, пока владелец не разберёт лайки и не включит режим снова),
         владелец получает уведомление, на сайте — баннер.
         """
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3152,8 +3131,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_match_card_already_answered(self) -> None:
         """После карточки уже был наш ответ — поиск не останавливаем."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3178,8 +3156,7 @@ class TestCollectorAutoActions:
 
     def test_match_stop_notifies_once_per_card(self) -> None:
         """Повторный старт на той же карточке — без второго уведомления."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3201,8 +3178,7 @@ class TestCollectorAutoActions:
 
     def test_resume_after_match_stop_presses_show(self) -> None:
         """«Продолжить»: прежний режим (AUTO) + «Показать» на карточке лайка."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3235,8 +3211,7 @@ class TestCollectorAutoActions:
 
     def test_resume_after_match_stop_default_semi_auto(self) -> None:
         """Режим до стопа неизвестен (рестарт, пустой app_state) → SEMI_AUTO."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3309,8 +3284,7 @@ class TestCollectorAutoActions:
     def test_resume_after_match_stop_blocked_by_like_limit(self) -> None:
         """«Продолжить» при исчерпанном лимите: остаёмся в OBSERVE, ничего не жмём."""
         import time as _time
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         collector = self._make_collector(
             self._make_config(), None, auto_client, AsyncMock()
         )
@@ -3331,8 +3305,7 @@ class TestCollectorAutoActions:
         у него нет кнопки «🚀 Смотреть анкеты», поэтому ни один обработчик не
         срабатывал — лента была заблокирована до ручного нажатия.
         """
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3359,8 +3332,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_main_menu_already_pressed(self) -> None:
         """«1 🚀» уже отправлен после меню — повторно не жмём."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3387,8 +3359,7 @@ class TestCollectorAutoActions:
 
         Поиск останавливается; «1 🚀» из устаревшего меню не жмём.
         """
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3415,8 +3386,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_main_menu_never_presses_other_buttons(self) -> None:
         """Меню без «1 🚀» — ничего не жмём (2/3/4 — Моя анкета/стоп/Premium)."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3439,8 +3409,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_unrelated_card_does_not_stop(self) -> None:
         """Кнопка «Показать» без карточки лайка — поиск не останавливаем."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3468,8 +3437,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_known_captcha_sends_stored_answer(self) -> None:
         """Выученная капча — бот сам отправляет запомненный ответ."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3502,8 +3470,7 @@ class TestCollectorAutoActions:
 
     def test_start_stream_known_captcha_idempotent(self) -> None:
         """Выученный ответ уже отправлен после капчи — повторно не шлём."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3534,8 +3501,7 @@ class TestCollectorAutoActions:
         self,
     ) -> None:
         """fallback_press_last=true: неизвестную капчу пробиваем последней кнопкой."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
         config.auto_actions.captcha.fallback_press_last = True
@@ -3566,8 +3532,7 @@ class TestCollectorAutoActions:
         self,
     ) -> None:
         """captcha.enabled=false — полностью старое поведение: последняя кнопка."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
         config.auto_actions.captcha.enabled = False
@@ -3599,8 +3564,7 @@ class TestCollectorAutoActions:
     ) -> None:
         """Гео-капча Leo («Пришли расположение…») — нажимаем ОБЫЧНУЮ кнопку,
         а не специальную с запросом геолокации (её текстом не нажать)."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
         config.auto_actions.captcha.fallback_press_last = True
@@ -3645,8 +3609,7 @@ class TestCollectorAutoActions:
     ) -> None:
         """Неизвестная капча без fallback: кнопка не нажимается (даже если
         какая-то кнопка уже отправлялась — для неё ответа владельца всё равно нет)."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3677,8 +3640,7 @@ class TestCollectorAutoActions:
         Регресс теста: присваивание iter_messages стояло ВНУТРИ генератора и не
         выполнялось — тест ничего не проверял и проходил случайно.
         """
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3705,8 +3667,7 @@ class TestCollectorAutoActions:
     def test_start_stream_reads_history_once_for_buttons(self) -> None:
         """Проверки кнопок (лайк-карточка/«Смотреть»/Premium/меню) делят ОДНУ
         выборку истории — раньше каждая скачивала её сама, дважды (FloodWait)."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3729,8 +3690,7 @@ class TestCollectorAutoActions:
 
     def test_history_read_error_does_not_stop_stream(self) -> None:
         """Сбой чтения истории — кнопки не жмём, автопоток не падает."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         collector = self._make_collector(
             self._make_config(), None, auto_client, AsyncMock()
         )
@@ -3755,8 +3715,7 @@ class TestCollectorAutoActions:
         """
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
         collector = self._make_collector(
@@ -3789,8 +3748,7 @@ class TestCollectorAutoActions:
         — анкета уже обработана, повторно ❤️ не шлём."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(),
@@ -3815,8 +3773,7 @@ class TestCollectorAutoActions:
     def test_start_stream_recovers_open_composer(self) -> None:
         """Leo ждёт текст в «зависшем» композере (после рестарта) — бот сам
         досылает «Берем)», чтобы разблокировать ленту (не сбой)."""
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
@@ -3847,8 +3804,7 @@ class TestCollectorAutoActions:
         это сбой: пишем app_state.stream_error и уведомляем владельца."""
         import json
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(like_message_enabled=False),
@@ -3880,8 +3836,7 @@ class TestCollectorAutoActions:
         """Лента снова пошла (активная анкета обработана) — отметку сбоя снимаем."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(),
@@ -3908,8 +3863,7 @@ class TestCollectorAutoActions:
         реакция шлётся (фото относится к текущей анкете, а не смена состояния)."""
         from models.decision import AIDecision
 
-        auto_client = AsyncMock()
-        auto_client.send_message = AsyncMock()
+        auto_client = make_tg_client()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(),
@@ -3936,9 +3890,8 @@ class TestCollectorAutoActions:
         """Реклама приходит БЕЗ кнопки, а «🚀 Смотреть анкеты» — на ОТДЕЛЬНОМ
         сообщении после неё. Живая обработка рекламного UNKNOWN-сообщения должна
         отсканировать чат и нажать кнопку, а не застрять на этом экране."""
-        auto_client = AsyncMock()
+        auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
-        auto_client.send_message = AsyncMock()
         other_client = AsyncMock()
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client

@@ -256,7 +256,7 @@ cp config/config.example.yaml config/config.yaml
 cp config/preferences.example.yaml config/preferences.yaml   # по желанию
 
 python main.py                 # или run.bat на Windows
-python -m pytest tests/ -v     # ~950 тестов, ~3 мин
+python -m pytest tests/ -v     # ~950 тестов, ~3 мин; невызванная корутина = падение (pytest.ini)
 pip install -r requirements-ml.txt   # по желанию: фото-модель (torch, open_clip, scikit-learn)
 ```
 
@@ -404,8 +404,6 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 - `proxy/` содержит vendored xray-core и реальный VLESS-конфиг — не коммитить изменения креденшиалов.
 - Автопереписка ограничена тем, что попросил владелец: стикер-привет и пересылка её анкеты с закрепом. Генерации реплик и следующих шагов диалога нет — не добавлять до явной команды (см. `Roadmap.md`).
 - Крупный модуль: `database/database.py` (~2700 строк) — кандидат на разделение. `collectors/dvinchik_collector.py` разделён на миксины (2026-10-29, ~1000 строк); имена из `leo_markers` по-прежнему импортируются из `collectors.dvinchik_collector`.
-- Тесты дают ~120 предупреждений `coroutine ... was never awaited` (моки `AsyncMock` в `test_control_bot`, `test_match_greeter` и др.) — на результат не влияют.
-- `tests/baseline/baseline_tests.txt` (770 строк) отстаёт от текущих ~950 тестов.
 
 ### Лицензия
 

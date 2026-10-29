@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+from tests.mocks import make_tg_client
+
 import pytest
 
 from collectors.auto_action import (
@@ -50,7 +52,7 @@ def make_auto_config(**overrides) -> AutoActionsConfig:
 
 
 def make_client() -> AsyncMock:
-    client = AsyncMock()
+    client = make_tg_client()
     client.is_connected.return_value = True
     client.send_message = AsyncMock(return_value=MagicMock())
     client.forward_messages = AsyncMock(return_value=MagicMock())
