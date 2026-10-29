@@ -68,7 +68,7 @@ MATCH «Начинай общаться 👉 Имя»
 
 | Зона | Процесс | Компоненты | Контакт с Telegram |
 |---|---|---|---|
-| **Collector** | сбор и сохранение | `dvinchik_collector`, `raw_worker`, `raw_queue`, `dedup`, `city_normalizer`, `stats`, `auto_action`, `error_reporter` | ✅ Telethon |
+| **Collector** | сбор и сохранение | `dvinchik_collector` (+ миксины `account_engines`, `stream_control`, `leo_navigation`, `history_sync`, `match_dialogs`, `photo_steps`, `outgoing`, `console_output`, маркеры `leo_markers`), `raw_worker`, `raw_queue`, `dedup`, `city_normalizer`, `stats`, `auto_action`, `error_reporter` | ✅ Telethon |
 | **Матчи и переписка** | привет, начало диалога, журнал | `match_greeter`, `match_intro`, `dialog_logger` | ✅ Telethon |
 | **Scoring (детерминированный)** | решение по тексту | `filter_engine`, `filter_service`, `profile_normalizer`, `feature_extractor`, `score_engine`, `decision_service`, `reason_labels`, `app/preferences` | ❌ Telegram-free |
 | **Фото-модель (CLIP, CPU)** | вкус по фото, сигареты/алкоголь | `clip_encoder`, `photo_taste`, `photo_vice`, `scripts/train_photo_taste.py` (`requirements-ml.txt`) | ❌ Telegram-free |
@@ -97,7 +97,17 @@ dvdatin/
 ├── telegram/                    # client.py (Telethon), control_bot.py
 ├── models/                      # raw.py, profile.py, filter.py, features.py, decision.py, human_decision.py
 ├── services/                    # Telegram-free бизнес-логика (см. таблицу выше)
-├── collectors/                  # см. таблицу выше
+├── collectors/                  # см. таблицу выше; коллектор разделён на миксины:
+│   ├── dvinchik_collector.py    #   DvinchikCollector: конструктор, хендлеры, RAW-first вход, pipeline _process_message
+│   ├── leo_markers.py           #   маркеры/тексты Leo, ключи app_state, captcha_signature, _CURRENT_SESSION
+│   ├── account_engines.py       #   AccountEnginesMixin: движок на аккаунт, «Скроллинг»/«Авто», set_mode, _session_scope
+│   ├── stream_control.py        #   StreamControlMixin: start_auto_stream, стоп на взаимном лайке, resume, сбой автопотока
+│   ├── leo_navigation.py        #   LeoNavigationMixin: кнопки Leo (лента/Premium/меню/город), капчи
+│   ├── history_sync.py          #   HistorySyncMixin: sync_chat_history, run_history_sync, recover_backlog
+│   ├── match_dialogs.py         #   MatchDialogsMixin: привет матчу, автопереписка, журнал лички
+│   ├── photo_steps.py           #   PhotoStepsMixin: фото карточек, PHOTO_TASTE/PHOTO_VICE, досчёт
+│   ├── outgoing.py              #   OutgoingMixin: наши исходящие, ручные действия, ручные решения REVIEW
+│   └── console_output.py        #   ConsoleOutputMixin: Rich-вывод, сериализация entities/reply_markup
 ├── web/                         # Stage 9 Web UI: Flask (create_app, blueprints, SyncDB, photos)
 ├── static/                      # CSS/JS для Web UI
 ├── scripts/                     # train_photo_taste.py — переобучение модели вкуса
@@ -393,7 +403,7 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 
 - `proxy/` содержит vendored xray-core и реальный VLESS-конфиг — не коммитить изменения креденшиалов.
 - Автопереписка ограничена тем, что попросил владелец: стикер-привет и пересылка её анкеты с закрепом. Генерации реплик и следующих шагов диалога нет — не добавлять до явной команды (см. `Roadmap.md`).
-- Крупные модули: `collectors/dvinchik_collector.py` (~3700 строк) и `database/database.py` (~2700 строк) — кандидаты на разделение.
+- Крупный модуль: `database/database.py` (~2700 строк) — кандидат на разделение. `collectors/dvinchik_collector.py` разделён на миксины (2026-10-29, ~1000 строк); имена из `leo_markers` по-прежнему импортируются из `collectors.dvinchik_collector`.
 - Тесты дают ~120 предупреждений `coroutine ... was never awaited` (моки `AsyncMock` в `test_control_bot`, `test_match_greeter` и др.) — на результат не влияют.
 - `tests/baseline/baseline_tests.txt` (770 строк) отстаёт от текущих ~950 тестов.
 
