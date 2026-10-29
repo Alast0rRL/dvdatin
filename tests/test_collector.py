@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 
 import yaml
+
+from app.config import AccountControls
 import json
 import sqlite3
 import time
@@ -4061,7 +4063,7 @@ class TestCollectorSwitchAccount:
         return AppConfig(**data)
 
     def test_each_account_has_own_engine_and_mode(self, tmp_path) -> None:
-        """Режим ставится аккаунту отдельно; второй аккаунт не трогается."""
+        """Переключатели у каждого аккаунта свои; второй аккаунт не трогается."""
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text("auto_actions:\n  account_session: dvai_2\n", encoding="utf-8")
         collector = self._make_collector()
@@ -4070,23 +4072,46 @@ class TestCollectorSwitchAccount:
         assert dvai is not dvai_2
         assert dvai.client is collector._clients[0]
         assert dvai_2.client is collector._clients[1]
-        # Без записи в account_modes второй аккаунт стартует в OBSERVE.
-        assert dvai.mode == Mode.OBSERVE and dvai_2.mode == Mode.SEMI_AUTO
+        # Без своей записи второй аккаунт стартует со всем выключенным.
+        assert collector.controls_for("dvai") == AccountControls()
+        assert collector.controls_for("dvai_2") == AccountControls(scroll=True)
 
-        collector.set_mode(Mode.AUTO, "dvai")
-        assert dvai.mode == Mode.AUTO and dvai.enabled
+        # «Авто» без скроллинга: лента dvai не листается, переписка — да.
+        collector.set_controls("dvai", auto=True)
+        assert not dvai.enabled
+        assert collector._dialog_mode("dvai") == "AUTO"
+        assert collector._dialog_mode("dvai_2") == "SEMI_AUTO"
+        # Скроллинг без «Авто» у основного — переписки нет.
+        assert collector.auto_for("dvai_2") is False
+
+        collector.set_controls("dvai", scroll=True)
+        assert dvai.enabled and collector.auto_for("dvai")
         assert dvai_2.mode == Mode.SEMI_AUTO
         saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        assert saved["auto_actions"]["account_modes"] == {"dvai": "AUTO"}
-        # Режим основного аккаунта (project.mode) не изменился.
+        assert saved["auto_actions"]["account_controls"] == {
+            "dvai": {"scroll": True, "auto": True},
+        }
+        # Основной аккаунт (project.mode) не изменился.
         assert "project" not in saved
 
-        # Перезапуск: режимы читаются из account_modes.
+        # Стоп на лайке выключает только скроллинг, «Авто» остаётся.
+        collector.set_mode(Mode.OBSERVE, "dvai")
+        assert not dvai.enabled and collector.auto_for("dvai")
+
+        # Перезапуск: переключатели читаются из account_controls.
+        cfg = self._make_config()
+        cfg.auto_actions.account_controls = {"dvai": AccountControls(auto=True)}
+        restarted = DvinchikCollector([AsyncMock(), AsyncMock()], make_db_mock(), cfg)
+        assert restarted.controls_for("dvai") == AccountControls(auto=True)
+        assert restarted.auto_engine("dvai").enabled is False
+        assert restarted.auto_engine("dvai_2").mode == Mode.SEMI_AUTO
+
+    def test_legacy_account_modes_still_read(self) -> None:
+        """Старый account_modes (короткоживущий формат) читается как переключатели."""
         cfg = self._make_config()
         cfg.auto_actions.account_modes = {"dvai": Mode.AUTO}
-        restarted = DvinchikCollector([AsyncMock(), AsyncMock()], make_db_mock(), cfg)
-        assert restarted.auto_engine("dvai").mode == Mode.AUTO
-        assert restarted.auto_engine("dvai_2").mode == Mode.SEMI_AUTO
+        collector = DvinchikCollector([AsyncMock(), AsyncMock()], make_db_mock(), cfg)
+        assert collector.controls_for("dvai") == AccountControls(scroll=True, auto=True)
 
     def test_message_handled_by_receiving_account_engine(self) -> None:
         """Карточка с dvai обрабатывается движком dvai, а не основного (dvai_2)."""

@@ -1,27 +1,34 @@
 {% extends "base.html" %}
 {% block title %}DvAI — события{% endblock %}
 
-{# ── Режим работы — СВОЯ строка на каждый аккаунт ──
-   У каждого аккаунта свой движок и режим: можно листать ленту сразу на двух.
+{# ── Управление — СВОЯ строка на каждый аккаунт ──
+   Два независимых переключателя: «Скроллинг» — бот сам листает ленту Leo
+   (❤️/👎), «Авто» — переписка с девушкой в личке после взаимного лайка.
+   Оба выключены — только наблюдение (бывший OBSERVE, отдельной кнопки нет).
    Кнопка с именем аккаунта делает его основным (его чат — в ленте сайта,
    с него уходят ручные ❤️/👎 и ответы на капчи). #}
 {% block mode_switch %}
 <div class="acct-rows" id="acct-rows">
-{% set rows = accounts if accounts else [{'session': '', 'phone': '', 'mode': mode}] %}
+{% set rows = accounts if accounts else [{'session': '', 'phone': '', 'scroll': mode in ('SEMI_AUTO', 'AUTO'), 'auto': mode == 'AUTO'}] %}
 {% for acc in rows %}
 <div class="acct-row {% if acc.session and acc.session == account_session %}is-main{% endif %}"
      data-account="{{ acc.session }}">
     <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch"
           {% if loop.first %}id="mode-switch"{% endif %}
-          aria-label="Режим {{ acc.session or 'бота' }}">
+          aria-label="Управление {{ acc.session or 'ботом' }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
         {% if acc.session %}<input type="hidden" name="account_session" value="{{ acc.session }}">{% endif %}
-        {% for m in modes %}
-        <button type="submit" name="mode" value="{{ m }}"
-                class="mode-switch__btn mode-switch__btn--{{ m|lower }} {% if acc.mode == m %}is-active{% endif %}"
-                title="{{ {'OBSERVE': 'только смотрим', 'SEMI_AUTO': 'авто-действия + ручные кнопки на REVIEW', 'AUTO': 'полная автоматика'}[m] }}">
-            {{ m|replace('_', ' ') }}
+        {% for key, label, hint in [
+            ('scroll', 'Скроллинг', 'бот сам листает ленту: ❤️/👎 и дальше'),
+            ('auto', 'Авто', 'переписка с девушкой в личке после взаимного лайка'),
+        ] %}
+        {% set on = acc[key] %}
+        <button type="submit" name="{{ key }}" value="{{ 'off' if on else 'on' }}"
+                class="mode-switch__btn mode-switch__btn--{{ key }} {% if on %}is-active{% endif %}"
+                aria-pressed="{{ 'true' if on else 'false' }}"
+                title="{{ label }}: {{ 'включён' if on else 'выключен' }} — {{ hint }}">
+            {{ label }}
         </button>
         {% endfor %}
     </form>
@@ -49,7 +56,14 @@
 {% endblock %}
 
 {% block topbar_status %}
-<span class="mode-pill mode-pill--{{ mode|lower }}" id="mode-pill">{{ mode|replace('_', ' ') }}</span>
+{# Состояние основного аккаунта: что из двух переключателей включено. #}
+{% set main = accounts|selectattr('session', 'equalto', account_session)|list|first %}
+{% set scroll_on = main.scroll if main else mode in ('SEMI_AUTO', 'AUTO') %}
+{% set auto_on = main.auto if main else mode == 'AUTO' %}
+<span class="mode-pill mode-pill--{{ mode|lower }}" id="mode-pill"
+      title="Основной аккаунт{% if account_session %} ({{ account_session }}){% endif %}">
+    {%- if scroll_on and auto_on %}скроллинг + авто{% elif scroll_on %}скроллинг{% elif auto_on %}авто{% else %}наблюдение{% endif -%}
+</span>
 {% endblock %}
 
 {% block topbar_actions %}

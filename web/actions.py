@@ -243,6 +243,37 @@ def set_mode_sync(mode: "Mode", session: str | None = None) -> str:
     return "OK"
 
 
+def set_controls_sync(session: str | None, scroll: bool, auto: bool) -> str:
+    """«Скроллинг»/«Авто» аккаунта на живом коллекторе (+ толчок ленты).
+
+    Статус: "OK", "DISABLED" (нет коллектора), "ERROR".
+    """
+    if _collector is None:
+        return "DISABLED"
+    try:
+        _collector.set_controls(session, scroll=scroll, auto=auto)
+    except Exception as e:
+        logger.error(f"Controls bridge: set_controls failed: {type(e).__name__}: {e!r}")
+        return "ERROR"
+    if not scroll:
+        return "OK"
+    loop = _loop()
+    if loop is None or loop.is_closed():
+        logger.warning("Controls bridge: loop unavailable")
+        return "OK"
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _with_session(_collector.start_auto_stream, session=session), loop,
+        )
+        future.result(timeout=30)
+    except Exception as e:
+        logger.error(
+            f"Controls bridge: stream kick failed: {type(e).__name__}: {e!r} "
+            f"(loop.running={loop.is_running()})"
+        )
+    return "OK"
+
+
 def resume_search_sync(session: str | None = None) -> str:
     """Кнопка «Продолжить» в баннере остановки поиска (карточка лайка).
 

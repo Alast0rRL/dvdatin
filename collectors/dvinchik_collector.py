@@ -35,6 +35,7 @@ from collectors.dvinchik_parser import DvinchikParser
 from collectors.match_greeter import MatchGreeter
 from collectors.match_intro import INTRO_SENT, MatchIntro
 from collectors.raw_worker import DvinchikRawWorker, RawTask
+from app.config import AccountControls
 from core.types import Mode
 from models.decision import AIDecision
 from models.raw import MessageType, ParsedMatch
@@ -380,6 +381,11 @@ class DvinchikCollector:
             self._engines[self._primary_session] = self._build_auto_engine(
                 self._primary_session
             )
+        # Переключатель «Авто» (автопереписка в личке) каждого аккаунта.
+        # «Скроллинг» живёт в режиме движка ленты (OBSERVE = выключен).
+        self._auto_flags: dict[str, bool] = {
+            name: config.controls_for(name).auto for name in self._engines
+        }
         # Worker потребляет RawQueue и выполняет pipeline вне Telegram-хендлера.
         # Если worker не задан (тесты/отладка) — обработка идёт синхронно в
         # хендлере (fallback). В проде всегда привязан worker.
@@ -461,30 +467,80 @@ class DvinchikCollector:
             return engine.mode
         return self._config.mode_for(session or self._primary_session)
 
-    def set_mode(self, mode: Mode, session: str | None = None) -> None:
-        """Меняет режим аккаунта на лету и сохраняет в config.yaml.
+    def auto_for(self, session: str | None = None) -> bool:
+        """Включена ли у аккаунта автопереписка в личке («Авто»)."""
+        target = self._resolve_session(session)
+        if self._auto_flags.get(target):
+            return True
+        engine = self._engines.get(target)
+        return engine is not None and engine.mode == Mode.AUTO
 
-        ``session`` None — основной аккаунт (ControlBot, старые вызовы).
-        Режим каждого аккаунта — ``auto_actions.account_modes``; у основного
-        дублируется в ``project.mode``.
+    def controls_for(self, session: str | None = None) -> AccountControls:
+        """Переключатели аккаунта: «Скроллинг» ленты и «Авто» (личка)."""
+        return AccountControls(
+            scroll=self.mode_for(session) != Mode.OBSERVE,
+            auto=self.auto_for(session),
+        )
+
+    def _dialog_mode(self, session: str | None) -> str:
+        """Режим для автопереписки/приветствий (``match_*.modes``).
+
+        «Авто» включено → ``AUTO`` (автопереписка работает), иначе — режим
+        ленты: автопереписка (``match_intro.modes = [AUTO]``) молчит, а
+        стикер-привет (все режимы) уходит как раньше.
+        """
+        if self.auto_for(session):
+            return Mode.AUTO.value
+        return self.mode_for(session).value
+
+    def set_controls(
+        self, session: str | None = None, *,
+        scroll: bool | None = None, auto: bool | None = None,
+    ) -> AccountControls:
+        """Меняет переключатели аккаунта на лету и сохраняет в config.yaml.
+
+        ``None`` — переключатель не трогаем. Скроллинг и «Авто» независимы:
+        оба выключены — наблюдение (бывший OBSERVE).
         """
         target = self._resolve_session(session)
+        current = self.controls_for(target)
+        new = AccountControls(
+            scroll=current.scroll if scroll is None else bool(scroll),
+            auto=current.auto if auto is None else bool(auto),
+        )
         engine = self._engines.get(target)
         if engine is not None:
-            engine.mode = mode
+            # Движку ленты важен только скроллинг; AUTO = скроллинг + «Авто».
+            engine.mode = new.legacy_mode
+        self._auto_flags[target] = new.auto
         if target == self._primary_session:
-            self._config.project.mode = mode
+            self._config.project.mode = new.legacy_mode
         try:
             if target:
-                self._config.persist_account_mode(self._config_path, target, mode)
+                self._config.persist_account_controls(self._config_path, target, new)
             else:
-                self._config.persist_mode(self._config_path, mode)
+                self._config.persist_mode(self._config_path, new.legacy_mode)
             logger.info(
-                f"Режим {target or 'аккаунта'} изменён на {mode.value} "
-                "(сохранён в config.yaml)"
+                f"{target or 'Аккаунт'}: скроллинг "
+                f"{'вкл' if new.scroll else 'выкл'}, авто {'вкл' if new.auto else 'выкл'} "
+                "(сохранено в config.yaml)"
             )
         except Exception as e:
             logger.error(f"Не удалось сохранить режим в config.yaml: {e}")
+        return new
+
+    def set_mode(self, mode: Mode, session: str | None = None) -> None:
+        """Старый интерфейс режима (ControlBot, стоп на лайке, «Продолжить»).
+
+        OBSERVE — выключает только скроллинг («Авто» в личке не трогаем:
+        лайк в ленте — не повод бросать переписку), SEMI_AUTO — включает
+        скроллинг, AUTO — скроллинг и «Авто». ``session`` None — основной.
+        """
+        self.set_controls(
+            session,
+            scroll=mode != Mode.OBSERVE,
+            auto=True if mode == Mode.AUTO else None,
+        )
 
     async def mode_block_reason(
         self, mode: Mode, session: str | None = None,
@@ -552,7 +608,7 @@ class DvinchikCollector:
         return AutoActionEngine(
             client=client,
             config=auto_cfg,
-            mode=self._config.mode_for(session),
+            mode=self._config.controls_for(session).legacy_mode,
             chat_id=self._dvinchik_chat_id,
             notify_client=notify_client,
             db=self._db,
@@ -1401,7 +1457,7 @@ class DvinchikCollector:
         session = task.account_session or self._session_for_client(client)
         try:
             status = await self._match_greeter.greet(
-                client, session, match, self.mode_for(session).value,
+                client, session, match, self._dialog_mode(session),
             )
         except Exception as e:
             logger.error(f"MatchGreeting error: {e}")
@@ -1441,7 +1497,7 @@ class DvinchikCollector:
             session = self._session_for_client(getattr(event, "client", None))
             date = getattr(getattr(event, "message", None), "date", None)
             await self._match_intro.note_reply(
-                session, sender_id, self.mode_for(session).value,
+                session, sender_id, self._dialog_mode(session),
                 at=date if isinstance(date, datetime) else None,
             )
         except Exception as e:
@@ -1458,7 +1514,7 @@ class DvinchikCollector:
         if True:
             try:
                 results = await self._match_intro.process(
-                    client, session, self.mode_for(session).value,
+                    client, session, self._dialog_mode(session),
                 )
             except Exception as e:
                 logger.error(f"MatchIntro: проход {session}: {e}")
@@ -1514,7 +1570,7 @@ class DvinchikCollector:
         if True:
             try:
                 results = await self._match_greeter.retry_queued(
-                    client, session, self.mode_for(session).value,
+                    client, session, self._dialog_mode(session),
                 )
             except Exception as e:
                 logger.error(f"MatchGreeting: дозапись очереди {session}: {e}")
@@ -1544,7 +1600,7 @@ class DvinchikCollector:
         card_text = (getattr(card_msg, "text", "") or "").strip()
         logger.warning(
             f"AutoAction: карточка взаимного лайка (msg={card_msg.id}) — "
-            f"«{card_text[:80]}»: останавливаю поиск (режим OBSERVE)"
+            f"«{card_text[:80]}»: останавливаю поиск (скроллинг выключен)"
         )
         self._auto_engine.note_card(self._dvinchik_chat_id, card_msg.id)
         self._auto_engine.abort_like_chains(self._dvinchik_chat_id)
@@ -1598,7 +1654,8 @@ class DvinchikCollector:
             logger.error(f"AutoAction: не удалось сохранить остановку поиска: {e}")
         if notify:
             await self._auto_engine.notify_owner(
-                f"💘 {card_text}\n\nПоиск остановлен (режим OBSERVE) — посмотри "
+                f"💘 {card_text}\n\nПоиск остановлен (скроллинг "
+                f"{self._current_session() or 'аккаунта'} выключен) — посмотри "
                 "сам в Дайвинчике. Продолжить: кнопка «Продолжить» на сайте "
                 "или /mode on."
             )

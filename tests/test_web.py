@@ -291,9 +291,10 @@ class TestAppShell:
         _login(client)
         data = client.get("/").get_data(as_text=True)
         assert "/settings/mode" in data
-        for m in ("OBSERVE", "SEMI_AUTO", "AUTO"):
-            assert f'name="mode" value="{m}"' in data
-        assert "is-active" in data  # текущий режим подсвечен
+        # Два независимых переключателя вместо трёх режимов (OBSERVE = оба выкл).
+        assert 'name="scroll" value="on"' in data
+        assert 'name="auto" value="on"' in data
+        assert 'value="OBSERVE"' not in data
 
     def test_settings_button_and_forms_in_drawer(self, client) -> None:
         """В панели остались только настройки, которые меняют редко."""
@@ -352,7 +353,8 @@ class TestAppShell:
         assert 'value="18"' in data      # age_min
         assert 'value="19"' in data      # age_max
         assert "Санкт-Петербург" in data  # city_allowed
-        assert 'name="mode" value="OBSERVE"' in data
+        # project.mode OBSERVE → оба переключателя выключены (кнопки «включить»).
+        assert 'name="scroll" value="on"' in data and 'name="auto" value="on"' in data
 
     def test_legacy_pages_redirect_to_app(self, client) -> None:
         """Старые страницы ведут на главный экран (без 404)."""
@@ -967,13 +969,15 @@ class TestAccountSettings:
             yaml.dump(cfg_data, f, allow_unicode=True)
 
     def test_topbar_has_row_per_account(self, client, tmp_path) -> None:
-        """Своя строка «режим + аккаунт» на каждый аккаунт, режимы раздельные."""
+        """Своя строка на каждый аккаунт: «Скроллинг» и «Авто», без OBSERVE."""
         import re
+        import yaml
         self._write_config(tmp_path)
         cfg_path = tmp_path / "config.yaml"
-        import yaml
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-        cfg["auto_actions"]["account_modes"] = {"dvai": "AUTO"}
+        cfg["auto_actions"]["account_controls"] = {
+            "dvai": {"scroll": False, "auto": True},
+        }
         cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         _login(client)
         data = client.get("/").get_data(as_text=True)
@@ -982,27 +986,26 @@ class TestAccountSettings:
         top = data[data.index('id="acct-rows"'):]
         row1 = top[:top.index('data-account="dvai_2"')]
         row2 = top[top.index('data-account="dvai_2"'):top.index("</header>")]
-        # dvai — своя запись AUTO; dvai_2 (основной) — project.mode.
-        assert re.search(r'value="AUTO"\s+class="[^"]*is-active', row1)
-        assert re.search(r'value="SEMI_AUTO"\s+class="[^"]*is-active', row2)
+        header = data[:data.index("</header>")]
+        # Отдельной кнопки OBSERVE / SEMI AUTO больше нет.
+        assert 'value="OBSERVE"' not in header and 'value="SEMI_AUTO"' not in header
+        # dvai: только «Авто» (своя запись) → кнопка скроллинга включит его.
+        assert re.search(r'name="scroll" value="on"\s+class="[^"]*--scroll "', row1)
+        assert re.search(r'name="auto" value="off"\s+class="[^"]*--auto is-active', row1)
+        # dvai_2 (основной): project.mode SEMI_AUTO → скроллинг вкл, авто выкл.
+        assert re.search(r'name="scroll" value="off"\s+class="[^"]*--scroll is-active', row2)
+        assert re.search(r'name="auto" value="on"\s+class="[^"]*--auto "', row2)
         assert 'name="account_session" value="dvai"' in row1
-        # Основной аккаунт подсвечен.
+        # Основной аккаунт подсвечен, плашка — его состояние.
         assert re.search(r'class="acct-row is-main"\s+data-account="dvai_2"', data)
         assert not re.search(r'class="acct-row is-main"\s+data-account="dvai"', data)
+        assert re.search(r'id="mode-pill"[^>]*>\s*скроллинг\s*<', data)
 
-    def test_update_mode_for_one_account(self, client, tmp_path) -> None:
-        """Режим из строки аккаунта меняет только этот аккаунт."""
-        self._write_config(tmp_path)
-        import asyncio
-        import threading
-        import yaml
-        from web import actions as web_actions
-
-        calls = []
-
+    @staticmethod
+    def _fake_collector(calls: list):
         class _FakeCollector:
-            def set_mode(self, mode, session=None) -> None:
-                calls.append(("set", mode.value, session))
+            def set_controls(self, session=None, *, scroll=None, auto=None):
+                calls.append(("set", session, scroll, auto))
 
             async def mode_block_reason(self, mode, session=None):
                 calls.append(("check", mode.value, session))
@@ -1012,33 +1015,71 @@ class TestAccountSettings:
                 calls.append(("stream", session))
                 return True
 
+        return _FakeCollector()
+
+    def _post_live(self, client, data: dict, calls: list):
+        import asyncio
+        import threading
+        from web import actions as web_actions
+
         worker_loop = asyncio.new_event_loop()
         t = threading.Thread(target=worker_loop.run_forever, daemon=True)
         t.start()
         _login(client)
         try:
             with patch("web.actions._loop", return_value=worker_loop):
-                web_actions.set_collector(_FakeCollector())
+                web_actions.set_collector(self._fake_collector(calls))
                 with client.session_transaction() as sess:
-                    token = sess.get("_csrf_token", "")
-                resp = client.post(
-                    "/settings/mode",
-                    data={"mode": "AUTO", "account_session": "dvai",
-                          "csrf_token": token},
-                    follow_redirects=True,
-                )
-                assert resp.status_code == 200
+                    data = {**data, "csrf_token": sess.get("_csrf_token", "")}
+                return client.post("/settings/mode", data=data, follow_redirects=True)
         finally:
             web_actions.set_collector(None)
             worker_loop.call_soon_threadsafe(worker_loop.stop)
             t.join(timeout=5)
-        assert ("check", "AUTO", "dvai") in calls
-        assert ("set", "AUTO", "dvai") in calls
+
+    def test_toggle_scroll_for_one_account(self, client, tmp_path) -> None:
+        """«Скроллинг» в строке dvai включает ленту только у dvai."""
+        import yaml
+        self._write_config(tmp_path)
+        calls: list = []
+        resp = self._post_live(
+            client, {"scroll": "on", "account_session": "dvai"}, calls,
+        )
+        assert resp.status_code == 200
+        assert ("check", "SEMI_AUTO", "dvai") in calls
+        assert ("set", "dvai", True, False) in calls
         assert ("stream", "dvai") in calls
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
-        assert cfg["auto_actions"]["account_modes"] == {"dvai": "AUTO"}
-        # Режим основного аккаунта (dvai_2) не тронут.
+        assert cfg["auto_actions"]["account_controls"] == {
+            "dvai": {"scroll": True, "auto": False},
+        }
+        # Основной аккаунт (dvai_2) не тронут.
         assert cfg["project"]["mode"] == "SEMI_AUTO"
+
+    def test_toggle_auto_independent_of_scroll(self, client, tmp_path) -> None:
+        """«Авто» включается без скроллинга: лимит не проверяется, лента не трогается."""
+        import yaml
+        self._write_config(tmp_path)
+        calls: list = []
+        self._post_live(client, {"auto": "on", "account_session": "dvai"}, calls)
+        assert calls == [("set", "dvai", False, True)]
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["auto_actions"]["account_controls"]["dvai"] == {
+            "scroll": False, "auto": True,
+        }
+
+    def test_both_off_is_observe(self, client, tmp_path) -> None:
+        """Оба выключены у основного → project.mode OBSERVE (старое наблюдение)."""
+        import yaml
+        self._write_config(tmp_path)  # dvai_2: SEMI_AUTO → скроллинг вкл
+        calls: list = []
+        self._post_live(client, {"scroll": "off", "account_session": "dvai_2"}, calls)
+        assert ("set", "dvai_2", False, False) in calls
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["project"]["mode"] == "OBSERVE"
+        assert cfg["auto_actions"]["account_controls"]["dvai_2"] == {
+            "scroll": False, "auto": False,
+        }
 
     def test_update_mode_unknown_account_refused(self, client, tmp_path) -> None:
         self._write_config(tmp_path)
@@ -1048,10 +1089,10 @@ class TestAccountSettings:
             token = sess.get("_csrf_token", "")
         client.post(
             "/settings/mode",
-            data={"mode": "AUTO", "account_session": "nope", "csrf_token": token},
+            data={"scroll": "on", "account_session": "nope", "csrf_token": token},
         )
         cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
-        assert "account_modes" not in cfg["auto_actions"]
+        assert "account_controls" not in cfg["auto_actions"]
 
     def test_account_dropdown_in_app_drawer(self, client, tmp_path) -> None:
         self._write_config(tmp_path)

@@ -37,7 +37,7 @@ def _protect_real_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from app.config import AppConfig
 
-    for name in ("persist_mode", "persist_account_mode", "persist_account_session"):
+    for name in ("persist_mode", "persist_account_controls", "persist_account_session"):
         original = getattr(AppConfig, name)
 
         def guarded(self, path, *args, _original=original, **kwargs):

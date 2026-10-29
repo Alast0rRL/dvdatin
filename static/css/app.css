@@ -200,8 +200,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 }
 .mode-switch__btn:hover { color: var(--text); }
 .mode-switch__btn.is-active { background: var(--accent); color: var(--on-accent); }
-.mode-switch__btn--auto.is-active { background: var(--dislike); }
-.mode-switch__btn--observe.is-active { background: var(--observe); color: var(--text); }
+/* Переключатели независимы: включённый — залит, выключенный — приглушён. */
+.mode-switch__btn--scroll.is-active { background: var(--accent); color: var(--on-accent); }
+.mode-switch__btn--auto.is-active { background: var(--like); color: var(--on-accent); }
 
 /* ── Строки аккаунтов (топбар) ─────────────────────────────────── */
 /* Своя строка «режим + аккаунт» на каждый аккаунт: у каждого свой режим,

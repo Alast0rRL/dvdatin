@@ -67,10 +67,13 @@ ai:
 # Работает только при project.mode: SEMI_AUTO (или AUTO) + enabled: true.
 # account_session — ОСНОВНОЙ аккаунт: его чат в ленте сайта, с него ручные
 #   ❤️/👎 и ответы на капчи с сайта, им управляет ControlBot.
-# account_modes — режим КАЖДОГО аккаунта отдельно ({session: OBSERVE|SEMI_AUTO|
-#   AUTO}): у каждого аккаунта свой движок, ленту можно листать сразу на двух.
-#   Нет записи → у основного project.mode, у остальных OBSERVE. Пишется сайтом
-#   (строки аккаунтов в шапке).
+# account_controls — два НЕЗАВИСИМЫХ переключателя КАЖДОГО аккаунта:
+#   scroll — автоскроллинг ленты (бот сам ставит ❤️/👎 и листает дальше);
+#   auto   — автопереписка с девушкой в личке после взаимного лайка.
+#   Оба false — только наблюдение (бывший OBSERVE). У каждого аккаунта свой
+#   движок: листать можно сразу на двух. Нет записи → у основного из
+#   project.mode (SEMI_AUTO = scroll, AUTO = scroll+auto), у остальных всё
+#   выключено. Пишется сайтом (кнопки «Скроллинг»/«Авто» в шапке).
 # interval_sec — интервал между действиями. Держи МАЛЫМ (по умолчанию 2 с):
 #   Leo принимает ❤️/👎 только пока карточка на экране, а ленту листает сам
 #   (~каждые 2–10 с). При 10 с реакция уезжала на 1–3 карточки вперёд.
@@ -91,9 +94,9 @@ ai:
 auto_actions:
   enabled: false
   account_session: "dvai_2"
-  # account_modes:
-  #   dvai: OBSERVE
-  #   dvai_2: SEMI_AUTO
+  # account_controls:
+  #   dvai: {scroll: false, auto: true}
+  #   dvai_2: {scroll: true, auto: false}
   interval_sec: 2.0
   notify_chat_id: 0
   notify_dislikes: true

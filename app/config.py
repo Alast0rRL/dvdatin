@@ -226,6 +226,62 @@ class MatchIntroConfig(BaseModel):
     reply_check_hours: float = 72.0
 
 
+class AccountControls(BaseModel):
+    """Два независимых переключателя аккаунта (шапка сайта).
+
+    ``scroll`` — автоскроллинг ленты Leo: бот сам ставит ❤️/👎 и листает
+    дальше (бывший SEMI_AUTO). ``auto`` — автопереписка с девушкой в личке
+    после взаимного лайка (``match_intro``). Оба выключены — наблюдение
+    (бывший OBSERVE). Стикер-привет после матча от них не зависит
+    (``match_greeting.modes``).
+    """
+
+    scroll: bool = False
+    auto: bool = False
+
+    @classmethod
+    def from_mode(cls, mode: "Mode | str") -> "AccountControls":
+        """Старый режим → переключатели: SEMI_AUTO = скроллинг, AUTO = оба."""
+        value = mode.value if isinstance(mode, Mode) else str(mode)
+        return cls(scroll=value in ("SEMI_AUTO", "AUTO"), auto=value == "AUTO")
+
+    @property
+    def mode(self) -> "Mode":
+        """Режим движка ленты (он знает только про скроллинг)."""
+        return Mode.SEMI_AUTO if self.scroll else Mode.OBSERVE
+
+    @property
+    def legacy_mode(self) -> "Mode":
+        """Ближайший старый режим (для project.mode и логов)."""
+        if self.scroll and self.auto:
+            return Mode.AUTO
+        return Mode.SEMI_AUTO if self.scroll else Mode.OBSERVE
+
+
+def account_controls_from_raw(raw: dict, session: str) -> AccountControls:
+    """Переключатели аккаунта из сырого YAML (сайт читает конфиг без валидации).
+
+    Порядок: ``auto_actions.account_controls`` → устаревший
+    ``auto_actions.account_modes`` → у основного аккаунта ``project.mode`` →
+    всё выключено.
+    """
+    auto_actions = (raw or {}).get("auto_actions") or {}
+    controls = auto_actions.get("account_controls") or {}
+    if session in controls and isinstance(controls[session], dict):
+        entry = controls[session]
+        return AccountControls(
+            scroll=bool(entry.get("scroll")), auto=bool(entry.get("auto")),
+        )
+    modes = auto_actions.get("account_modes") or {}
+    if session in modes:
+        return AccountControls.from_mode(modes[session])
+    if not session or session == auto_actions.get("account_session", ""):
+        return AccountControls.from_mode(
+            ((raw or {}).get("project") or {}).get("mode") or "OBSERVE"
+        )
+    return AccountControls()
+
+
 class AutoActionsConfig(BaseModel):
     """Настройки авто-действий (Stage 7, SEMI_AUTO).
 
@@ -238,10 +294,12 @@ class AutoActionsConfig(BaseModel):
     enabled: bool = False
     # Сессия аккаунта, от имени которого шлём действия (например "dvai_2").
     account_session: str = ""
-    # Режим каждого аккаунта отдельно ({session: OBSERVE|SEMI_AUTO|AUTO}): оба
-    # аккаунта могут листать ленту одновременно, каждый со своим режимом.
-    # Нет записи → у основного (account_session) project.mode, у остальных
-    # OBSERVE. См. AppConfig.mode_for / persist_account_mode.
+    # Переключатели каждого аккаунта ({session: {scroll, auto}}): скроллинг
+    # ленты и автопереписка включаются независимо, у каждого аккаунта свои.
+    # Нет записи → у основного (account_session) из project.mode, у остальных
+    # всё выключено. См. AppConfig.controls_for / persist_account_controls.
+    account_controls: dict[str, AccountControls] = {}
+    # Устаревшее (режим на аккаунт, 2026-10-29 до переключателей): только чтение.
     account_modes: dict[str, Mode] = {}
     # Интервал между действиями в секундах. Держим МАЛЫМ (по умолчанию 2 с):
     # Leo показывает одну карточку и принимает ❤️/👎 только пока она на экране,
@@ -519,32 +577,41 @@ class AppConfig(BaseModel):
         project = raw.get("project") or {}
         project["mode"] = mode.value
         raw["project"] = project
-        # Режим основного аккаунта мог уже лежать в account_modes — держим в
-        # синхроне, иначе mode_for() вернул бы старое значение.
+        # Переключатели основного аккаунта могли уже лежать в account_controls —
+        # держим в синхроне, иначе controls_for() вернул бы старое значение.
         primary = self.auto_actions.account_session
+        new = AccountControls.from_mode(mode)
         auto_actions = raw.get("auto_actions") or {}
-        modes = auto_actions.get("account_modes")
-        if primary and isinstance(modes, dict) and primary in modes:
-            modes[primary] = mode.value
+        controls = auto_actions.get("account_controls")
+        if primary and isinstance(controls, dict) and primary in controls:
+            controls[primary] = new.model_dump()
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
         self.project.mode = mode
-        if primary and primary in self.auto_actions.account_modes:
-            self.auto_actions.account_modes[primary] = mode
+        if primary and primary in self.auto_actions.account_controls:
+            self.auto_actions.account_controls[primary] = new
+
+    def controls_for(self, session: str) -> AccountControls:
+        """Переключатели аккаунта ``session`` (скроллинг / авто)."""
+        if session in self.auto_actions.account_controls:
+            return self.auto_actions.account_controls[session].model_copy()
+        if session in self.auto_actions.account_modes:
+            return AccountControls.from_mode(self.auto_actions.account_modes[session])
+        if not session or session == self.auto_actions.account_session:
+            return AccountControls.from_mode(self.project.mode)
+        return AccountControls()
 
     def mode_for(self, session: str) -> "Mode":
-        """Режим аккаунта ``session`` (см. ``auto_actions.account_modes``)."""
-        if session in self.auto_actions.account_modes:
-            return self.auto_actions.account_modes[session]
-        if not session or session == self.auto_actions.account_session:
-            return self.project.mode
-        return Mode.OBSERVE
+        """Ближайший старый режим аккаунта (OBSERVE / SEMI_AUTO / AUTO)."""
+        return self.controls_for(session).legacy_mode
 
-    def persist_account_mode(self, path: Path, session: str, mode: "Mode") -> None:
-        """Сохраняет режим аккаунта в ``auto_actions.account_modes``.
+    def persist_account_controls(
+        self, path: Path, session: str, controls: AccountControls,
+    ) -> None:
+        """Сохраняет переключатели аккаунта в ``auto_actions.account_controls``.
 
-        Для основного аккаунта (``account_session``) заодно пишет
-        ``project.mode`` — его читают старые места (ControlBot /status, логи).
+        Для основного аккаунта заодно пишет ``project.mode`` (ближайший старый
+        режим) — его читают старые места (ControlBot /status, логи).
         """
         if path.exists():
             with open(path, encoding="utf-8") as f:
@@ -552,18 +619,24 @@ class AppConfig(BaseModel):
         else:
             raw = {}
         auto_actions = raw.get("auto_actions") or {}
-        modes = dict(auto_actions.get("account_modes") or {})
-        modes[session] = mode.value
-        auto_actions["account_modes"] = modes
+        stored = dict(auto_actions.get("account_controls") or {})
+        stored[session] = controls.model_dump()
+        auto_actions["account_controls"] = stored
+        legacy = auto_actions.get("account_modes")
+        if isinstance(legacy, dict):
+            legacy.pop(session, None)
+            if not legacy:
+                auto_actions.pop("account_modes", None)
         raw["auto_actions"] = auto_actions
         if session == self.auto_actions.account_session:
             project = raw.get("project") or {}
-            project["mode"] = mode.value
+            project["mode"] = controls.legacy_mode.value
             raw["project"] = project
-            self.project.mode = mode
+            self.project.mode = controls.legacy_mode
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
-        self.auto_actions.account_modes[session] = mode
+        self.auto_actions.account_controls[session] = controls.model_copy()
+        self.auto_actions.account_modes.pop(session, None)
 
     def persist_account_session(self, path: Path, session: str) -> None:
         """Сохраняет auto_actions.account_session в YAML-файл.

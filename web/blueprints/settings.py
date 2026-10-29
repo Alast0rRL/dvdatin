@@ -60,17 +60,22 @@ def update_filters() -> tuple:
 @settings_bp.route("/settings/mode", methods=["POST"])
 @login_required
 def update_mode() -> tuple:
-    """Переключает режим DvAI (OBSERVE/SEMI_AUTO/AUTO).
+    """Переключатели аккаунта: «Скроллинг» ленты и «Авто» (переписка в личке).
 
-    Персистит режим в config.yaml (переживает restart) И — главное —
-    переключает живой AutoActionEngine через бридж (web.actions),
-    чтобы SEMI_AUTO заработал сразу, без рестарта приложения.
+    Кнопка в строке аккаунта шлёт ``toggle`` (scroll|auto), ``value`` (on|off)
+    и ``account_session``. Старая форма с ``mode`` (OBSERVE/SEMI_AUTO/AUTO)
+    тоже принимается: с аккаунтом — переводится в переключатели, без
+    аккаунта — прежний общий режим. Персистит в config.yaml И переключает
+    живой коллектор через бридж (web.actions) — без рестарта.
     """
     token = request.form.get("csrf_token", "")
     if token != session.get("_csrf_token"):
         flash("Ошибка безопасности", "error")
         return ("CSRF token invalid", 403)
 
+    # Кнопки строки аккаунта: scroll=on|off или auto=on|off.
+    toggle = next((k for k in ("scroll", "auto") if k in request.form), "")
+    toggle_value = request.form.get(toggle, "") if toggle else ""
     mode_str = request.form.get("mode", "OBSERVE")
     # Строка аккаунта в шапке присылает его сессию; без неё — основной аккаунт.
     account = (request.form.get("account_session") or "").strip()
@@ -79,22 +84,27 @@ def update_mode() -> tuple:
         redirect_target = url_for("chat.index")
 
     from core.types import Mode
+    config_path = _get_config_path()
+    accounts, primary = _get_accounts(config_path)
+    if account and account not in [a["session"] for a in accounts]:
+        flash(f"Аккаунт {account!r} не найден", "error")
+        return redirect(redirect_target)
+
+    if toggle or account:
+        return _update_controls(
+            config_path, accounts, account or primary, toggle,
+            toggle_value, mode_str, redirect_target,
+        )
+
     try:
         mode = Mode(mode_str)
     except ValueError:
         flash(f"Неизвестный режим: {mode_str}", "error")
         return redirect(redirect_target)
 
-    config_path = _get_config_path()
-    if account:
-        accounts, _ = _get_accounts(config_path)
-        if account not in [a["session"] for a in accounts]:
-            flash(f"Аккаунт {account!r} не найден", "error")
-            return redirect(redirect_target)
-
     # Пока лимит ❤️ исчерпан, SEMI_AUTO/AUTO не включаем (лента встанет).
     from web.actions import mode_block_reason_sync
-    block_reason = mode_block_reason_sync(mode, account or None)
+    block_reason = mode_block_reason_sync(mode)
     if block_reason is not None:
         flash(block_reason, "error")
         return redirect(redirect_target)
@@ -103,10 +113,7 @@ def update_mode() -> tuple:
     try:
         from app.config import AppConfig
         config = AppConfig.load(config_path)
-        if account:
-            config.persist_account_mode(config_path, account, mode)
-        else:
-            config.persist_mode(config_path, mode)
+        config.persist_mode(config_path, mode)
     except Exception as e:
         flash(f"Ошибка: {e}", "error")
         return redirect(redirect_target)
@@ -114,22 +121,87 @@ def update_mode() -> tuple:
     # Живое переключение: обновляем AutoActionEngine и пробуем запустить ленту.
     try:
         from web.actions import set_mode_sync
-        live_status = set_mode_sync(mode, account or None)
+        live_status = set_mode_sync(mode)
     except Exception as e:
         from loguru import logger
         logger.error(f"Web mode switch: {type(e).__name__}: {e!r}")
         live_status = "ERROR"
 
-    who = f"{account}: " if account else ""
     if live_status == "OK":
-        flashed = f"{who}режим переключён на {mode.value} (активен сразу)"
+        flashed = f"Режим переключён на {mode.value} (активен сразу)"
     elif live_status == "ERROR":
-        flashed = f"{who}режим сохранён, но не активирован на лету: {mode.value}"
+        flashed = f"Режим сохранён, но не активирован на лету: {mode.value}"
     else:
-        flashed = f"{who}режим переключён на {mode.value} (применится после перезапуска)"
-    flashed = flashed[0].upper() + flashed[1:]
+        flashed = f"Режим переключён на {mode.value} (применится после перезапуска)"
     flash(flashed, "success" if live_status == "OK" else "warning")
 
+    return redirect(redirect_target)
+
+
+#: Подписи переключателей для сообщений сайта.
+_TOGGLE_LABELS = {"scroll": "скроллинг", "auto": "авто"}
+
+
+def _update_controls(
+    config_path: Path, accounts: list[dict], account: str, toggle: str,
+    value: str, mode_str: str, redirect_target: str,
+) -> tuple:
+    """Включает/выключает «Скроллинг» или «Авто» у аккаунта ``account``."""
+    from app.config import AccountControls, AppConfig
+    from core.types import Mode
+
+    current = next(
+        (AccountControls(scroll=a["scroll"], auto=a["auto"])
+         for a in accounts if a["session"] == account),
+        AccountControls(),
+    )
+    if toggle in _TOGGLE_LABELS:
+        on = value == "on"
+        new = current.model_copy(update={toggle: on})
+        what = f"{_TOGGLE_LABELS[toggle]} {'включён' if on else 'выключен'}"
+        if toggle == "auto":
+            what = f"авто {'включено' if on else 'выключено'}"
+    else:
+        try:
+            new = AccountControls.from_mode(Mode(mode_str))
+        except ValueError:
+            flash(f"Неизвестный режим: {mode_str}", "error")
+            return redirect(redirect_target)
+        what = f"режим {mode_str}"
+
+    # Пока лимит ❤️ исчерпан, скроллинг не включаем (лента встанет).
+    if new.scroll and not current.scroll:
+        from web.actions import mode_block_reason_sync
+        block_reason = mode_block_reason_sync(Mode.SEMI_AUTO, account or None)
+        if block_reason is not None:
+            flash(block_reason, "error")
+            return redirect(redirect_target)
+
+    try:
+        config = AppConfig.load(config_path)
+        if account:
+            config.persist_account_controls(config_path, account, new)
+        else:
+            config.persist_mode(config_path, new.legacy_mode)
+    except Exception as e:
+        flash(f"Ошибка: {e}", "error")
+        return redirect(redirect_target)
+
+    try:
+        from web.actions import set_controls_sync
+        live_status = set_controls_sync(account or None, new.scroll, new.auto)
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"Web controls switch: {type(e).__name__}: {e!r}")
+        live_status = "ERROR"
+
+    who = f"{account}: " if account else ""
+    if live_status == "OK":
+        flash(f"{who}{what}", "success")
+    elif live_status == "ERROR":
+        flash(f"{who}{what} — сохранено, но не применено на лету", "warning")
+    else:
+        flash(f"{who}{what} (применится после перезапуска)", "warning")
     return redirect(redirect_target)
 
 
@@ -224,22 +296,18 @@ def _get_accounts(config_path: Path) -> tuple[list[dict], str]:
     accounts_raw = (raw.get("telegram") or {}).get("accounts") or []
     auto_actions = raw.get("auto_actions") or {}
     account_session = auto_actions.get("account_session", "")
-    account_modes = auto_actions.get("account_modes") or {}
-    project_mode = str((raw.get("project") or {}).get("mode") or "OBSERVE")
+    from app.config import account_controls_from_raw
     accounts = []
     for acc in accounts_raw:
         session = acc.get("session") or ""
         if session:
-            # Режим аккаунта — как AppConfig.mode_for: своя запись, иначе у
-            # основного project.mode, у остальных OBSERVE.
-            if session in account_modes:
-                acc_mode = str(account_modes[session])
-            elif session == account_session:
-                acc_mode = project_mode
-            else:
-                acc_mode = "OBSERVE"
+            # Переключатели — как AppConfig.controls_for (своя запись, иначе у
+            # основного из project.mode, у остальных всё выключено).
+            controls = account_controls_from_raw(raw, session)
             accounts.append({
-                "session": session, "phone": acc.get("phone", ""), "mode": acc_mode,
+                "session": session, "phone": acc.get("phone", ""),
+                "scroll": controls.scroll, "auto": controls.auto,
+                "mode": controls.legacy_mode.value,
             })
     return accounts, account_session
 
