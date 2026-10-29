@@ -8,10 +8,18 @@
 # сохранённым отпечаткам (CLIP не нужен) — очередь /rate «модель сомневается»
 # сразу строится по свежей модели (--no-rescore, чтобы не трогать).
 #
-# Данные: photo_embeddings (отпечатки фото, пишет бот — CLIP здесь не нужен)
-# × photo_ratings (LIKE=1, DISLIKE/VICE=0, SKIP — исключён). Качество —
-# честное: out-of-fold AUC (5 повторов × 5 фолдов, модель не видит анкету,
-# которую угадывает).
+# Данные (CLIP здесь не нужен — отпечатки пишет бот):
+#   * оценки ОТДЕЛЬНЫХ фото (photo_item_ratings × photo_item_embeddings, с
+#     2026-10-29) — основной источник;
+#   * старые оценки анкеты целиком (photo_ratings × photo_embeddings — средний
+#     отпечаток её фото), кроме анкет, у которых уже есть оценки фото.
+# LIKE=1, DISLIKE/VICE=0, SKIP — исключён. Качество — честное: out-of-fold AUC
+# (5 повторов × 5 фолдов, фолды по анкетам — фото одной девушки не попадают
+# одновременно в обучение и в проверку).
+#
+# Модель пишется с ``aggregate: mean_prob``: бот оценивает каждое фото анкеты
+# и усредняет score (services/photo_taste.py); пороги «верхние N% анкет»
+# считаются так же — по среднему score фото каждой анкеты.
 #
 # Сравнение со старой моделью — на ОДНИХ И ТЕХ ЖЕ новых оценках (поставленных
 # после её обучения, она их не видела): старая модель против out-of-fold
@@ -38,11 +46,52 @@ from pathlib import Path
 import numpy as np
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 
 CS = [0.03, 0.1, 0.3, 1, 3, 10]
+#: Сколько фото анкеты смотрит бот (config photo_taste.max_photos) — для порогов.
+MAX_PHOTOS = 3
+#: Альбом одного показа — номера сообщений подряд (как Database.PHOTO_ALBUM_GAP).
+ALBUM_GAP = 2
 LIKE_SHARE = 0.15      # верхние 15% анкет → зона LIKE
 DISLIKE_SHARE = 0.50   # нижние 50% → зона DISLIKE
+
+
+def _vec(blob: bytes) -> np.ndarray:
+    v = np.frombuffer(blob, dtype="<f4").astype(np.float64)
+    return v / (np.linalg.norm(v) or 1.0)
+
+
+def profile_photo_vectors(con: sqlite3.Connection) -> dict[int, list[np.ndarray]]:
+    """Отпечатки, по которым бот оценивает анкету: первые MAX_PHOTOS фото
+    последнего показа; нет отпечатков фото — средний отпечаток анкеты."""
+    out: dict[int, list[np.ndarray]] = {}
+    has_items = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'photo_item_embeddings'"
+    ).fetchone()
+    rows = con.execute(
+        "SELECT profile_id, telegram_message_id, emb FROM photo_item_embeddings "
+        "WHERE emb IS NOT NULL ORDER BY profile_id, telegram_message_id"
+    ).fetchall() if has_items else []
+    by_pid: dict[int, list[tuple[int, bytes]]] = {}
+    for pid, mid, blob in rows:
+        by_pid.setdefault(pid, []).append((mid, blob))
+    for pid, items in by_pid.items():
+        start = len(items) - 1
+        while start > 0 and items[start][0] - items[start - 1][0] <= ALBUM_GAP:
+            start -= 1
+        out[pid] = [_vec(b) for _m, b in items[start:][:MAX_PHOTOS]]
+    for pid, blob in con.execute(
+        "SELECT profile_id, emb FROM photo_embeddings WHERE emb IS NOT NULL"
+    ):
+        out.setdefault(pid, [_vec(blob)])
+    return out
+
+
+def profile_score(vecs: list[np.ndarray], w: np.ndarray, bias: float) -> float:
+    """Как бот (aggregate=mean_prob): среднее score отдельных фото."""
+    z = np.array([v @ w + bias for v in vecs])
+    return float(np.mean(1.0 / (1.0 + np.exp(-z))))
 
 
 def rescore(db_path: Path, model: dict) -> int:
@@ -55,16 +104,17 @@ def rescore(db_path: Path, model: dict) -> int:
     if not has_table:
         con.close()
         return 0
+    vectors = profile_photo_vectors(con)
     rows = con.execute(
-        "SELECT s.id, e.emb FROM photo_scores s "
-        "JOIN photo_embeddings e ON e.profile_id = s.profile_id "
-        "WHERE e.emb IS NOT NULL AND s.id IN "
+        "SELECT id, profile_id FROM photo_scores WHERE id IN "
         "(SELECT MAX(id) FROM photo_scores GROUP BY profile_id)"
     ).fetchall()
-    for row_id, blob in rows:
-        v = np.frombuffer(blob, dtype="<f4").astype(np.float64)
-        v = v / (np.linalg.norm(v) or 1.0)
-        score = float(1.0 / (1.0 + np.exp(-(v @ w + model["bias"]))))
+    n = 0
+    for row_id, pid in rows:
+        vecs = vectors.get(pid)
+        if not vecs:
+            continue
+        score = profile_score(vecs, w, float(model["bias"]))
         if score >= model["like_threshold"]:
             verdict = "LIKE"
         elif score <= model["dislike_threshold"]:
@@ -75,38 +125,69 @@ def rescore(db_path: Path, model: dict) -> int:
             "UPDATE photo_scores SET score = ?, verdict = ?, model_version = ? WHERE id = ?",
             (score, verdict, model["version"], row_id),
         )
+        n += 1
     con.commit()
     con.close()
-    return len(rows)
+    return n
 
 
-def load_data(db_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
-    """(X размеченных, y, X всех анкет с отпечатком — для порогов, даты оценок)."""
+def load_data(db_path: Path) -> dict:
+    """Обучающие примеры (фото и старые анкеты целиком) + отпечатки всех анкет.
+
+    ``X, y, groups`` (анкета), ``rated_at``, ``kind`` ('photo'/'profile'),
+    ``profiles`` — {profile_id: [векторы фото]} для порогов.
+    """
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    rows = con.execute(
-        "SELECT e.profile_id, e.emb, r.rating, r.created_at FROM photo_embeddings e "
-        "LEFT JOIN photo_ratings r ON r.profile_id = e.profile_id "
-        "WHERE e.emb IS NOT NULL"
-    ).fetchall()
-    con.close()
-    X_all, X, y, rated_at = [], [], [], []
-    for _pid, blob, rating, created_at in rows:
-        v = np.frombuffer(blob, dtype="<f4")
-        X_all.append(v)
-        if rating in ("LIKE", "DISLIKE", "VICE"):
-            X.append(v)
+    has_items = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'photo_item_ratings'"
+    ).fetchone()
+    X, y, groups, rated_at, kind = [], [], [], [], []
+    item_pids: set[int] = set()
+    if has_items:
+        for pid, blob, rating, created_at in con.execute(
+            "SELECT r.profile_id, e.emb, r.rating, r.created_at FROM photo_item_ratings r "
+            "JOIN photo_item_embeddings e ON e.profile_id = r.profile_id "
+            " AND e.telegram_message_id = r.telegram_message_id "
+            "WHERE e.emb IS NOT NULL"
+        ):
+            item_pids.add(pid)
+            if rating not in ("LIKE", "DISLIKE", "VICE"):
+                continue
+            X.append(np.frombuffer(blob, dtype="<f4"))
             y.append(1 if rating == "LIKE" else 0)
+            groups.append(pid)
             rated_at.append(created_at or "")
-    return np.array(X), np.array(y, dtype=int), np.array(X_all), rated_at
+            kind.append("photo")
+    for pid, blob, rating, created_at in con.execute(
+        "SELECT r.profile_id, e.emb, r.rating, r.created_at FROM photo_ratings r "
+        "JOIN photo_embeddings e ON e.profile_id = r.profile_id WHERE e.emb IS NOT NULL"
+    ):
+        if pid in item_pids or rating not in ("LIKE", "DISLIKE", "VICE"):
+            continue
+        X.append(np.frombuffer(blob, dtype="<f4"))
+        y.append(1 if rating == "LIKE" else 0)
+        groups.append(pid)
+        rated_at.append(created_at or "")
+        kind.append("profile")
+    profiles = profile_photo_vectors(con)
+    con.close()
+    return {
+        "X": np.array(X), "y": np.array(y, dtype=int), "groups": np.array(groups),
+        "rated_at": rated_at, "kind": np.array(kind), "profiles": profiles,
+    }
 
 
-def oof_predictions(X: np.ndarray, y: np.ndarray, repeats: int = 5) -> tuple[np.ndarray, list[float]]:
-    """Out-of-fold вероятности (среднее по повторам) и AUC каждого повтора."""
+def oof_predictions(
+    X: np.ndarray, y: np.ndarray, groups: np.ndarray, repeats: int = 5,
+) -> tuple[np.ndarray, list[float]]:
+    """Out-of-fold вероятности (среднее по повторам) и AUC каждого повтора.
+    Фолды по анкетам: фото одной девушки — целиком в обучении или в проверке."""
     mean = np.zeros(len(y))
     aucs = []
     for r in range(repeats):
         p = np.zeros(len(y))
-        for tr, te in StratifiedKFold(5, shuffle=True, random_state=r).split(X, y):
+        folds = StratifiedGroupKFold(5, shuffle=True, random_state=r)
+        for tr, te in folds.split(X, y, groups):
             m = LogisticRegressionCV(Cs=CS, cv=4, scoring="roc_auc",
                                      class_weight="balanced", max_iter=5000).fit(X[tr], y[tr])
             p[te] = m.predict_proba(X[te])[:, 1]
@@ -133,14 +214,18 @@ def main() -> int:
                     help="не пересчитывать вердикты photo_scores новой моделью")
     args = ap.parse_args()
 
-    X, y, X_all, rated_at = load_data(Path(args.db))
+    data = load_data(Path(args.db))
+    X, y, groups, rated_at = data["X"], data["y"], data["groups"], data["rated_at"]
+    kind, profiles = data["kind"], data["profiles"]
     if len(y) < 100 or y.sum() < 20:
-        print(f"Мало данных: {len(y)} анкет, {y.sum()} ❤️ — нужно ≥100 и ≥20 ❤️")
+        print(f"Мало данных: {len(y)} примеров, {y.sum()} ❤️ — нужно ≥100 и ≥20 ❤️")
         return 1
-    print(f"Размечено с отпечатком: {len(y)} анкет, ❤️ {y.sum()} ({y.mean() * 100:.1f}%); "
-          f"всего отпечатков: {len(X_all)}")
+    n_photo = int((kind == "photo").sum())
+    print(f"Размечено с отпечатком: {len(y)} примеров, ❤️ {y.sum()} ({y.mean() * 100:.1f}%) — "
+          f"фото по одному: {n_photo}, анкет целиком: {len(y) - n_photo}; "
+          f"анкет с отпечатками: {len(profiles)}")
 
-    oof, aucs = oof_predictions(X, y)
+    oof, aucs = oof_predictions(X, y, groups)
     auc, std = float(np.mean(aucs)), float(np.std(aucs))
     print(f"Новая модель: AUC {auc:.3f} ± {std:.3f} по всей разметке "
           "(на анкетах, которых модель не видела)")
@@ -166,7 +251,9 @@ def main() -> int:
     C = float(LogisticRegressionCV(Cs=CS, cv=5, scoring="roc_auc", class_weight="balanced",
                                    max_iter=5000).fit(X, y).C_[0])
     final = LogisticRegression(C=C, class_weight="balanced", max_iter=5000).fit(X, y)
-    s_all = final.predict_proba(X_all)[:, 1]
+    w_final, b_final = final.coef_[0].astype(np.float64), float(final.intercept_[0])
+    # Пороги — по оценке АНКЕТЫ так, как её считает бот (среднее score фото).
+    s_all = np.array([profile_score(v, w_final, b_final) for v in profiles.values()])
     like_thr = float(np.quantile(s_all, 1 - LIKE_SHARE))
     # Пороги «верхние N% анкет» — для режима decide (photo_taste.like_share).
     like_thresholds = {
@@ -184,7 +271,10 @@ def main() -> int:
         "like_threshold": like_thr,
         "dislike_threshold": dislike_thr,
         "like_thresholds": like_thresholds,
-        "trained_on": {"profiles": int(len(y)), "likes": int(y.sum())},
+        # Бот: score анкеты = среднее score её фото (services/photo_taste.py).
+        "aggregate": "mean_prob",
+        "trained_on": {"examples": int(len(y)), "photos": n_photo,
+                       "profiles": int(len(set(groups.tolist()))), "likes": int(y.sum())},
         "oof_auc": round(auc, 3),
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }

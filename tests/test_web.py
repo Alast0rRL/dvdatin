@@ -2119,29 +2119,68 @@ class TestPhotoRating:
         pids = {i["profile_id"] for i in data["items"]}
         assert pids == {1, 2, 3}
         item = next(i for i in data["items"] if i["profile_id"] == 1)
-        assert item["photos"] == ["/photos/1/111.jpg"]
-        assert data["stats"]["total"] == 3
+        assert item["photos"] == [{"message_id": 111, "src": "/photos/1/111.jpg"}]
+        assert data["stats"]["left"] == 3
         assert data["stats"]["rated"] == 0
 
     def test_rate_saves_and_removes_from_queue(self, client, sync_db) -> None:
         sync, _, _ = sync_db
         _login(client)
-        resp = client.post("/rate/1", data={"rating": "LIKE", "csrf_token": self._csrf(client)})
+        resp = client.post("/rate/1/111", data={"rating": "LIKE", "csrf_token": self._csrf(client)})
         assert resp.status_code == 200
         stats = json.loads(resp.get_data(as_text=True))["stats"]
-        assert stats["LIKE"] == 1 and stats["rated"] == 1
+        assert stats["LIKE"] == 1 and stats["rated"] == 1 and stats["left"] == 2
         assert 1 not in {i["profile_id"] for i in self._next(client, limit=10)["items"]}
         # Повторная оценка перезаписывает прежнюю, а не дублирует.
-        client.post("/rate/1", data={"rating": "DISLIKE", "csrf_token": self._csrf(client)})
+        client.post("/rate/1/111", data={"rating": "DISLIKE", "csrf_token": self._csrf(client)})
         stats = sync.get_photo_rating_stats()
         assert stats["LIKE"] == 0 and stats["DISLIKE"] == 1 and stats["rated"] == 1
+
+    def test_partially_rated_profile_returns_only_unrated_photos(self, sync_db) -> None:
+        """Анкета с 3 фото, оценено одно — в очереди остаются другие."""
+        sync, _, db = sync_db
+
+        async def _seed() -> None:
+            for tm in (112, 113):
+                await db.link_profile_message(
+                    profile_id=1, telegram_message_id=tm, chat_id=1234060895,
+                    created_at="2026-01-01", account_session="dvai",
+                )
+                await db.save_raw_message(
+                    telegram_message_id=tm, chat_id=1234060895, sender_id=1,
+                    sender_username="", sender_name="Leo", message_date="2026-01-01",
+                    text="", raw_entities="[]", reply_markup="[]", media_type="photo",
+                    received_at="2026-01-01", account_session="dvai",
+                )
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        assert [p["message_id"] for p in sync._rating_photos(1)] == [111, 112, 113]
+        sync.save_photo_item_rating(1, 111, "LIKE")
+        item = next(i for i in sync.get_rating_queue(limit=10) if i["profile_id"] == 1)
+        assert [p["message_id"] for p in item["photos"]] == [112, 113]
+        sync.save_photo_item_rating(1, 112, "DISLIKE")
+        sync.save_photo_item_rating(1, 113, "DISLIKE")
+        assert 1 not in {i["profile_id"] for i in sync.get_rating_queue(limit=10)}
+        sync.delete_photo_item_rating(1, 113)  # «назад» возвращает фото
+        item = next(i for i in sync.get_rating_queue(limit=10) if i["profile_id"] == 1)
+        assert [p["message_id"] for p in item["photos"]] == [113]
+
+    def test_old_whole_profile_rating_excludes_profile(self, sync_db) -> None:
+        sync, _, _ = sync_db
+        sync._execute(
+            "INSERT INTO photo_ratings (profile_id, rating, created_at) VALUES (2, 'LIKE', 'x')"
+        )
+        assert 2 not in {i["profile_id"] for i in sync.get_rating_queue(limit=10)}
+        assert sync.get_photo_rating_stats()["profiles_rated"] == 1
 
     def test_undo_returns_profile_to_queue(self, client, sync_db) -> None:
         sync, _, _ = sync_db
         _login(client)
         token = self._csrf(client)
-        client.post("/rate/2", data={"rating": "SKIP", "csrf_token": token})
-        resp = client.post("/rate/2/undo", data={"csrf_token": token})
+        mid = self._next(client, limit=10, exclude="1,3")["items"][0]["photos"][0]["message_id"]
+        client.post(f"/rate/2/{mid}", data={"rating": "SKIP", "csrf_token": token})
+        assert 2 not in {i["profile_id"] for i in self._next(client, limit=10)["items"]}
+        resp = client.post(f"/rate/2/{mid}/undo", data={"csrf_token": token})
         assert resp.status_code == 200
         assert sync.get_photo_rating_stats()["rated"] == 0
         assert 2 in {i["profile_id"] for i in self._next(client, limit=10)["items"]}
@@ -2149,9 +2188,9 @@ class TestPhotoRating:
     def test_rejects_bad_rating_and_missing_csrf(self, client, sync_db) -> None:
         sync, _, _ = sync_db
         _login(client)
-        assert client.post("/rate/1", data={"rating": "MAYBE",
-                                            "csrf_token": self._csrf(client)}).status_code == 400
-        assert client.post("/rate/1", data={"rating": "LIKE"}).status_code == 403
+        assert client.post("/rate/1/111", data={"rating": "MAYBE",
+                                                "csrf_token": self._csrf(client)}).status_code == 400
+        assert client.post("/rate/1/111", data={"rating": "LIKE"}).status_code == 403
         assert sync.get_photo_rating_stats()["rated"] == 0
 
     def test_exclude_param_skips_queued_profiles(self, client) -> None:
@@ -2230,8 +2269,9 @@ class TestPhotoRating:
         _login(client)
         html = client.get("/rate").get_data(as_text=True)
         assert 'id="rate-card"' in html and 'id="rate-dots"' in html
+        assert 'id="rate-pos"' in html  # «фото 2 из 3»
         js = client.get("/static/js/rate.js").get_data(as_text=True)
-        for marker in ("pointerdown", "pointerup", "SWIPE_SHARE", "setPhoto"):
+        for marker in ("pointerdown", "pointerup", "SWIPE_SHARE", "' из '"):
             assert marker in js, marker
         css = client.get("/static/css/app.css").get_data(as_text=True)
         card = css.split(".rate__card {", 1)[1].split("}", 1)[0]
@@ -2255,7 +2295,8 @@ class TestPhotoRating:
         _login(client)
         html = client.get("/rate").get_data(as_text=True)
         assert 'data-rate="VICE"' in html and 'id="rate-vice"' in html
-        resp = client.post("/rate/3", data={"rating": "VICE", "csrf_token": self._csrf(client)})
+        mid = self._next(client, limit=10, exclude="1,2")["items"][0]["photos"][0]["message_id"]
+        resp = client.post(f"/rate/3/{mid}", data={"rating": "VICE", "csrf_token": self._csrf(client)})
         assert resp.status_code == 200
         assert json.loads(resp.get_data(as_text=True))["stats"]["VICE"] == 1
         assert sync.get_photo_rating_stats()["rated"] == 1

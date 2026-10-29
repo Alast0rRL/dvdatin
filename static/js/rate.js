@@ -1,10 +1,10 @@
-/* Разметка внешности (/rate): очередь анкет, оценка с клавиатуры и свайпом,
-   отмена. Оценка уходит сразу (оптимистично) — следующая анкета показывается
-   без ожидания сервера; фото следующих анкет грузятся заранее.
+/* Разметка внешности (/rate): каждое фото анкеты оценивается ОТДЕЛЬНО —
+   одно фото на экране, сверху «фото 2 из 3». Оценка с клавиатуры, кнопками
+   и свайпом, отмена. Оценка уходит сразу (оптимистично) — следующее фото
+   показывается без ожидания сервера; фото следующих анкет грузятся заранее.
 
-   Телефон (узкий экран): одно большое фото, тап по левой/правой половине
-   листает фото анкеты, свайп вправо — нравится, влево — нет (как в Tinder).
-   Компьютер: сетка фото, клавиши ← → ↓ Backspace. */
+   Телефон: свайп вправо — нравится, влево — нет (как в Tinder).
+   Компьютер: клавиши ← → ↓ ↑ Backspace. */
 (function () {
     'use strict';
 
@@ -15,65 +15,58 @@
     var card = document.getElementById('rate-card');
     var photosBox = document.getElementById('rate-photos');
     var dotsBox = document.getElementById('rate-dots');
+    var posBox = document.getElementById('rate-pos');
     var emptyBox = document.getElementById('rate-empty');
     var undoBtn = document.getElementById('rate-undo');
     var badge = document.getElementById('rate-badge');
 
-    var QUEUE_MIN = 6;      // держим в очереди не меньше (фото грузятся заранее)
-    var QUEUE_FETCH = 10;   // сколько просить за раз (= RATE_BATCH_MAX)
+    var QUEUE_MIN = 8;      // держим в очереди не меньше фото (грузятся заранее)
+    var QUEUE_FETCH = 10;   // сколько анкет просить за раз (= RATE_BATCH_MAX)
     var SWIPE_SHARE = 0.25; // доля ширины карточки, после которой свайп = оценка
     var TAP_PX = 10;        // сдвиг меньше — это тап, а не свайп
 
-    var narrow = window.matchMedia('(max-width: 640px)');
-
-    var queue = [];         // [{profile_id, photos: [url]}]
+    // Очередь ФОТО: {profile_id, message_id, src, pos, count, uncertain, img}
+    var queue = [];
     var current = null;
-    var photoIdx = 0;       // текущее фото в карусели (телефон)
-    var history = [];       // оценённые элементы (для «Назад»)
+    var history = [];       // оценённые фото (для «Назад»)
     var loading = false;
     var exhausted = false;
 
     function setStats(s) {
         if (!s) return;
-        var map = {'rate-rated': s.rated, 'rate-total': s.total, 'rate-like': s.LIKE,
-                   'rate-dislike': s.DISLIKE, 'rate-skip': s.SKIP, 'rate-vice': s.VICE};
+        var map = {'rate-rated': s.rated, 'rate-left': s.left, 'rate-old': s.profiles_rated,
+                   'rate-like': s.LIKE, 'rate-dislike': s.DISLIKE, 'rate-skip': s.SKIP,
+                   'rate-vice': s.VICE};
         Object.keys(map).forEach(function (id) {
             var el = document.getElementById(id);
             if (el && map[id] !== undefined) el.textContent = String(map[id]);
         });
     }
 
-    // Предзагрузка: держим ссылки на Image, чтобы браузер не выбросил их из кэша.
-    function preload(item) {
-        item.imgs = item.photos.map(function (src) {
-            var img = new Image();
-            img.decoding = 'async';
-            img.src = src;
-            return img;
-        });
+    // Предзагрузка: держим ссылку на Image, чтобы браузер не выбросил её из кэша.
+    function preload(photo) {
+        var img = new Image();
+        img.decoding = 'async';
+        img.src = photo.src;
+        photo.img = img;
     }
 
-    // Все анкеты, которые уже были в этой вкладке (очередь, на экране,
-    // оценённые). Повторно в очередь не попадают никогда: раньше список
-    // для сервера обрезался до последних 150, после ~150 оценок из него
-    // выпадала сама очередь — сервер присылал её снова, и анкеты шли по
-    // второму кругу («оценка не ставится с первого раза»).
+    // Анкеты, которые уже были в этой вкладке, повторно в очередь не попадают
+    // (раньше обрезанный список исключений возвращал анкеты по второму кругу).
     var seen = {};
 
-    // Для сервера: сначала очередь и текущая (их повтор виден сразу),
-    // затем последние оценённые — их сервер и так отсекает по БД, хвост
-    // нужен лишь на время, пока POST оценки ещё в пути.
-    function excludeIds() {
-        var ids = queue.map(function (i) { return i.profile_id; });
-        if (current) ids.push(current.profile_id);
-        history.slice(-40).forEach(function (h) { ids.push(h.item.profile_id); });
-        return ids;
+    function profileIds() {
+        var ids = {};
+        queue.forEach(function (p) { ids[p.profile_id] = 1; });
+        if (current) ids[current.profile_id] = 1;
+        history.slice(-40).forEach(function (h) { ids[h.photo.profile_id] = 1; });
+        return Object.keys(ids);
     }
 
     function refill() {
         if (loading || exhausted || queue.length >= QUEUE_MIN) return;
         loading = true;
-        var url = '/rate/next?limit=' + QUEUE_FETCH + '&exclude=' + excludeIds().join(',');
+        var url = '/rate/next?limit=' + QUEUE_FETCH + '&exclude=' + profileIds().join(',');
         fetch(url, {headers: {'X-Requested-With': 'fetch'}})
             .then(function (r) { return r.json(); })
             .then(function (data) {
@@ -84,8 +77,14 @@
                 if (!items.length) exhausted = true;
                 fresh.forEach(function (it) {
                     seen[it.profile_id] = true;
-                    preload(it);
-                    queue.push(it);
+                    var n = it.photos.length;
+                    it.photos.forEach(function (ph, i) {
+                        var photo = {profile_id: it.profile_id, message_id: ph.message_id,
+                                     src: ph.src, pos: i + 1, count: n,
+                                     uncertain: !!it.uncertain};
+                        preload(photo);
+                        queue.push(photo);
+                    });
                 });
                 if (items.length && !fresh.length) {
                     // Пришли только уже виденные — не долбим сервер по кругу.
@@ -97,7 +96,7 @@
             })
             .catch(function () {
                 loading = false;
-                if (!current) showEmpty('Не удалось загрузить анкеты. Обнови страницу.');
+                if (!current) showEmpty('Не удалось загрузить фото. Обнови страницу.');
             });
     }
 
@@ -106,49 +105,38 @@
         badge.hidden = true;
         photosBox.textContent = '';
         dotsBox.textContent = '';
+        posBox.textContent = '';
         emptyBox.textContent = text;
         emptyBox.hidden = false;
     }
 
-    function renderDots() {
-        dotsBox.textContent = '';
-        if (!current || current.photos.length < 2) return;
-        current.photos.forEach(function (_, i) {
-            var d = document.createElement('span');
-            d.className = 'rate__dot' + (i === photoIdx ? ' is-current' : '');
-            dotsBox.appendChild(d);
-        });
-    }
-
-    function setPhoto(i) {
-        if (!current) return;
-        var n = current.photos.length;
-        photoIdx = (i + n) % n;
-        var imgs = photosBox.querySelectorAll('.rate__photo');
-        for (var k = 0; k < imgs.length; k++) {
-            imgs[k].classList.toggle('is-current', k === photoIdx);
-        }
-        renderDots();
-    }
-
-    function render(item) {
+    function render(photo) {
         photosBox.textContent = '';
         emptyBox.hidden = true;
         // Анкета из очереди «модель сомневается» — её оценка учит модель сильнее всего.
-        badge.hidden = !item.uncertain;
+        badge.hidden = !photo.uncertain;
         resetCard();
-        (item.imgs || []).length || preload(item);
-        item.imgs.forEach(function (pre) {
-            var img = document.createElement('img');
-            img.className = 'rate__photo';
-            img.alt = '';
-            img.draggable = false;
-            img.decoding = 'async';
-            img.addEventListener('error', function () { img.classList.add('is-broken'); });
-            img.src = pre.src;  // уже в кэше браузера, если предзагрузка успела
-            photosBox.appendChild(img);
-        });
-        setPhoto(0);
+        if (!photo.img) preload(photo);
+        var img = document.createElement('img');
+        img.className = 'rate__photo is-current';
+        img.alt = '';
+        img.draggable = false;
+        img.decoding = 'async';
+        img.addEventListener('error', function () { img.classList.add('is-broken'); });
+        img.src = photo.img.src;  // уже в кэше браузера, если предзагрузка успела
+        photosBox.appendChild(img);
+
+        // Какое фото анкеты на экране: полоски + «фото 2 из 3».
+        dotsBox.textContent = '';
+        posBox.textContent = photo.count > 1
+            ? 'Фото ' + photo.pos + ' из ' + photo.count : 'Одно фото';
+        if (photo.count > 1) {
+            for (var i = 1; i <= photo.count; i++) {
+                var d = document.createElement('span');
+                d.className = 'rate__dot' + (i === photo.pos ? ' is-current' : '');
+                dotsBox.appendChild(d);
+            }
+        }
     }
 
     function showNext() {
@@ -156,7 +144,7 @@
         if (current) {
             render(current);
         } else if (exhausted) {
-            showEmpty('Все анкеты с фото оценены. Спасибо!');
+            showEmpty('Все фото оценены. Спасибо!');
         } else {
             showEmpty('Загружаю…');
         }
@@ -174,20 +162,24 @@
             });
     }
 
+    function photoUrl(photo) {
+        return '/rate/' + photo.profile_id + '/' + photo.message_id;
+    }
+
     function rate(rating) {
         if (!current) return;
-        var item = current;
-        history.push({item: item, rating: rating});
+        var photo = current;
+        history.push({photo: photo, rating: rating});
         undoBtn.disabled = false;
         showNext();
-        post('/rate/' + item.profile_id, {rating: rating})
+        post(photoUrl(photo), {rating: rating})
             .then(function (data) { setStats(data.stats); })
             .catch(function () {
-                // Не сохранилось — вернуть анкету в начало очереди.
-                history = history.filter(function (h) { return h.item !== item; });
+                // Не сохранилось — вернуть фото в начало очереди.
+                history = history.filter(function (h) { return h.photo !== photo; });
                 if (current) queue.unshift(current);
                 current = null;
-                queue.unshift(item);
+                queue.unshift(photo);
                 showNext();
             });
     }
@@ -197,15 +189,15 @@
         undoBtn.disabled = history.length === 0;
         if (!last) return;
         if (current) queue.unshift(current);
-        current = last.item;
+        current = last.photo;
         render(current);
-        post('/rate/' + last.item.profile_id + '/undo', {})
+        post(photoUrl(last.photo) + '/undo', {})
             .then(function (data) { setStats(data.stats); })
             .catch(function () { /* оценка останется — повторная её перезапишет */ });
     }
 
     // ── Свайп (pointer events: палец и мышь) ──────────────────────────
-    var drag = null;  // {id, x0, y0, dx, w}
+    var drag = null;  // {id, x0, dx, w}
 
     function resetCard() {
         card.style.transition = '';
@@ -215,7 +207,7 @@
 
     function onDown(e) {
         if (!current || e.button > 0) return;
-        drag = {id: e.pointerId, x0: e.clientX, y0: e.clientY, dx: 0,
+        drag = {id: e.pointerId, x0: e.clientX, dx: 0,
                 w: card.getBoundingClientRect().width || 1};
         card.classList.add('is-dragging');
         try { card.setPointerCapture(e.pointerId); } catch (err) { /* старые браузеры */ }
@@ -234,27 +226,18 @@
         if (!drag || e.pointerId !== drag.id) return;
         var dx = drag.dx;
         var share = dx / drag.w;
-        var x = e.clientX - card.getBoundingClientRect().left;
         var w = drag.w;
         drag = null;
         card.classList.remove('is-dragging');
 
-        if (Math.abs(dx) < TAP_PX) {
-            resetCard();
-            // Тап: на телефоне листает фото анкеты (левая треть — назад).
-            if (narrow.matches && current && current.photos.length > 1) {
-                setPhoto(photoIdx + (x < w / 3 ? -1 : 1));
-            }
-            return;
-        }
-        if (Math.abs(share) < SWIPE_SHARE) {
-            // Не дотянул — карточка возвращается на место.
+        if (Math.abs(dx) < TAP_PX || Math.abs(share) < SWIPE_SHARE) {
+            // Тап или не дотянул — карточка возвращается на место.
             card.style.transition = 'transform .18s ease-out';
             card.style.transform = '';
             card.classList.remove('is-swipe-like', 'is-swipe-dislike');
             return;
         }
-        // Улетает в сторону свайпа, затем оценка и следующая анкета.
+        // Улетает в сторону свайпа, затем оценка и следующее фото.
         var dir = share > 0 ? 1 : -1;
         card.style.transition = 'transform .16s ease-in';
         card.style.transform = 'translateX(' + (dir * w * 1.4) + 'px) rotate(' + (dir * 18) + 'deg)';
@@ -304,7 +287,7 @@
         if (!KEY_RATE[k] && !KEY_UNDO[k]) return;
         e.preventDefault();
         e.stopPropagation();
-        if (e.repeat) return;  // зажатая клавиша не оценивает пачку анкет
+        if (e.repeat) return;  // зажатая клавиша не оценивает пачку фото
         if (document.activeElement && document.activeElement !== document.body) {
             document.activeElement.blur();
         }

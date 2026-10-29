@@ -28,26 +28,29 @@
     <div class="rate__head">
         <h1 class="rate__title">Разметка внешности</h1>
         <p class="rate__stats" id="rate-stats">
-            Оценено <b id="rate-rated">{{ stats.rated }}</b> из <span id="rate-total">{{ stats.total }}</span>
+            Оценено фото <b id="rate-rated">{{ stats.rated }}</b>
             · ❤️ <span id="rate-like">{{ stats.LIKE }}</span>
             · 👎 <span id="rate-dislike">{{ stats.DISLIKE }}</span>
             · пропущено <span id="rate-skip">{{ stats.SKIP }}</span>
             · 🚬/🍷 <span id="rate-vice">{{ stats.VICE }}</span>
+            · анкет впереди <span id="rate-left">{{ stats.left }}</span>
+            · раньше целиком <span id="rate-old">{{ stats.profiles_rated }}</span>
         </p>
         <p class="rate__hint rate__hint--desktop">
-            Оценивай только по фото. Клавиши: <kbd>←</kbd> нет · <kbd>→</kbd> нравится ·
+            Оценивай каждое фото отдельно. Клавиши: <kbd>←</kbd> нет · <kbd>→</kbd> нравится ·
             <kbd>↓</kbd> пропустить (фото не годится) · <kbd>↑</kbd> на фото сигарета/алкоголь ·
             <kbd>Backspace</kbd> назад.
         </p>
         <p class="rate__hint rate__hint--touch">
-            Свайп вправо — нравится, влево — нет. Тап по краю фото — следующее фото.
+            Каждое фото — отдельно. Свайп вправо — нравится, влево — нет.
         </p>
     </div>
 
-    {# Карточка анкеты: на телефоне свайп вправо — нравится, влево — нет,
-       тап по левой/правой половине листает фото (полоски сверху). #}
+    {# Одно фото анкеты: полоски сверху и «фото 2 из 3» — какое по счёту.
+       На телефоне свайп вправо — нравится, влево — нет. #}
     <div class="rate__card" id="rate-card">
         <div class="rate__dots" id="rate-dots" aria-hidden="true"></div>
+        <p class="rate__pos" id="rate-pos"></p>
         <p class="rate__badge" id="rate-badge" hidden>🤔 модель сомневается</p>
         <div class="rate__photos" id="rate-photos" aria-live="polite"></div>
     </div>

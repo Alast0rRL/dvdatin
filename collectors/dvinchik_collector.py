@@ -2146,7 +2146,14 @@ class DvinchikCollector:
         return bool(getattr(msg, "photo", None)) or cls._is_card_video(msg)
 
     async def _card_photos(self, msg: object, limit: int) -> list[bytes]:
-        """Байты фото карточки: само сообщение + остальной альбом (grouped_id).
+        """Байты фото карточки (см. ``_card_photo_items``)."""
+        return [data for _mid, data in await self._card_photo_items(msg, limit)]
+
+    async def _card_photo_items(
+        self, msg: object, limit: int,
+    ) -> list[tuple[int, bytes]]:
+        """Фото карточки ``[(message_id, байты)]``: само сообщение + остальной
+        альбом (grouped_id).
 
         Альбом Leo приходит пачкой сообщений с соседними id, поэтому соседи
         берутся одним запросом. Видео-анкета (прод 2026-10-23: ~1 из 9
@@ -2180,7 +2187,10 @@ class DvinchikCollector:
             ),
             return_exceptions=True,
         )
-        return [r for r in results if isinstance(r, (bytes, bytearray)) and r]
+        return [
+            (m.id, bytes(r)) for m, r in zip(media, results)
+            if isinstance(r, (bytes, bytearray)) and r
+        ]
 
     # ── Фоновый досчёт старых анкет (вердикт + отпечаток фото) ──────────
 
@@ -2188,16 +2198,22 @@ class DvinchikCollector:
     PHOTO_BACKFILL_IDLE_SEC = 600.0
 
     async def _backfill_photo_bytes(self, photos: list[dict]) -> list[bytes]:
-        """Фото из кэша media/; нет в кэше — скачиваем аккаунтом-получателем
-        и кладём в кэш (тогда и на /rate они откроются сразу)."""
+        """Байты фото для досчёта (см. ``_backfill_photo_items``)."""
+        got = await self._backfill_photo_items(photos)
+        return [got[ph["message_id"]] for ph in photos if ph["message_id"] in got]
+
+    async def _backfill_photo_items(self, photos: list[dict]) -> dict[int, bytes]:
+        """``{message_id: байты}``: фото из кэша media/; нет в кэше — скачиваем
+        аккаунтом-получателем и кладём в кэш (тогда и на /rate они откроются
+        сразу)."""
         from web.photos import _cache_filename  # noqa: PLC0415 — общая схема имён кэша
 
-        out: list[bytes] = []
+        out: dict[int, bytes] = {}
         missing: list[dict] = []
         for ph in photos:
             path = _cache_filename(ph["profile_id"], ph["message_id"], ph["account_session"])
             if path.exists():
-                out.append(path.read_bytes())
+                out[ph["message_id"]] = path.read_bytes()
             else:
                 missing.append(ph)
         if not missing:
@@ -2228,7 +2244,7 @@ class DvinchikCollector:
                 path.write_bytes(data)
             except OSError:
                 pass
-            out.append(data)
+            out[ph["message_id"]] = data
         return out
 
     async def run_photo_backfill(self) -> None:
@@ -2261,10 +2277,26 @@ class DvinchikCollector:
                 for item in batch:
                     pid = item["profile_id"]
                     photos = [dict(ph, profile_id=pid) for ph in item["photos"]]
-                    images = await self._backfill_photo_bytes(photos)
+                    got = await self._backfill_photo_items(photos)
+                    have = [ph for ph in photos if ph["message_id"] in got]
+                    images = [got[ph["message_id"]] for ph in have]
+                    # Вердикт — по первым max_photos фото (как живой расчёт),
+                    # отпечатки — по всем фото, что видны на /rate.
+                    first_ids = {
+                        ph["message_id"] for ph in photos[: max(1, int(cfg.max_photos))]
+                    }
+                    score_first = sum(1 for ph in have if ph["message_id"] in first_ids)
                     result = (
-                        await asyncio.to_thread(shadow.score_images, images)
-                        if images else None
+                        await asyncio.to_thread(shadow.score_images, images, score_first)
+                        if images and score_first else None
+                    )
+                    item_embs = (result or {}).get("item_embeddings") or []
+                    by_id = {ph["message_id"]: e for ph, e in zip(have, item_embs)}
+                    # Нет фото / не читается — NULL, чтобы не крутиться на нём.
+                    await self._db.save_photo_item_embeddings(
+                        pid, photos[0]["account_session"],
+                        [(ph["message_id"], by_id.get(ph["message_id"])) for ph in photos],
+                        (result or {}).get("model_version", ""),
                     )
                     if not result:
                         # Отметка «не получилось», чтобы не крутиться на ней.
@@ -2358,8 +2390,14 @@ class DvinchikCollector:
             # Нет вердикта по этой карточке (видео без кадра, не успели) — у
             # повторно показанной девушки есть отпечаток фото прошлого показа.
             try:
-                blob = await self._db.get_photo_embedding(decision.profile_id)
-                result = shadow.score_embedding(blob) if blob else None
+                # Отпечатки отдельных фото (если есть), иначе — анкеты целиком.
+                blobs = await self._db.get_photo_item_embeddings(
+                    decision.profile_id, limit=max(1, int(cfg.max_photos)),
+                )
+                if not blobs:
+                    blob = await self._db.get_photo_embedding(decision.profile_id)
+                    blobs = [blob] if blob else []
+                result = shadow.score_embeddings(blobs) if blobs else None
             except Exception as e:
                 logger.debug(f"PhotoTaste: отпечаток прошлого показа не прочитан: {e!r}")
                 result = None
@@ -2500,15 +2538,23 @@ class DvinchikCollector:
         """
         try:
             limit = max(1, int(self._config.photo_taste.max_photos))
-            images = await self._card_photos(msg, limit)
-            if not images:
+            items = await self._card_photo_items(msg, limit)
+            if not items:
                 return None
+            images = [data for _mid, data in items]
             result = await asyncio.to_thread(self._photo_shadow.score_images, images)
             if not result:
                 return None
             if result.get("embedding"):
                 await self._db.save_photo_embedding(
                     profile_id, result["embedding"], result["n_photos"],
+                    result["model_version"],
+                )
+            item_embs = result.get("item_embeddings") or []
+            if item_embs:
+                await self._db.save_photo_item_embeddings(
+                    profile_id, account_session or "",
+                    [(mid, e) for (mid, _d), e in zip(items, item_embs)],
                     result["model_version"],
                 )
             await self._db.save_photo_score(

@@ -748,18 +748,45 @@ class SyncDB:
             "DELETE FROM photo_ratings WHERE profile_id = ?", (int(profile_id),)
         )
 
+    def save_photo_item_rating(
+        self, profile_id: int, message_id: int, rating: str, account_session: str = "",
+    ) -> None:
+        """Оценка ОДНОГО фото анкеты; повторная перезаписывает прежнюю."""
+        if rating not in self.PHOTO_RATINGS:
+            raise ValueError(f"неизвестная оценка {rating!r}")
+        self._execute(
+            "INSERT OR REPLACE INTO photo_item_ratings "
+            "(profile_id, telegram_message_id, account_session, rating, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (int(profile_id), int(message_id), account_session or "", rating,
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+    def delete_photo_item_rating(self, profile_id: int, message_id: int) -> int:
+        """Отмена оценки фото (кнопка «Назад»)."""
+        self._rate_done_profiles().discard(int(profile_id))
+        return self._execute_rowcount(
+            "DELETE FROM photo_item_ratings WHERE profile_id = ? AND telegram_message_id = ?",
+            (int(profile_id), int(message_id)),
+        )
+
     def get_photo_rating_stats(self) -> dict[str, int]:
-        """Сколько оценено (по видам) и сколько анкет с фото всего."""
+        """Счётчики разметки: оценки фото (по видам), старые оценки анкет
+        целиком и сколько анкет с фото ещё не тронуто."""
         stats = {r: 0 for r in self.PHOTO_RATINGS}
         for row in self._query(
-            "SELECT rating, COUNT(*) AS cnt FROM photo_ratings GROUP BY rating"
+            "SELECT rating, COUNT(*) AS cnt FROM photo_item_ratings GROUP BY rating"
         ):
             stats[row["rating"]] = row["cnt"]
-        total = self._query_one(
-            "SELECT COUNT(DISTINCT pm.profile_id) AS cnt " + self._RATE_PHOTO_SQL
-        )
         stats["rated"] = sum(stats[r] for r in self.PHOTO_RATINGS)
-        stats["total"] = total["cnt"] if total else 0
+        old = self._query_one("SELECT COUNT(*) AS cnt FROM photo_ratings")
+        stats["profiles_rated"] = old["cnt"] if old else 0
+        left = self._query_one(
+            "SELECT COUNT(DISTINCT pm.profile_id) AS cnt " + self._RATE_PHOTO_SQL
+            + " AND pm.profile_id NOT IN (SELECT profile_id FROM photo_ratings)"
+            " AND pm.profile_id NOT IN (SELECT profile_id FROM photo_item_ratings)"
+        )
+        stats["left"] = left["cnt"] if left else 0
         return stats
 
     def get_rating_queue(
@@ -791,7 +818,8 @@ class SyncDB:
             + " ORDER BY (pm.profile_id * 2654435761) % 1000003",
             tuple(params),
         )
-        pids = [r["pid"] for r in rows]
+        done = self._rate_done_profiles()
+        pids = [r["pid"] for r in rows if r["pid"] not in done]
         if prefer:
             pids.sort(key=lambda p: p not in prefer)  # стабильная сортировка
         scores = self._latest_photo_scores()
@@ -806,7 +834,9 @@ class SyncDB:
         explore_slots: set[int] = set()
         taken: set[int] = set()
         want = max(1, int(limit))
-        while len(ordered) < want and len(taken) < len(pids):
+        rated = self._rated_photo_ids()
+        out: list[dict[str, Any]] = []
+        while len(out) < want and len(taken) < len(pids):
             take_explore = (len(ordered) + 1) % self.RATE_EXPLORE_EVERY == 0
             source = explore if (take_explore or not uncertain) else uncertain
             while source and source[0] in taken:
@@ -822,19 +852,43 @@ class SyncDB:
                 explore_slots.add(pid)
             taken.add(pid)
             ordered.append(pid)
-        out: list[dict[str, Any]] = []
-        for pid in ordered:
-            score = scores.get(pid)
+            # Оценка по одному фото: отдаём только ещё не оценённые фото анкеты
+            # (вкладку могли закрыть посреди анкеты); все оценены — дальше.
+            photos = [
+                p for p in self._rating_photos(pid)
+                if (pid, p["message_id"]) not in rated
+            ]
+            if not photos:
+                done.add(pid)  # все фото оценены — больше не проверяем
+                continue
             out.append({
                 "profile_id": pid,
-                "photos": self._rating_photos(pid),
-                "score": score,
+                "photos": photos,
+                "score": scores.get(pid),
                 "uncertain": pid in scores and pid not in explore_slots,
             })
         return out
 
     #: Каждая N-я анкета очереди /rate — из обычного порядка, а не «сомнительных».
     RATE_EXPLORE_EVERY = 5
+
+    def _rate_done_profiles(self) -> set[int]:
+        """Анкеты, у которых оценены все фото (кэш в памяти процесса: иначе
+        очередь на каждый запрос заново перебирала бы их фото)."""
+        done = getattr(self, "_rate_done", None)
+        if done is None:
+            done = self._rate_done = set()
+        return done
+
+    def _rated_photo_ids(self) -> set[tuple[int, int]]:
+        """(profile_id, message_id) уже оценённых фото."""
+        try:
+            rows = self._query(
+                "SELECT profile_id, telegram_message_id FROM photo_item_ratings"
+            )
+        except sqlite3.Error:
+            return set()
+        return {(r["profile_id"], r["telegram_message_id"]) for r in rows}
 
     def _latest_photo_scores(self) -> dict[int, float]:
         """Последний теневой score модели вкуса по каждой анкете."""
@@ -869,4 +923,5 @@ class SyncDB:
             same[start]["message_id"] - same[start - 1]["message_id"] <= self.RATE_ALBUM_GAP
         ):
             start -= 1
-        return same[start:][-self.RATE_MAX_PHOTOS:]
+        # Первые фото альбома — те же, что смотрит бот (_card_photos) и досчёт.
+        return same[start:][: self.RATE_MAX_PHOTOS]

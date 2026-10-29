@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -62,6 +63,17 @@ class TestTasteModel:
         expected = 1 / (1 + np.exp(-4.0 / np.sqrt(2)))
         assert abs(two.score - expected) < 1e-6
 
+    def test_mean_prob_scores_each_photo(self, tmp_path: Path) -> None:
+        """aggregate=mean_prob (обучение по фото): score анкеты = среднее score фото."""
+        m = make_model(tmp_path, aggregate="mean_prob")
+        two = m.score(np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]))
+        expected = (1 / (1 + np.exp(-4.0)) + 0.5) / 2
+        assert abs(two.score - expected) < 1e-6
+        assert m.aggregate == "mean_prob"
+
+    def test_old_model_keeps_mean_emb(self, tmp_path: Path) -> None:
+        assert make_model(tmp_path).load() and make_model(tmp_path).aggregate == "mean_emb"
+
     def test_missing_file_disables(self, tmp_path: Path) -> None:
         m = PhotoTasteModel(PhotoTasteConfig(enabled=True, model_path=str(tmp_path / "nope.json")))
         assert not m.enabled
@@ -94,6 +106,28 @@ class TestShadowScorer:
         assert out["n_photos"] == 2
         assert out["smoke"] == 0.7 and out["alcohol"] == 0.1
         assert out["model_version"] == "test-v1"
+
+    def test_item_embeddings_and_score_first(self, tmp_path: Path) -> None:
+        """Отпечатки всех фото по позиции; вердикт — только по первым N."""
+        encoder = MagicMock()
+        encoder.failed = False
+        encoder.encode_images = MagicMock(return_value=(
+            np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32), [0, 2],
+        ))
+        scorer = PhotoShadowScorer(encoder, make_model(tmp_path))
+        out = scorer.score_images([b"a", b"broken", b"c"], score_first=1)
+        assert out["n_photos"] == 1
+        assert abs(out["score"] - 0.5) < 1e-6  # только первое фото (вкус 0)
+        items = out["item_embeddings"]
+        assert items[1] is None
+        assert np.frombuffer(items[2], dtype="<f4").tolist() == [1.0, 0.0, 0.0]
+
+    def test_score_embeddings_many(self, tmp_path: Path) -> None:
+        scorer = PhotoShadowScorer(MagicMock(), make_model(tmp_path, aggregate="mean_prob"))
+        blobs = [np.array(v, dtype="<f4").tobytes() for v in ([1, 0, 0], [1, 0, 0])]
+        out = scorer.score_embeddings(blobs)
+        assert out["n_photos"] == 2 and out["verdict"] == "LIKE"
+        assert scorer.score_embeddings([]) is None
 
     def test_no_readable_photos(self, tmp_path: Path) -> None:
         encoder = MagicMock()
@@ -139,6 +173,7 @@ class TestCollectorShadow:
         col._config.photo_taste.max_photos = 4
         col._db = MagicMock()
         col._db.save_photo_score = AsyncMock()
+        col._db.save_photo_item_embeddings = AsyncMock()
         return col
 
     @staticmethod
@@ -170,9 +205,28 @@ class TestCollectorShadow:
 
         run(_go())
         shadow.score_images.assert_called_once_with([b"jpeg"])
+        col._db.save_photo_item_embeddings.assert_not_awaited()  # нет item_embeddings
         kw = col._db.save_photo_score.call_args.kwargs
         assert kw["profile_id"] == 5 and kw["telegram_message_id"] == 77
         assert kw["verdict"] == "LIKE" and kw["account_session"] == "dvai"
+
+    def test_item_embeddings_saved_with_message_ids(self) -> None:
+        shadow = self._shadow({
+            "score": 0.5, "verdict": "REVIEW", "n_photos": 1, "model_version": "v",
+            "smoke": None, "alcohol": None, "item_embeddings": [b"e1"],
+        })
+        col = self._collector(shadow)
+        msg = self._msg()
+        msg.id = 77
+
+        async def _go() -> None:
+            col._schedule_photo_shadow(msg, 5, "dvai", 1, 77)
+            await asyncio.gather(*list(col._photo_shadow_pending.values()))
+
+        run(_go())
+        col._db.save_photo_item_embeddings.assert_awaited_once_with(
+            5, "dvai", [(77, b"e1")], "v",
+        )
 
     def test_queue_cap_drops_extra_cards(self) -> None:
         col = self._collector(self._shadow(None), max_pending=1)
@@ -314,13 +368,48 @@ class TestBackfillSelection:
 
         batch = run(_go())
         assert [b["profile_id"] for b in batch] == [unrated, rated]
-        # Последний показ (50..53), первые 3 фото альбома.
-        assert [p["message_id"] for p in batch[0]["photos"]] == [50, 51, 52]
+        # Последний показ (50..53), первые 4 фото альбома (как на /rate).
+        assert [p["message_id"] for p in batch[0]["photos"]] == [50, 51, 52, 53]
 
     def test_failed_marker_is_not_retried(self, tmp_db: Database) -> None:
         pid = _seed_profile(tmp_db, 3, [30])
         run(tmp_db.save_photo_embedding(pid, None, 0, ""))
+        run(tmp_db.save_photo_item_embeddings(pid, "dvai", [(30, None)], ""))
         assert run(tmp_db.get_photo_backfill_batch()) == []
+
+    def test_old_profile_without_item_embeddings_is_selected(self, tmp_db: Database) -> None:
+        """Старая анкета с отпечатком целиком, но без отпечатков фото — в досчёт."""
+        pid = _seed_profile(tmp_db, 4, [40, 41])
+        run(tmp_db.save_photo_embedding(pid, bytes(8), 2, "v"))
+        assert [b["profile_id"] for b in run(tmp_db.get_photo_backfill_batch())] == [pid]
+        run(tmp_db.save_photo_item_embeddings(pid, "dvai", [(40, bytes(8)), (41, bytes(8))], "v"))
+        assert run(tmp_db.get_photo_backfill_batch()) == []
+
+    def test_rated_photo_without_embedding_goes_first(self, tmp_db: Database) -> None:
+        done = _seed_profile(tmp_db, 5, [60])
+        todo = _seed_profile(tmp_db, 6, [70])
+        rated = _seed_profile(tmp_db, 7, [80, 81])
+
+        async def _go():
+            await tmp_db.save_photo_embedding(rated, bytes(8), 1, "v")
+            await tmp_db.save_photo_item_embeddings(rated, "dvai", [(80, bytes(8))], "v")
+            await tmp_db._connection.execute(
+                "INSERT INTO photo_item_ratings (profile_id, telegram_message_id, rating, created_at)"
+                " VALUES (?, 81, 'LIKE', 'x')", (rated,),
+            )
+            await tmp_db._connection.commit()
+            await tmp_db.save_photo_embedding(done, bytes(8), 1, "v")
+            await tmp_db.save_photo_item_embeddings(done, "dvai", [(60, bytes(8))], "v")
+            return await tmp_db.get_photo_backfill_batch()
+
+        assert [b["profile_id"] for b in run(_go())] == [rated, todo]
+
+    def test_item_embeddings_last_showing(self, tmp_db: Database) -> None:
+        pid = _seed_profile(tmp_db, 8, [90])
+        run(tmp_db.save_photo_item_embeddings(
+            pid, "dvai", [(10, b"a"), (11, b"b"), (50, b"c"), (51, None), (52, b"d")], "v",
+        ))
+        assert run(tmp_db.get_photo_item_embeddings(pid, limit=3)) == [b"c", b"d"]
 
 
 class TestBackfillLoop:
@@ -349,8 +438,9 @@ class TestBackfillLoop:
             "photos": [{"message_id": 5, "chat_id": 1, "account_session": "dvai"}],
         }])
         col._db.save_photo_embedding = AsyncMock()
+        col._db.save_photo_item_embeddings = AsyncMock()
         col._db.save_photo_score = AsyncMock()
-        col._backfill_photo_bytes = AsyncMock(return_value=[b"jpeg"])
+        col._backfill_photo_items = AsyncMock(return_value={5: b"jpeg"})
 
         calls = {"n": 0}
 
@@ -365,6 +455,9 @@ class TestBackfillLoop:
         col._db.save_photo_embedding.assert_awaited_with(9, emb, 1, "v")
         kw = col._db.save_photo_score.call_args.kwargs
         assert kw["profile_id"] == 9 and kw["telegram_message_id"] == 5
+        shadow.score_images.assert_called_with([b"jpeg"], 1)
+        # Фото без отпечатка от CLIP — помечается NULL (не крутимся на нём).
+        col._db.save_photo_item_embeddings.assert_awaited_with(9, "dvai", [(5, None)], "v")
 
     def test_cache_hit_and_download(self, tmp_path: Path) -> None:
         from unittest.mock import patch
@@ -428,6 +521,7 @@ class TestTrainScript:
         res = subprocess.run(
             [sys.executable, str(script), "--db", str(db), "--model", str(model)],
             capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
         assert res.returncode == 0, res.stdout + res.stderr
         data = json.loads(model.read_text(encoding="utf-8"))
@@ -440,6 +534,68 @@ class TestTrainScript:
         ).fetchone()
         con.close()
         assert version == data["version"] and verdict in ("LIKE", "REVIEW", "DISLIKE")
+        assert data["aggregate"] == "mean_prob"
+
+    def test_train_on_single_photo_ratings(self, tmp_path: Path) -> None:
+        """Оценки по одному фото + старые оценки анкет целиком — одна модель."""
+        pytest.importorskip("sklearn")
+        import sqlite3
+        import subprocess
+        import sys
+
+        rng = np.random.default_rng(1)
+        db = tmp_path / "t.db"
+        con = sqlite3.connect(db)
+        con.executescript(
+            "CREATE TABLE photo_embeddings(profile_id INTEGER PRIMARY KEY, emb BLOB, "
+            "n_photos INT, model TEXT, created_at TEXT);"
+            "CREATE TABLE photo_ratings(profile_id INTEGER PRIMARY KEY, rating TEXT, created_at TEXT);"
+            "CREATE TABLE photo_item_ratings(profile_id INT, telegram_message_id INT, "
+            "account_session TEXT, rating TEXT, created_at TEXT);"
+            "CREATE TABLE photo_item_embeddings(profile_id INT, telegram_message_id INT, "
+            "account_session TEXT, emb BLOB, model TEXT, created_at TEXT);"
+            "CREATE TABLE photo_scores(id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INT, "
+            "score REAL, verdict TEXT, model_version TEXT);"
+        )
+
+        def vec(like: bool) -> bytes:
+            v = rng.normal(size=8) + (2.0 if like else 0.0) * np.eye(8)[0]
+            return (v / np.linalg.norm(v)).astype("<f4").tobytes()
+
+        # 150 анкет по 3 фото, нравится только второе фото у каждой 4-й.
+        for pid in range(150):
+            for k in range(3):
+                like = pid % 4 == 0 and k == 1
+                con.execute("INSERT INTO photo_item_embeddings VALUES (?, ?, 'dvai', ?, 'm', 'x')",
+                            (pid, 100 + k, vec(like)))
+                con.execute("INSERT INTO photo_item_ratings VALUES (?, ?, 'dvai', ?, 'x')",
+                            (pid, 100 + k, "LIKE" if like else "DISLIKE"))
+        # 100 старых анкет, оценённых целиком.
+        for pid in range(1000, 1100):
+            like = pid % 5 == 0
+            con.execute("INSERT INTO photo_embeddings VALUES (?, ?, 1, 'm', 'x')", (pid, vec(like)))
+            con.execute("INSERT INTO photo_ratings VALUES (?, ?, 'x')",
+                        (pid, "LIKE" if like else "DISLIKE"))
+        con.execute("INSERT INTO photo_scores (profile_id, score, verdict, model_version) "
+                    "VALUES (0, 0.5, 'REVIEW', 'old')")
+        con.commit()
+        con.close()
+        model = tmp_path / "m.json"
+        script = Path(__file__).resolve().parent.parent / "scripts" / "train_photo_taste.py"
+        res = subprocess.run(
+            [sys.executable, str(script), "--db", str(db), "--model", str(model)],
+            capture_output=True, text=True, encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert "фото по одному: 450" in res.stdout
+        data = json.loads(model.read_text(encoding="utf-8"))
+        assert data["aggregate"] == "mean_prob" and data["oof_auc"] > 0.8
+        assert data["trained_on"]["photos"] == 450
+        con = sqlite3.connect(db)
+        version = con.execute("SELECT model_version FROM photo_scores").fetchone()[0]
+        con.close()
+        assert version == data["version"]
 
 
 
@@ -611,10 +767,11 @@ class TestVideoCards:
 
         col = TestDecideMode._collector(threshold=0.6)
         model = make_model(tmp_path)
-        col._photo_shadow.score_embedding = PhotoShadowScorer(
+        col._photo_shadow.score_embeddings = PhotoShadowScorer(
             MagicMock(), model,
-        ).score_embedding
+        ).score_embeddings
         col._db = MagicMock()
+        col._db.get_photo_item_embeddings = AsyncMock(return_value=[])
         col._db.get_photo_embedding = AsyncMock(
             return_value=np.array([1.0, 0.0, 0.0], dtype="<f4").tobytes(),
         )
@@ -622,3 +779,22 @@ class TestVideoCards:
         out = run(col._apply_photo_taste(dec, ("dvai", 1, 99)))
         assert out.decision == AIDecision.LIKE
         col._db.get_photo_embedding.assert_awaited_once_with(7)
+
+    def test_fallback_prefers_item_embeddings(self, tmp_path: Path) -> None:
+        """Есть отпечатки отдельных фото — по ним, отпечаток анкеты не нужен."""
+        from models.decision import AIDecision
+
+        col = TestDecideMode._collector(threshold=0.6)
+        model = make_model(tmp_path)
+        col._photo_shadow.score_embeddings = PhotoShadowScorer(
+            MagicMock(), model,
+        ).score_embeddings
+        col._db = MagicMock()
+        col._db.get_photo_item_embeddings = AsyncMock(
+            return_value=[np.array([1.0, 0.0, 0.0], dtype="<f4").tobytes()],
+        )
+        col._db.get_photo_embedding = AsyncMock()
+        dec = TestDecideMode._decision(["LOW_INFO_SKIP:words=1"])
+        out = run(col._apply_photo_taste(dec, ("dvai", 1, 99)))
+        assert out.decision == AIDecision.LIKE
+        col._db.get_photo_embedding.assert_not_awaited()

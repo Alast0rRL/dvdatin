@@ -1,7 +1,11 @@
 # PhotoTasteModel: «во вкусе ли владельца» по фото анкеты.
 #
-# Логистическая регрессия поверх CLIP-эмбеддингов (services/clip_encoder.py):
-# эмбеддинги фото карточки усредняются и нормируются, score = sigmoid(w·x + b).
+# Логистическая регрессия поверх CLIP-эмбеддингов (services/clip_encoder.py).
+# Как собрать оценку анкеты из фото, говорит JSON модели (``aggregate``):
+#   mean_emb  (старые модели) — эмбеддинги фото усредняются и нормируются,
+#             score = sigmoid(w·x + b);
+#   mean_prob (обучение с оценками по одному фото, с 2026-10-29) — score
+#             каждого фото отдельно, оценка анкеты = их среднее.
 # Обучена на разметке владельца со страницы /rate (photo_ratings: LIKE=1,
 # DISLIKE/VICE=0, SKIP исключён) — офлайн 2026-10-22: 1391 анкета, 168 ❤️,
 # AUC 0.83 на отложенных анкетах. Веса — JSON на сервере
@@ -37,6 +41,12 @@ class TasteVerdict:
     verdict: str
 
 
+def _sigmoid(z: float) -> float:
+    if z < -60:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(-z))
+
+
 class PhotoTasteModel:
     """Загружает веса из JSON и считает score по эмбеддингам фото."""
 
@@ -49,6 +59,8 @@ class PhotoTasteModel:
         # Порог score для «верхних N% анкет» (из обучения: like_thresholds).
         self._like_by_share: dict[float, float] = {}
         self.version = ""
+        # mean_emb — среднее эмбеддингов; mean_prob — среднее score по фото.
+        self.aggregate = "mean_emb"
         self._failed = False
         self._mtime = 0.0
         self._checked_at = 0.0
@@ -72,7 +84,7 @@ class PhotoTasteModel:
             return
         if mtime != self._mtime:
             backup = (self._weights, self._bias, self._like_thr, self._dislike_thr,
-                      self.version, self._mtime, self._like_by_share)
+                      self.version, self._mtime, self._like_by_share, self.aggregate)
             old = self.version
             self._weights = None
             if self.load():
@@ -80,7 +92,7 @@ class PhotoTasteModel:
             else:
                 # Битый файл — остаёмся на прежней модели, попробуем позже.
                 (self._weights, self._bias, self._like_thr, self._dislike_thr,
-                 self.version, _, self._like_by_share) = backup
+                 self.version, _, self._like_by_share, self.aggregate) = backup
                 self._mtime = mtime
                 self._failed = False
 
@@ -101,6 +113,9 @@ class PhotoTasteModel:
                 float(k): float(v) for k, v in (data.get("like_thresholds") or {}).items()
             }
             self.version = str(data.get("version", ""))
+            self.aggregate = (
+                "mean_prob" if data.get("aggregate") == "mean_prob" else "mean_emb"
+            )
             logger.info(
                 f"PhotoTaste: модель {self.version} загружена "
                 f"(LIKE ≥ {self._like_thr:.3f}, DISLIKE ≤ {self._dislike_thr:.3f})"
@@ -126,10 +141,17 @@ class PhotoTasteModel:
         self._maybe_reload()
         if emb is None or len(emb) == 0 or not self.load():
             return None
-        mean = emb.mean(axis=0)
-        norm = float((mean @ mean) ** 0.5) or 1.0
-        z = float(mean @ self._weights_array(len(mean))) / norm + self._bias
-        s = 1.0 / (1.0 + math.exp(-z))
+        w = self._weights_array(emb.shape[1])
+        if self.aggregate == "mean_prob":
+            probs = []
+            for row in emb:
+                norm = float((row @ row) ** 0.5) or 1.0
+                probs.append(_sigmoid(float(row @ w) / norm + self._bias))
+            s = sum(probs) / len(probs)
+        else:
+            mean = emb.mean(axis=0)
+            norm = float((mean @ mean) ** 0.5) or 1.0
+            s = _sigmoid(float(mean @ w) / norm + self._bias)
         if s >= self._like_thr:
             verdict = "LIKE"
         elif s <= self._dislike_thr:
@@ -168,32 +190,55 @@ class PhotoShadowScorer:
         return self._taste.like_threshold(share)
 
     def score_embedding(self, blob: bytes) -> dict | None:
-        """Вердикт по сохранённому отпечатку (photo_embeddings) — без CLIP."""
+        """Вердикт по сохранённому отпечатку анкеты (photo_embeddings) — без CLIP."""
+        return self.score_embeddings([blob] if blob else [])
+
+    def score_embeddings(self, blobs: list[bytes]) -> dict | None:
+        """Вердикт по сохранённым отпечаткам (строка = фото или отпечаток
+        анкеты) — без CLIP. Для повторного показа анкеты."""
         import numpy as np  # noqa: PLC0415
 
-        if not blob:
+        blobs = [b for b in blobs if b]
+        if not blobs:
             return None
-        emb = np.frombuffer(blob, dtype="<f4").astype(np.float32)[None, :]
+        emb = np.stack([np.frombuffer(b, dtype="<f4").astype(np.float32) for b in blobs])
         verdict = self._taste.score(emb)
         if verdict is None:
             return None
         return {
             "score": verdict.score,
             "verdict": verdict.verdict,
-            "n_photos": 0,
+            "n_photos": 0 if len(blobs) == 1 else len(blobs),
             "model_version": self._taste.version,
             "smoke": None,
             "alcohol": None,
         }
 
-    def score_images(self, images: list[bytes]) -> dict | None:
-        emb, index = self._encoder.encode_images(images)
-        if emb is None:
+    def score_images(
+        self, images: list[bytes], score_first: int | None = None,
+    ) -> dict | None:
+        """CLIP по фото → вердикт, отпечаток анкеты и отпечатки каждого фото.
+
+        ``score_first`` — вердикт и отпечаток анкеты только по первым N фото
+        (досчёт кодирует все фото /rate, а бот смотрит первые max_photos);
+        ``item_embeddings`` — по ВСЕМ входным фото (None — не читается).
+        """
+        emb_all, index = self._encoder.encode_images(images)
+        if emb_all is None:
             return None
+        import numpy as np  # noqa: PLC0415
+
+        item_embeddings: list[bytes | None] = [None] * len(images)
+        for row, i in zip(emb_all, index):
+            item_embeddings[i] = np.asarray(row, dtype="<f4").tobytes()
+        keep = [k for k, i in enumerate(index) if score_first is None or i < score_first]
+        if not keep:
+            return None
+        emb = emb_all[keep]
+        index = [index[k] for k in keep]
         verdict = self._taste.score(emb)
         if verdict is None:
             return None
-        import numpy as np  # noqa: PLC0415
 
         mean = emb.mean(axis=0)
         mean = mean / (float(np.linalg.norm(mean)) or 1.0)
@@ -206,6 +251,8 @@ class PhotoShadowScorer:
             "alcohol": None,
             # Отпечаток для переобучения (photo_embeddings): float32 LE.
             "embedding": mean.astype("<f4").tobytes(),
+            # Отпечаток каждого фото (по позиции во входном списке).
+            "item_embeddings": item_embeddings,
         }
         if self._vice is not None:
             try:

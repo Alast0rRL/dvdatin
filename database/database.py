@@ -292,6 +292,34 @@ CREATE TABLE IF NOT EXISTS photo_embeddings (
     created_at TEXT NOT NULL,
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
 );
+
+-- photo_item_ratings: разметка /rate ПО ОДНОМУ ФОТО (с 2026-10-29). Фото =
+-- сообщение анкеты (telegram_message_id аккаунта account_session). Те же
+-- оценки, что в photo_ratings; повтор перезаписывает, «назад» удаляет.
+-- Старые оценки анкеты целиком остаются в photo_ratings (тоже идут в обучение).
+CREATE TABLE IF NOT EXISTS photo_item_ratings (
+    profile_id INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    account_session TEXT NOT NULL DEFAULT '',
+    rating TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (profile_id, telegram_message_id),
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+-- photo_item_embeddings: CLIP-отпечаток КАЖДОГО фото (L2-нормированный,
+-- float32 LE). Нужен для обучения на оценках фото и для оценки анкеты как
+-- среднего вероятностей по фото. emb NULL — фото не получилось скачать/прочитать.
+CREATE TABLE IF NOT EXISTS photo_item_embeddings (
+    profile_id INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    account_session TEXT NOT NULL DEFAULT '',
+    emb BLOB,
+    model TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (profile_id, telegram_message_id),
+    FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
 """
 
 
@@ -1540,13 +1568,72 @@ class Database:
             logger.warning(f"get_photo_embedding(profile={profile_id}): {e}")
             return None
 
+    async def save_photo_item_embeddings(
+        self,
+        profile_id: int,
+        account_session: str,
+        items: list[tuple[int, bytes | None]],
+        model: str,
+    ) -> None:
+        """Отпечатки отдельных фото анкеты: ``[(telegram_message_id, emb|None)]``."""
+        if not items:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            await self._connection.executemany(
+                """INSERT OR REPLACE INTO photo_item_embeddings
+                (profile_id, telegram_message_id, account_session, emb, model, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (profile_id, int(mid), account_session or "", emb, model, now)
+                    for mid, emb in items
+                ],
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"save_photo_item_embeddings(profile={profile_id}): {e}")
+
+    async def get_photo_item_embeddings(
+        self, profile_id: int, limit: int = 3,
+    ) -> list[bytes]:
+        """Отпечатки фото анкеты (первые ``limit`` фото последнего показа)."""
+        try:
+            cur = await self._connection.execute(
+                """SELECT telegram_message_id, emb FROM photo_item_embeddings
+                WHERE profile_id = ? AND emb IS NOT NULL
+                ORDER BY telegram_message_id""",
+                (profile_id,),
+            )
+            rows = await cur.fetchall()
+        except Exception as e:
+            logger.warning(f"get_photo_item_embeddings(profile={profile_id}): {e}")
+            return []
+        if not rows:
+            return []
+        # Последний показ — хвост с номерами подряд (как альбом на /rate).
+        start = len(rows) - 1
+        while start > 0 and rows[start][0] - rows[start - 1][0] <= self.PHOTO_ALBUM_GAP:
+            start -= 1
+        return [r[1] for r in rows[start:]][: max(1, int(limit))]
+
+    #: Сколько фото анкеты брать в досчёт (= SyncDB.RATE_MAX_PHOTOS: все фото,
+    #: что видны на /rate, должны иметь отпечаток для обучения).
+    PHOTO_ITEMS_MAX = 4
+
     async def get_photo_backfill_batch(
         self, limit: int = 10, max_photos: int = 3,
     ) -> list[dict]:
-        """Анкеты с фото без отпечатка: сначала НЕоценённые на /rate (нужны
-        для очереди «модель сомневается»), затем оценённые (для обучения).
+        """Анкеты, которым нужен досчёт отпечатков фото.
 
-        Фото — последний показ с одного аккаунта (та же логика, что у /rate):
+        Порядок: (1) есть оценённые на /rate фото без отпечатка — нужны для
+        обучения; (2) нет отпечатка анкеты — сначала НЕоценённые (очередь
+        «модель сомневается»), затем оценённые; (3) нет отпечатков отдельных
+        фото (пересчёт старых анкет под оценку по фото).
+
+        Фото — первые ``PHOTO_ITEMS_MAX`` фото последнего показа с одного
+        аккаунта (та же логика, что у /rate); вердикт бот считает по первым
+        ``max_photos`` (как живой расчёт):
         ``[{"profile_id", "photos": [{"message_id", "chat_id", "account_session"}]}]``.
         """
         photo_sql = """
@@ -1561,10 +1648,19 @@ class Database:
                     AND rm.media_type = 'photo'
               )
         """
+        rated_missing = """(SELECT r.profile_id FROM photo_item_ratings r
+            LEFT JOIN photo_item_embeddings e
+              ON e.profile_id = r.profile_id
+             AND e.telegram_message_id = r.telegram_message_id
+            WHERE e.profile_id IS NULL)"""
         cur = await self._connection.execute(
             "SELECT DISTINCT pm.profile_id " + photo_sql
-            + """ AND pm.profile_id NOT IN (SELECT profile_id FROM photo_embeddings)
-            ORDER BY (pm.profile_id IN (SELECT profile_id FROM photo_ratings)),
+            + f""" AND (pm.profile_id NOT IN (SELECT profile_id FROM photo_embeddings)
+                 OR pm.profile_id NOT IN (SELECT profile_id FROM photo_item_embeddings)
+                 OR pm.profile_id IN {rated_missing})
+            ORDER BY (pm.profile_id IN {rated_missing}) DESC,
+                     (pm.profile_id IN (SELECT profile_id FROM photo_embeddings)),
+                     (pm.profile_id IN (SELECT profile_id FROM photo_ratings)),
                      pm.profile_id DESC
             LIMIT ?""",
             (int(limit),),
@@ -1588,9 +1684,8 @@ class Database:
             photos = [
                 {"message_id": r[0], "chat_id": r[1], "account_session": r[2]}
                 # Первые фото альбома — как у живого теневого расчёта
-                # (DvinchikCollector._card_photos), чтобы обучение и вердикт
-                # смотрели на одни и те же фото.
-                for r in same[start:][: max(1, int(max_photos))]
+                # (DvinchikCollector._card_photos) и как на /rate.
+                for r in same[start:][: max(self.PHOTO_ITEMS_MAX, int(max_photos))]
             ]
             out.append({"profile_id": pid, "photos": photos})
         return out
