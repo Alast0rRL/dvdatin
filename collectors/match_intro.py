@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -73,6 +74,9 @@ class MatchIntro:
         self._leo_chat_id = leo_chat_id
         # Когда последний раз сверяли ответы по истории (на аккаунт).
         self._last_reply_check: dict[str, float] = {}
+        # Колбэк «бот отправил девушке» (session, user_id, сообщения) —
+        # журнал переписок (DialogLogger.log_sent). Ошибки не важны.
+        self.on_sent: Callable[[str, int, Any], Awaitable[Any]] | None = None
 
     def allowed_in(self, mode: str) -> bool:
         return bool(self._config.enabled) and mode in self._config.modes
@@ -218,6 +222,11 @@ class MatchIntro:
                 account_session, user_id, status=ERROR, error=str(e)[:300],
             )
             return ERROR
+        if self.on_sent is not None:
+            try:
+                await self.on_sent(account_session, user_id, sent)
+            except Exception as e:
+                logger.error(f"MatchIntro: журнал переписки: {e}")
         pinned = 0
         error = ""
         if self._config.pin:

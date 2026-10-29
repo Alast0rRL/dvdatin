@@ -965,3 +965,113 @@ class SyncDB:
             start -= 1
         # Первые фото альбома — те же, что смотрит бот (_card_photos) и досчёт.
         return same[start:][: self.RATE_MAX_PHOTOS]
+
+    # ── Переписки с девушками-матчами (dialog_contacts/messages) ──
+
+    _DIALOG_LIST_SQL = """
+        SELECT c.account_session, c.user_id, c.username, c.name, c.profile_id,
+               c.matched_at, c.last_message_at, c.synced_at,
+               md.status AS intro_status,
+               p.age AS age, p.normalized_city AS city,
+               (SELECT COUNT(*) FROM dialog_messages m
+                 WHERE m.account_session = c.account_session
+                   AND m.user_id = c.user_id) AS total,
+               (SELECT COUNT(*) FROM dialog_messages m
+                 WHERE m.account_session = c.account_session
+                   AND m.user_id = c.user_id AND m.sent_by = 'her') AS her_count,
+               (SELECT m.text || CASE WHEN m.text = '' THEN m.media_type ELSE '' END
+                  FROM dialog_messages m
+                 WHERE m.account_session = c.account_session
+                   AND m.user_id = c.user_id
+                 ORDER BY m.message_date DESC, m.telegram_message_id DESC
+                 LIMIT 1) AS last_text,
+               (SELECT m.sent_by FROM dialog_messages m
+                 WHERE m.account_session = c.account_session
+                   AND m.user_id = c.user_id
+                 ORDER BY m.message_date DESC, m.telegram_message_id DESC
+                 LIMIT 1) AS last_by
+        FROM dialog_contacts c
+        LEFT JOIN match_dialogs md
+          ON md.account_session = c.account_session AND md.user_id = c.user_id
+        LEFT JOIN profiles p ON p.id = c.profile_id
+    """
+
+    def get_dialog_list(
+        self, account_session: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Девушки-матчи с краткой сводкой переписки (свежие сверху).
+
+        ``account_session`` — только этот аккаунт; None — все аккаунты.
+        """
+        sql = self._DIALOG_LIST_SQL
+        params: tuple = ()
+        if account_session is not None:
+            sql += " WHERE c.account_session = ?"
+            params = (account_session,)
+        sql += " ORDER BY COALESCE(c.last_message_at, c.matched_at) DESC"
+        try:
+            return self._query(sql, params)
+        except sqlite3.OperationalError:
+            return []  # БД ещё без таблиц журнала (бот не перезапускался)
+
+    def get_dialog(
+        self, account_session: str, user_id: int,
+    ) -> dict[str, Any] | None:
+        """Девушка + вся переписка (от старых к новым) + анкета, или None."""
+        try:
+            contact = self._query_one(
+                self._DIALOG_LIST_SQL
+                + " WHERE c.account_session = ? AND c.user_id = ?",
+                (account_session, int(user_id)),
+            )
+        except sqlite3.OperationalError:
+            return None
+        if contact is None:
+            return None
+        contact["messages"] = self._query(
+            """SELECT telegram_message_id, is_outgoing, sent_by, message_date,
+                      text, media_type, is_forward, reply_to_message_id
+            FROM dialog_messages
+            WHERE account_session = ? AND user_id = ?
+            ORDER BY message_date, telegram_message_id""",
+            (account_session, int(user_id)),
+        )
+        contact["profile"] = None
+        contact["photos"] = []
+        if contact.get("profile_id") is not None:
+            contact["profile"] = self._query_one(
+                "SELECT id, name, age, raw_city, normalized_city, description "
+                "FROM profiles WHERE id = ?",
+                (int(contact["profile_id"]),),
+            )
+            contact["photos"] = self._rating_photos(int(contact["profile_id"]))
+        return contact
+
+    def get_dialog_stats(self) -> dict[str, int]:
+        """Сводка для шапки: девушек, ответили, сообщений всего."""
+        try:
+            row = self._query_one(
+                """SELECT
+                    (SELECT COUNT(*) FROM dialog_contacts) AS girls,
+                    (SELECT COUNT(DISTINCT account_session || ':' || user_id)
+                       FROM dialog_messages WHERE sent_by = 'her') AS replied,
+                    (SELECT COUNT(*) FROM dialog_messages) AS messages"""
+            )
+        except sqlite3.OperationalError:
+            row = None
+        return {
+            "girls": int((row or {}).get("girls") or 0),
+            "replied": int((row or {}).get("replied") or 0),
+            "messages": int((row or {}).get("messages") or 0),
+        }
+
+    def export_dialogs(self) -> list[dict[str, Any]]:
+        """Все переписки целиком (для анализа): девушка + анкета + сообщения."""
+        out: list[dict[str, Any]] = []
+        for row in self.get_dialog_list():
+            full = self.get_dialog(row["account_session"], int(row["user_id"]))
+            if full is None:
+                continue
+            full.pop("photos", None)
+            out.append(full)
+        return out

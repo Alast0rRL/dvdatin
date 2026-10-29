@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -68,6 +69,9 @@ class MatchGreeter:
         self._db = db
         # Стикер кэшируется на клиента: у аккаунтов свои file_reference.
         self._stickers: dict[int, Any] = {}
+        # Колбэк «бот отправил девушке» (session, user_id, сообщение) —
+        # журнал переписок (DialogLogger.log_sent). Ошибки не важны.
+        self.on_sent: Callable[[str, int, Any], Awaitable[Any]] | None = None
 
     @staticmethod
     def target_of(match: ParsedMatch) -> str | int | None:
@@ -130,7 +134,7 @@ class MatchGreeter:
                     "переписка — не пишу"
                 )
                 return "HAS_CHAT"
-            await client.send_file(peer, sticker)
+            sent = await client.send_file(peer, sticker)
         except Exception as e:
             pause = flood_pause_sec(e)
             if pause is not None:
@@ -152,7 +156,20 @@ class MatchGreeter:
             return "ERROR"
         await self._mark(key, "SENT", match)
         logger.info(f"MatchGreeting: отправил стикер {match.name} ({target}) 🔥")
+        await self._report_sent(account_session, peer, sent)
         return "SENT"
+
+    async def _report_sent(
+        self, account_session: str, peer: Any, sent: Any,
+    ) -> None:
+        """Отдаёт отправленное в журнал переписок (если подключён)."""
+        user_id = int(getattr(peer, "user_id", 0) or 0)
+        if self.on_sent is None or not user_id:
+            return
+        try:
+            await self.on_sent(account_session, user_id, sent)
+        except Exception as e:
+            logger.error(f"MatchGreeting: журнал переписки: {e}")
 
     async def retry_queued(
         self, client: Any, account_session: str, mode: str,

@@ -789,3 +789,79 @@ a.seg__btn {
     .rate__actions { flex-wrap: nowrap; gap: 6px; }
     .rate__btn { min-width: 0; flex: 1 1 0; padding-left: 6px; padding-right: 6px; font-size: 15px; }
 }
+
+/* ── Переписки с матчами (/dialogs) ───────────────────────────── */
+.dialogs {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+.dialogs__title { margin: 0; font-size: 18px; overflow-wrap: anywhere; }
+.dialogs__stats { margin: 4px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.dialogs__stats a, .dialogs__stats a:visited { color: var(--accent); }
+.dialogs__filter { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.dialogs__empty { color: var(--muted); font-size: 14px; }
+.dialogs__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dialogs__item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    min-height: 44px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg-row);
+    color: var(--text);
+    text-decoration: none;
+}
+.dialogs__item:hover { background: var(--hover); border-color: var(--hover-line); }
+.dialogs__name { font-weight: 600; overflow-wrap: anywhere; }
+.dialogs__time { grid-column: 2; grid-row: 1; color: var(--faint); font-size: 12px; white-space: nowrap; }
+.dialogs__meta, .dialogs__last {
+    grid-column: 1 / -1;
+    color: var(--muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.dialogs__last { color: var(--text-soft); font-size: 13px; }
+.dialogs__badge {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 500;
+}
+.dialogs__badge--replied { background: var(--like-bg); color: var(--like-fg); border: 1px solid var(--like-line-soft); }
+.dialogs__profile {
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg-soft);
+}
+.dialogs__profile summary { cursor: pointer; min-height: 30px; color: var(--text-soft); }
+.dialogs__photos { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.dialogs__photos img { width: 96px; height: 128px; object-fit: cover; border-radius: 8px; background: var(--thumb-bg); }
+.dialogs__desc { margin: 8px 0 0; font-size: 13px; color: var(--text-soft); overflow-wrap: anywhere; white-space: pre-line; }
+
+.chatlog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.chatlog__msg {
+    max-width: 85%;
+    min-width: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--bg-row);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+/* Пузыри переписки (не лента): свои — справа через margin, её — слева. */
+.chatlog__msg--owner, .chatlog__msg--bot { margin-left: auto; background: var(--bg-row-out); }
+.chatlog__msg--bot { border-style: dashed; }
+.chatlog__who { color: var(--faint); font-size: 11px; }
+.chatlog__text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.chatlog__media { color: var(--muted); }

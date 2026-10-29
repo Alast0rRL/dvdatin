@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}DvAI — {{ d.name or d.who }}{% endblock %}
+
+{% block mode_switch %}
+<a class="btn btn--sm btn--ghost" href="{{ url_for('dialogs.index') }}">← Переписки</a>
+{% endblock %}
+
+{% block topbar_actions %}
+<button type="button" class="icon-btn theme-toggle" id="theme-toggle"
+        aria-label="Сменить тему" title="Сменить тему">
+    <svg class="theme-toggle__sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         width="18" height="18" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+    </svg>
+    <svg class="theme-toggle__moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         width="18" height="18" aria-hidden="true">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
+    </svg>
+</button>
+{% endblock %}
+
+{% block content %}
+<div class="dialogs">
+    <div class="dialogs__head">
+        <h1 class="dialogs__title">{{ d.name or d.who }}{% if d.age %}, {{ d.age }}{% endif %}</h1>
+        <p class="dialogs__stats">
+            {% if d.username %}<a href="https://t.me/{{ d.username }}" rel="noopener" target="_blank">{{ d.who }}</a>{% else %}{{ d.who }}{% endif %}
+            · {{ d.account_session }}
+            · матч <time data-local datetime="{{ d.matched_at }}">{{ (d.matched_at or '')[:16]|replace('T', ' ') }}</time>
+            · сообщений {{ d.total }} (её {{ d.her_count }})
+            {% if d.intro_label %} · {{ d.intro_label }}{% endif %}
+        </p>
+    </div>
+
+    {% if d.profile %}
+    <details class="dialogs__profile">
+        <summary>Её анкета</summary>
+        {% if d.photos %}
+        <div class="dialogs__photos">
+            {% for p in d.photos %}
+            <img src="{{ url_for('photos.serve_photo', profile_id=d.profile.id, message_id=p.message_id) }}"
+                 alt="" loading="lazy" width="96" height="128">
+            {% endfor %}
+        </div>
+        {% endif %}
+        <p class="dialogs__desc">{{ d.profile.name }}, {{ d.profile.age }}, {{ d.profile.raw_city or d.profile.normalized_city }}
+            {% if d.profile.description %}— {{ d.profile.description }}{% endif %}</p>
+    </details>
+    {% endif %}
+
+    {% if not d.messages %}
+    <p class="dialogs__empty">Сообщений пока нет (история подтянется при сверке, раз в ~10 мин).</p>
+    {% endif %}
+
+    <ol class="chatlog">
+        {% for m in d.messages %}
+        <li class="chatlog__msg chatlog__msg--{{ m.sent_by or ('owner' if m.is_outgoing else 'her') }}">
+            <span class="chatlog__who">
+                {% if m.sent_by == 'her' %}Она{% elif m.sent_by == 'bot' %}Бот{% else %}Ты{% endif %}
+                {% if m.is_forward %} · переслано{% endif %}
+                · <time data-local datetime="{{ m.message_date }}">{{ (m.message_date or '')[:16]|replace('T', ' ') }}</time>
+            </span>
+            {# Одной строкой: pre-wrap сохранил бы отступы шаблона. #}
+            <span class="chatlog__text">{% if m.media_type %}<span class="chatlog__media">[{{ m.media_type|dialog_media }}]</span>{% if m.text %} {% endif %}{% endif %}{{ m.text }}</span>
+        </li>
+        {% endfor %}
+    </ol>
+</div>
+{% endblock %}
+
+{% block scripts %}{% include "partials/dialog_times.html" %}{% endblock %}

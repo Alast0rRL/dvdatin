@@ -139,6 +139,11 @@ auto_actions:
     delay_min: 30
     pin: true
     reply_check_hours: 72          # сверка ответа по истории (после рестарта)
+  # Журнал переписок с каждой девушкой после взаимного лайка (её, владельца и
+  # бота) → таблица dialog_messages, на сайте кнопка «Переписки» (/dialogs).
+  dialog_log:
+    enabled: true
+    sync: true                     # сверка с историей Telegram (пропуски/старые)
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.

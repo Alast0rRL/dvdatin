@@ -33,6 +33,7 @@ from collectors.auto_action import (
 from collectors.dedup import Dedup
 from collectors.dvinchik_parser import DvinchikParser
 from collectors.match_greeter import MatchGreeter
+from collectors.dialog_logger import DialogLogger
 from collectors.match_intro import INTRO_SENT, MatchIntro
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from app.config import AccountControls
@@ -319,6 +320,13 @@ class DvinchikCollector:
         self._match_intro = MatchIntro(
             config.auto_actions.match_intro, db, config.dvinchik.chat_id,
         )
+        # Журнал переписок с девушками-матчами (данные для анализа общения).
+        dialog_cfg = config.auto_actions.dialog_log
+        self._dialog_log = DialogLogger(db, enabled=dialog_cfg.enabled)
+        self._dialog_sync = bool(dialog_cfg.sync)
+        if self._dialog_log.enabled:
+            self._match_greeter.on_sent = self._dialog_log.log_sent
+            self._match_intro.on_sent = self._dialog_log.log_sent
         self._allowed_chat_ids = set(
             config.sources.allowed_chat_ids
             or ([config.dvinchik.chat_id] if config.dvinchik.chat_id else [])
@@ -877,6 +885,7 @@ class DvinchikCollector:
                 logger.error(f"Сверка истории чата: {e}")
             await self.retry_match_greetings()
             await self.run_match_intros()
+            await self.sync_dialogs()
 
     async def _stream_snapshot(
         self, limit: int = STREAM_ERROR_SNAPSHOT_LIMIT
@@ -1455,6 +1464,8 @@ class DvinchikCollector:
         if client is None or task.chat_id != self._dvinchik_chat_id:
             return
         session = task.account_session or self._session_for_client(client)
+        # Реестр переписок — ДО привета: стикер бота сразу ляжет в журнал.
+        await self._track_dialog(client, session, match)
         try:
             status = await self._match_greeter.greet(
                 client, session, match, self._dialog_mode(session),
@@ -1465,6 +1476,31 @@ class DvinchikCollector:
         await self._notify_greeting(session, match, status)
         if status == "SENT":
             await self._enroll_match_intro(client, session, match)
+
+    async def _track_dialog(
+        self, client: object, session: str, match: ParsedMatch,
+    ) -> None:
+        """Матч → девушка в журнале переписок (каждый матч, любой режим)."""
+        if not self._dialog_log.enabled:
+            return
+        try:
+            profile_id = await self._db.find_match_profile(
+                match.name, self._dvinchik_chat_id, session,
+            )
+            await self._dialog_log.track(client, session, match, profile_id)
+        except Exception as e:
+            logger.error(f"DialogLog: не завёл переписку {match.name}: {e}")
+
+    async def sync_dialogs(self) -> None:
+        """Сверка журнала переписок с историей Telegram (по аккаунтам)."""
+        if not (self._dialog_log.enabled and self._dialog_sync):
+            return
+        for client, session in zip(self._clients, self._client_sessions):
+            with self._session_scope(session):
+                try:
+                    await self._dialog_log.sync(client, session)
+                except Exception as e:
+                    logger.error(f"DialogLog: сверка {session}: {e}")
 
     async def _enroll_match_intro(
         self, client: object, session: str, match: ParsedMatch, *,
@@ -1483,10 +1519,12 @@ class DvinchikCollector:
     async def _handle_private_message(
         self, event: events.NewMessage.Event,
     ) -> None:
-        """Входящее в личке: если это девушка после привета — планируем анкету.
+        """Входящее в личке: девушка-матч → журнал переписки; после привета —
+        планируем анкету.
 
-        Чат Leo (и прочие источники ленты) сюда не относятся. Текст не
-        логируется и не сохраняется.
+        Чат Leo (и прочие источники ленты) сюда не относятся. Текст в лог
+        (loguru) не пишется — только сообщения девушек-матчей в БД
+        (``dialog_messages``).
         """
         self._bind_client(getattr(event, "client", None))
         try:
@@ -1495,6 +1533,10 @@ class DvinchikCollector:
                 return
             sender_id = int(getattr(event, "sender_id", 0) or chat_id or 0)
             session = self._session_for_client(getattr(event, "client", None))
+            await self._dialog_log.log_event(
+                session, getattr(event, "message", None), outgoing=False,
+                user_id=chat_id,
+            )
             date = getattr(getattr(event, "message", None), "date", None)
             await self._match_intro.note_reply(
                 session, sender_id, self._dialog_mode(session),
@@ -2275,6 +2317,16 @@ class DvinchikCollector:
         self._bind_client(getattr(event, "client", None))
         chat_id = event.chat_id
         if chat_id != self._dvinchik_chat_id:
+            # Личка с девушкой-матчем: сообщение владельца → журнал переписки.
+            if getattr(event, "is_private", False) is True:
+                try:
+                    await self._dialog_log.log_event(
+                        self._session_for_client(getattr(event, "client", None)),
+                        getattr(event, "message", None), outgoing=True,
+                        user_id=chat_id,
+                    )
+                except Exception as e:
+                    logger.error(f"DialogLog: исходящее: {e}")
             return
 
         msg = event.message

@@ -226,6 +226,19 @@ class MatchIntroConfig(BaseModel):
     reply_check_hours: float = 72.0
 
 
+class DialogLogConfig(BaseModel):
+    """Журнал переписок с девушками после взаимного лайка (сбор данных).
+
+    Все сообщения в личке с каждой девушкой-матчем (её, владельца, бота)
+    пишутся в ``dialog_messages``; на сайте — страница ``/dialogs``. На
+    действия бота не влияет. ``sync`` — сверка с историей Telegram (пропуски
+    и старые переписки).
+    """
+
+    enabled: bool = True
+    sync: bool = True
+
+
 class AccountControls(BaseModel):
     """Два независимых переключателя аккаунта (шапка сайта).
 
@@ -326,6 +339,8 @@ class AutoActionsConfig(BaseModel):
     match_greeting: MatchGreetingConfig = MatchGreetingConfig()
     #: Её ответ на привет → через 30 мин её анкета + закреп (режим AUTO).
     match_intro: MatchIntroConfig = MatchIntroConfig()
+    #: Журнал переписок с матчами (страница сайта /dialogs).
+    dialog_log: DialogLogConfig = DialogLogConfig()
 
     @field_validator("interval_sec")
     @classmethod

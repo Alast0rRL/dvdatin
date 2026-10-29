@@ -265,6 +265,47 @@ CREATE TABLE IF NOT EXISTS match_dialogs (
 CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
     ON match_dialogs(status);
 
+-- dialog_contacts: девушки со взаимным лайком, чьи переписки логируются
+-- (сбор данных для анализа и алгоритма общения). Заводится на КАЖДЫЙ матч
+-- (независимо от привета/автопереписки). Ключ — аккаунт + её user_id.
+-- synced_at — последняя сверка её чата с историей Telegram.
+CREATE TABLE IF NOT EXISTS dialog_contacts (
+    account_session TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    profile_id INTEGER,
+    matched_at TEXT NOT NULL,
+    last_message_at TEXT,
+    synced_at TEXT,
+    PRIMARY KEY (account_session, user_id)
+);
+
+-- dialog_messages: все сообщения в личке с девушкой из dialog_contacts —
+-- её, владельца и бота (append-only). sent_by: her | owner | bot.
+-- media_type: '' (текст) | sticker | photo | video | voice | video_note | gif
+-- | document | other; для стикера в text — его эмодзи. is_forward — пересланное
+-- (её анкета от автопереписки).
+CREATE TABLE IF NOT EXISTS dialog_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_session TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    is_outgoing INTEGER NOT NULL DEFAULT 0,
+    sent_by TEXT NOT NULL DEFAULT '',
+    message_date TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL DEFAULT '',
+    is_forward INTEGER NOT NULL DEFAULT 0,
+    reply_to_message_id INTEGER,
+    received_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dialog_messages_unique
+    ON dialog_messages(account_session, user_id, telegram_message_id);
+CREATE INDEX IF NOT EXISTS idx_dialog_messages_chat
+    ON dialog_messages(account_session, user_id, message_date);
+
 -- photo_ratings: быстрая разметка внешности на сайте (/rate). Владелец
 -- листает фото анкет (без текста) и отмечает «нравится / нет / пропустить».
 -- Это обучающие метки для модели «твой вкус по фото», на действия бота не
@@ -412,6 +453,22 @@ class Database:
         # chat_id (свои диапазоны message id), общий контекст связывал MEDIA_ONLY
         # с карточкой другого аккаунта.
         await self._ensure_chat_context_account_session()
+        # Логирование переписок: девушки из автопереписки (до появления
+        # dialog_contacts) тоже попадают в реестр.
+        await self._backfill_dialog_contacts()
+
+    async def _backfill_dialog_contacts(self) -> None:
+        """Переносит девушек из match_dialogs в dialog_contacts (идемпотентно)."""
+        try:
+            await self._connection.execute(
+                """INSERT OR IGNORE INTO dialog_contacts
+                (account_session, user_id, username, name, profile_id, matched_at)
+                SELECT account_session, user_id, username, name, profile_id,
+                       greeted_at
+                FROM match_dialogs"""
+            )
+        except Exception as e:
+            logger.warning(f"_backfill_dialog_contacts: {e}")
 
     async def _ensure_chat_context_account_session(self) -> None:
         """Пересоздаёт chat_context с составным ключом (account_session, chat_id).
@@ -1826,6 +1883,202 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
+
+    # ── Логирование переписок с матчами (dialog_contacts/messages) ───
+
+    async def upsert_dialog_contact(
+        self,
+        account_session: str,
+        user_id: int,
+        *,
+        username: str = "",
+        name: str = "",
+        profile_id: int | None = None,
+        matched_at: str | None = None,
+    ) -> bool:
+        """Заводит девушку в реестр переписок. True — новая.
+
+        Повторный матч дополняет пустые поля (username/имя/анкета), дату
+        первого матча не трогает.
+        """
+        try:
+            cursor = await self._connection.execute(
+                """INSERT OR IGNORE INTO dialog_contacts
+                (account_session, user_id, username, name, profile_id, matched_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    account_session or "", int(user_id), username or "",
+                    name or "", profile_id,
+                    matched_at or datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            added = (cursor.rowcount or 0) > 0
+            if not added:
+                await self._connection.execute(
+                    """UPDATE dialog_contacts SET
+                        username = CASE WHEN ? <> '' THEN ? ELSE username END,
+                        name = CASE WHEN name = '' THEN ? ELSE name END,
+                        profile_id = COALESCE(profile_id, ?)
+                    WHERE account_session = ? AND user_id = ?""",
+                    (
+                        username or "", username or "", name or "", profile_id,
+                        account_session or "", int(user_id),
+                    ),
+                )
+            await self._connection.commit()
+            return added
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"upsert_dialog_contact: {e}")
+            return False
+
+    async def get_dialog_contact_ids(self, account_session: str) -> set[int]:
+        """user_id всех девушек аккаунта, чьи переписки логируются."""
+        cursor = await self._connection.execute(
+            "SELECT user_id FROM dialog_contacts WHERE account_session = ?",
+            (account_session or "",),
+        )
+        return {int(r[0]) for r in await cursor.fetchall()}
+
+    async def get_dialog_contact_usernames(self, account_session: str) -> set[str]:
+        """@username (нижний регистр) девушек аккаунта в реестре."""
+        cursor = await self._connection.execute(
+            "SELECT username FROM dialog_contacts "
+            "WHERE account_session = ? AND username <> ''",
+            (account_session or "",),
+        )
+        return {str(r[0]).lower() for r in await cursor.fetchall()}
+
+    async def save_dialog_message(
+        self,
+        account_session: str,
+        user_id: int,
+        telegram_message_id: int,
+        *,
+        is_outgoing: bool,
+        sent_by: str,
+        message_date: str,
+        text: str = "",
+        media_type: str = "",
+        is_forward: bool = False,
+        reply_to_message_id: int | None = None,
+    ) -> bool:
+        """Сохраняет сообщение переписки. True — новое.
+
+        Дубликат (событие + сверка истории) схлопывается по
+        (аккаунт, девушка, message id). Метка ``bot`` побеждает: бот пишет свои
+        отправки сам, а эхо-событие могло успеть записать их как ``owner``.
+        """
+        try:
+            cursor = await self._connection.execute(
+                """INSERT OR IGNORE INTO dialog_messages
+                (account_session, user_id, telegram_message_id, is_outgoing,
+                 sent_by, message_date, text, media_type, is_forward,
+                 reply_to_message_id, received_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_session or "", int(user_id),
+                    int(telegram_message_id), int(bool(is_outgoing)),
+                    sent_by or "", message_date, text or "", media_type or "",
+                    int(bool(is_forward)), reply_to_message_id,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            added = (cursor.rowcount or 0) > 0
+            if not added and sent_by == "bot":
+                await self._connection.execute(
+                    """UPDATE dialog_messages SET sent_by = 'bot'
+                    WHERE account_session = ? AND user_id = ?
+                      AND telegram_message_id = ?""",
+                    (account_session or "", int(user_id), int(telegram_message_id)),
+                )
+            if added:
+                await self._connection.execute(
+                    """UPDATE dialog_contacts SET last_message_at = ?
+                    WHERE account_session = ? AND user_id = ?
+                      AND (last_message_at IS NULL OR last_message_at < ?)""",
+                    (
+                        message_date, account_session or "", int(user_id),
+                        message_date,
+                    ),
+                )
+            await self._connection.commit()
+            return added
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"save_dialog_message: {e}")
+            return False
+
+    async def get_dialog_sync_queue(
+        self, account_session: str, *, older_than: str, limit: int = 15,
+    ) -> list[dict]:
+        """Девушки на сверку истории: давно не сверялись (никогда — первыми).
+
+        ``last_tm_id`` — последний сохранённый message id её чата (сверка
+        качает только новее).
+        """
+        cursor = await self._connection.execute(
+            """SELECT c.*, (
+                    SELECT MAX(m.telegram_message_id) FROM dialog_messages m
+                    WHERE m.account_session = c.account_session
+                      AND m.user_id = c.user_id
+                ) AS last_tm_id
+            FROM dialog_contacts c
+            WHERE c.account_session = ?
+              AND (c.synced_at IS NULL OR c.synced_at < ?)
+            ORDER BY c.synced_at IS NOT NULL, c.synced_at, c.matched_at DESC
+            LIMIT ?""",
+            (account_session or "", older_than, int(limit)),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
+
+    async def mark_dialog_synced(
+        self, account_session: str, user_id: int, at: str | None = None,
+    ) -> None:
+        """Отметка «её чат сверен с историей Telegram»."""
+        try:
+            await self._connection.execute(
+                "UPDATE dialog_contacts SET synced_at = ? "
+                "WHERE account_session = ? AND user_id = ?",
+                (
+                    at or datetime.now(timezone.utc).isoformat(),
+                    account_session or "", int(user_id),
+                ),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"mark_dialog_synced: {e}")
+
+    async def list_untracked_matches(
+        self, account_session: str, limit: int = 20,
+    ) -> list[dict]:
+        """Старые взаимные лайки аккаунта с @username, которых нет в реестре.
+
+        Аккаунт матча — по входящему сообщению Leo с тем же id (у аккаунтов
+        свои пространства id). Только с @username: без него user_id не узнать.
+        """
+        known = await self.get_dialog_contact_usernames(account_session)
+        cursor = await self._connection.execute(
+            """SELECT mr.name, mr.telegram_username, mr.profile_id,
+                      MIN(mr.responded_at) AS matched_at
+            FROM match_responses mr
+            JOIN raw_messages rm
+              ON rm.chat_id = mr.chat_id
+             AND rm.telegram_message_id = mr.telegram_message_id
+             AND rm.is_outgoing = 0
+            WHERE rm.account_session = ? AND mr.telegram_username <> ''
+            GROUP BY lower(mr.telegram_username)
+            ORDER BY matched_at DESC""",
+            (account_session or "",),
+        )
+        rows = [self._row_to_dict(cursor, r) for r in await cursor.fetchall()]
+        fresh = [
+            r for r in rows
+            if str(r["telegram_username"]).lower() not in known
+        ]
+        return fresh[: int(limit)]
 
     async def find_match_profile(
         self,

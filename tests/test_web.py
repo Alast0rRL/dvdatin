@@ -2576,3 +2576,73 @@ class TestBotErrorPopup:
         _login(client)
         data = json.loads(client.get("/chat/feed").get_data(as_text=True))
         assert data["bot_error"] is None
+
+
+class TestDialogsPage:
+    """Переписки с девушками после взаимного лайка (/dialogs)."""
+
+    @staticmethod
+    def _seed(sync_db) -> None:
+        _, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(db.upsert_dialog_contact(
+            "dvai", 77, username="roza", name="Алиса", profile_id=1,
+            matched_at="2026-10-29T10:00:00+00:00",
+        ))
+        loop.run_until_complete(db.add_match_dialog("dvai", 77, name="Алиса"))
+        for mid, by, text, media in (
+            (1, "bot", "👋", "sticker"),
+            (2, "her", "привет)", ""),
+            (3, "owner", "<b>как дела?</b>", ""),
+        ):
+            loop.run_until_complete(db.save_dialog_message(
+                "dvai", 77, mid, is_outgoing=by != "her", sent_by=by,
+                message_date=f"2026-10-29T10:0{mid}:00+00:00", text=text,
+                media_type=media,
+            ))
+
+    def test_login_required(self, client) -> None:
+        assert client.get("/dialogs").status_code == 302
+        assert client.get("/dialogs/export.json").status_code == 302
+
+    def test_topbar_button(self, client) -> None:
+        _login(client)
+        html = client.get("/").get_data(as_text=True)
+        assert 'id="dialogs-open"' in html and 'href="/dialogs"' in html
+
+    def test_empty_list(self, client) -> None:
+        _login(client)
+        html = client.get("/dialogs").get_data(as_text=True)
+        assert "Пока пусто" in html
+
+    def test_list_shows_girl_and_last_message(self, client, sync_db) -> None:
+        self._seed(sync_db)
+        _login(client)
+        html = client.get("/dialogs").get_data(as_text=True)
+        assert "Алиса, 19" in html and "@roza" in html
+        assert "ответила" in html
+        assert "/dialogs/dvai/77" in html
+        assert "ждём ответа на привет" in html
+
+    def test_dialog_page_shows_whole_chat(self, client, sync_db) -> None:
+        self._seed(sync_db)
+        _login(client)
+        html = client.get("/dialogs/dvai/77").get_data(as_text=True)
+        assert html.index("👋") < html.index("привет)") < html.index("как дела?")
+        assert "chatlog__msg--bot" in html and "chatlog__msg--her" in html
+        assert "&lt;b&gt;как дела?" in html          # текст экранируется
+        assert "Её анкета" in html and "Люблю аниме" in html
+
+    def test_unknown_dialog_404(self, client) -> None:
+        _login(client)
+        assert client.get("/dialogs/dvai/1").status_code == 404
+
+    def test_export_json(self, client, sync_db) -> None:
+        self._seed(sync_db)
+        _login(client)
+        resp = client.get("/dialogs/export.json")
+        data = json.loads(resp.get_data(as_text=True))
+        assert "attachment" in resp.headers["Content-Disposition"]
+        (girl,) = data["dialogs"]
+        assert girl["user_id"] == 77 and girl["profile"]["name"] == "Алиса"
+        assert [m["sent_by"] for m in girl["messages"]] == ["bot", "her", "owner"]
