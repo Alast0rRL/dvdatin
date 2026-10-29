@@ -10,6 +10,9 @@
 3. В срок (``process``, из фонового цикла коллектора раз в минуту) — пересылка
    её же анкеты из чата Leo (фото + подпись, только id этого аккаунта) и
    закреп у обоих (``pm_oneside=False``) → INTRO_SENT.
+   Анкету видел только ДРУГОЙ аккаунт (перенаправление лички) — он пересылает
+   её этому аккаунту, а этот — девушке (``_relay_card``); пересланное
+   пересылкой сохраняет «переслано от Leo».
 
 Правила:
 - только в режимах ``match_intro.modes`` (по умолчанию AUTO); вне их ответы не
@@ -49,6 +52,16 @@ REPLY_CHECK_BATCH: int = 20
 REPLY_CHECK_HISTORY: int = 10
 
 
+#: Копии анкеты от другого аккаунта ищем среди сообщений не старше этого.
+RELAY_SINCE_SEC: float = 60.0
+#: Сколько лишних сообщений чата смотреть при поиске копий.
+RELAY_LOOKBACK: int = 10
+
+
+def _msg_text(msg: Any) -> str:
+    return (getattr(msg, "message", None) or getattr(msg, "text", None) or "").strip()
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -77,6 +90,9 @@ class MatchIntro:
         # Колбэк «бот отправил девушке» (session, user_id, сообщения) —
         # журнал переписок (DialogLogger.log_sent). Ошибки не важны.
         self.on_sent: Callable[[str, int, Any], Awaitable[Any]] | None = None
+        # Клиенты аккаунтов {session: client} (ставит коллектор): анкету,
+        # которую видел только другой аккаунт, пересылаем через него.
+        self.clients: dict[str, Any] = {}
 
     def allowed_in(self, mode: str) -> bool:
         return bool(self._config.enabled) and mode in self._config.modes
@@ -184,15 +200,7 @@ class MatchIntro:
         NO_PROFILE / ERROR / FLOOD (повтор позже)."""
         user_id = int(row["user_id"])
         name = row.get("name") or str(user_id)
-        ids: list[int] = []
-        profile_id = row.get("profile_id")
-        if profile_id is not None:
-            try:
-                ids = await self._db.get_profile_card_message_ids(
-                    int(profile_id), account_session,
-                )
-            except Exception as e:
-                logger.error(f"MatchIntro: не получил сообщения анкеты: {e}")
+        source, ids = await self._find_card(row.get("profile_id"), account_session)
         if not ids:
             logger.warning(
                 f"MatchIntro: анкета {name} не найдена — не шлю"
@@ -200,10 +208,21 @@ class MatchIntro:
             await self._update(account_session, user_id, status=NO_PROFILE)
             return NO_PROFILE
         try:
+            from_peer: Any = self._leo_chat_id
+            if source != account_session:
+                from_peer, ids = await self._relay_card(client, source, ids)
+                if not ids:
+                    logger.error(
+                        f"MatchIntro: анкета {name} с {source} не дошла до "
+                        f"{account_session} — не шлю"
+                    )
+                    await self._update(
+                        account_session, user_id, status=ERROR,
+                        error=f"relay from {source}: no messages",
+                    )
+                    return ERROR
             peer = await client.get_input_entity(row.get("username") or user_id)
-            sent = await client.forward_messages(
-                peer, ids, from_peer=self._leo_chat_id,
-            )
+            sent = await client.forward_messages(peer, ids, from_peer=from_peer)
         except Exception as e:
             pause = flood_pause_sec(e)
             if pause is not None:
@@ -252,6 +271,80 @@ class MatchIntro:
             f"{' и закрепил 📌' if pinned else ''}"
         )
         return INTRO_SENT
+
+    async def _find_card(
+        self, profile_id: object, account_session: str,
+    ) -> tuple[str, list[int]]:
+        """(аккаунт, id сообщений анкеты в его чате Leo).
+
+        Сначала свой аккаунт; нет — другой вошедший аккаунт, который её видел
+        (матч был на нём, а личка перенаправлена сюда).
+        """
+        if profile_id is None or self._db is None:
+            return account_session, []
+        sessions = [account_session] + [
+            s for s in self.clients if s and s != account_session
+        ]
+        for session in sessions:
+            try:
+                ids = await self._db.get_profile_card_message_ids(
+                    int(profile_id), session,
+                )
+            except Exception as e:
+                logger.error(f"MatchIntro: не получил сообщения анкеты: {e}")
+                continue
+            if ids:
+                return session, ids
+        return account_session, []
+
+    async def _relay_card(
+        self, client: Any, source: str, ids: list[int],
+    ) -> tuple[Any, list[int]]:
+        """Анкета из чата Leo аккаунта ``source`` → в личку этому аккаунту.
+
+        Возвращает (чат с ``source`` у этого аккаунта, id полученных копий) —
+        их этот аккаунт и пересылает девушке. id в личке у каждого свои,
+        поэтому копии ищем по истории: свежие входящие пересланные с теми же
+        подписями. Не дошло — ``[]``.
+        """
+        src = self.clients.get(source)
+        if src is None:
+            return None, []
+        me = await client.get_me()
+        src_me = await src.get_me()
+        to_me = await src.get_input_entity(
+            getattr(me, "username", None) or int(me.id)
+        )
+        since = _now() - timedelta(seconds=RELAY_SINCE_SEC)
+        relayed = await src.forward_messages(to_me, ids, from_peer=self._leo_chat_id)
+        relayed = relayed if isinstance(relayed, list) else [relayed]
+        texts = [_msg_text(m) for m in relayed if m is not None]
+        if not texts:
+            return None, []
+        from_src = await client.get_input_entity(
+            getattr(src_me, "username", None) or int(src_me.id)
+        )
+        found: list[int] = []
+        wanted = list(texts)
+        async for msg in client.iter_messages(from_src, limit=len(texts) + RELAY_LOOKBACK):
+            if getattr(msg, "out", False) or getattr(msg, "fwd_from", None) is None:
+                continue
+            date = getattr(msg, "date", None)
+            if isinstance(date, datetime):
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                if date < since:
+                    break
+            text = _msg_text(msg)
+            if text in wanted:
+                wanted.remove(text)
+                found.append(int(msg.id))
+            if not wanted:
+                break
+        if wanted:
+            return from_src, []
+        logger.info(f"MatchIntro: анкета переслана с {source} для отправки девушке")
+        return from_src, sorted(found)
 
     @staticmethod
     def _pin_target(sent: Any) -> Any:
