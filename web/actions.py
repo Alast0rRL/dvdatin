@@ -159,6 +159,27 @@ def set_account_sync(session: str) -> str:
     return "OK"
 
 
+def mode_block_reason_sync(mode: "Mode") -> str | None:
+    """Причина, по которой нельзя включить режим (лимит ❤️), иначе None.
+
+    Вызывается ДО сохранения режима в config.yaml. Без коллектора/цикла
+    (бот не запущен, тесты) проверить нечем — разрешаем.
+    """
+    if _collector is None:
+        return None
+    loop = _loop()
+    if loop is None or loop.is_closed():
+        return None
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _collector.mode_block_reason(mode), loop,
+        )
+        return future.result(timeout=30)
+    except Exception as e:
+        logger.error(f"Mode bridge: limit check failed: {type(e).__name__}: {e!r}")
+        return None
+
+
 def set_mode_sync(mode: "Mode") -> str:
     """Switch the live mode on the running collector and kick the stream.
 

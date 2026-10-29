@@ -259,6 +259,15 @@ class AutoActionEngine:
             and time.time() < self._likes_exhausted_until
         )
 
+    async def like_limit_until(self) -> float | None:
+        """Время сброса лимита ❤️, если он сейчас исчерпан, иначе None.
+
+        Подгружает состояние из БД (переживает рестарт). Нужен для запрета
+        включать SEMI_AUTO/AUTO, пока лимит исчерпан.
+        """
+        await self._ensure_like_limit_loaded()
+        return self._likes_exhausted_until if self.likes_exhausted() else None
+
     async def mark_likes_exhausted(self) -> None:
         """Помечает лайки исчерпанными до ближайших 07:00 и сохраняет в БД."""
         reset = self._compute_like_limit_reset()

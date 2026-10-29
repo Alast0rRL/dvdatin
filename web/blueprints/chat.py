@@ -352,7 +352,13 @@ def resume_search() -> tuple:
         flash("Ошибка безопасности", "error")
         return ("CSRF token invalid", 403)
 
-    from web.actions import resume_search_sync
+    from core.types import Mode
+    from web.actions import mode_block_reason_sync, resume_search_sync
+
+    block_reason = mode_block_reason_sync(Mode.SEMI_AUTO)
+    if block_reason is not None:
+        flash(block_reason, "error")
+        return redirect(_safe_next())
 
     try:
         status = resume_search_sync()

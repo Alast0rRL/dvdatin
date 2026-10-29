@@ -3206,6 +3206,70 @@ class TestCollectorAutoActions:
         assert collector.mode is Mode.SEMI_AUTO
         auto_client.send_message.assert_called_once_with(1234060895, "1. Показать.")
 
+    def _limit_state(self, collector, until: float) -> None:
+        """app_state: лимит ❤️ авто-аккаунта исчерпан до ``until``."""
+        key = collector._auto_engine.like_limit_key()
+
+        async def get_state(k: str):
+            return str(until) if k == key else None
+
+        collector._db.get_state = AsyncMock(side_effect=get_state)
+
+    def test_mode_blocked_while_like_limit_exhausted(self) -> None:
+        """Лимит ❤️ исчерпан → SEMI_AUTO/AUTO не включаются (прод 2026-10-29).
+
+        На LIKE-решении движок при лимите ничего не шлёт, Leo ждёт реакцию —
+        лента вставала. OBSERVE включать можно всегда.
+        """
+        import time as _time
+        collector = self._make_collector(
+            self._make_config(), None, AsyncMock(), AsyncMock()
+        )
+        collector._auto_engine.mode = Mode.OBSERVE
+        self._limit_state(collector, _time.time() + 3600)
+        run = asyncio.get_event_loop().run_until_complete
+
+        with patch.object(AppConfig, "persist_mode") as persist:
+            for mode in (Mode.SEMI_AUTO, Mode.AUTO):
+                reason = run(collector.request_mode(mode))
+                assert reason is not None and "Лимит ❤️" in reason
+                assert collector.mode is Mode.OBSERVE
+            persist.assert_not_called()
+            assert run(collector.request_mode(Mode.OBSERVE)) is None
+
+    def test_mode_allowed_after_like_limit_reset(self) -> None:
+        """Срок лимита прошёл → режим включается."""
+        import time as _time
+        collector = self._make_collector(
+            self._make_config(), None, AsyncMock(), AsyncMock()
+        )
+        collector._auto_engine.mode = Mode.OBSERVE
+        self._limit_state(collector, _time.time() - 60)
+        with patch.object(AppConfig, "persist_mode"):
+            reason = asyncio.get_event_loop().run_until_complete(
+                collector.request_mode(Mode.AUTO)
+            )
+        assert reason is None
+        assert collector.mode is Mode.AUTO
+
+    def test_resume_after_match_stop_blocked_by_like_limit(self) -> None:
+        """«Продолжить» при исчерпанном лимите: остаёмся в OBSERVE, ничего не жмём."""
+        import time as _time
+        auto_client = AsyncMock()
+        auto_client.send_message = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+        collector._auto_engine.mode = Mode.OBSERVE
+        self._limit_state(collector, _time.time() + 3600)
+        with patch.object(AppConfig, "persist_mode"):
+            ok = asyncio.get_event_loop().run_until_complete(
+                collector.resume_after_match_stop()
+            )
+        assert ok is False
+        assert collector.mode is Mode.OBSERVE
+        auto_client.send_message.assert_not_called()
+
     def test_start_stream_main_menu_presses_rocket(self) -> None:
         """Главное меню Leo ([«1 🚀», «2», «3», «4»]) → жмём «1 🚀».
 

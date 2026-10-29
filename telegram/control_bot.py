@@ -136,6 +136,10 @@ class ControlBot:
             )
             return
         try:
+            reason = await self._collector.mode_block_reason(mode)
+            if reason is not None:
+                await event.respond(f"⛔ {reason}")
+                return
             self._collector.set_mode(mode)
             text = f"Режим установлен: {mode.value}"
             if mode in (Mode.SEMI_AUTO, Mode.AUTO):
@@ -224,6 +228,10 @@ class ControlBot:
                 return
             action = raw.split(":", 1)[1]
             if action == "on":
+                reason = await self._collector.mode_block_reason(Mode.SEMI_AUTO)
+                if reason is not None:
+                    await event.answer(reason, alert=True)
+                    return
                 self._collector.set_mode(Mode.SEMI_AUTO)
                 text = self._render_status()
                 if self._collector.auto_engine().enabled:

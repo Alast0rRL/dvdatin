@@ -385,6 +385,40 @@ class DvinchikCollector:
         except Exception as e:
             logger.error(f"Не удалось сохранить режим в config.yaml: {e}")
 
+    async def mode_block_reason(self, mode: Mode) -> str | None:
+        """Почему нельзя включить режим ``mode`` (None — можно).
+
+        SEMI_AUTO/AUTO не включаем, пока у аккаунта-исполнителя исчерпан
+        дневной лимит ❤️: на первой же анкете, которую бот решит лайкнуть,
+        он ничего не отправит (``LIKE_LIMIT``), Leo будет ждать реакцию —
+        лента встанет (прод 2026-10-29). Ошибка чтения состояния не мешает
+        переключению.
+        """
+        if mode not in (Mode.SEMI_AUTO, Mode.AUTO) or self._auto_engine is None:
+            return None
+        try:
+            until = await self._auto_engine.like_limit_until()
+        except Exception as e:
+            logger.error(f"Не удалось проверить лимит ❤️ перед сменой режима: {e}")
+            return None
+        if until is None:
+            return None
+        reset = datetime.fromtimestamp(until).strftime("%H:%M")
+        session = self._auto_engine.account_session or "аккаунт"
+        return (
+            f"Лимит ❤️ у {session} исчерпан до {reset} — {mode.value} не "
+            "включаю: на первой анкете для лайка лента встанет."
+        )
+
+    async def request_mode(self, mode: Mode) -> str | None:
+        """Меняет режим, если это разрешено; иначе возвращает причину отказа."""
+        reason = await self.mode_block_reason(mode)
+        if reason is not None:
+            logger.warning(f"Смена режима на {mode.value} отклонена: {reason}")
+            return reason
+        self.set_mode(mode)
+        return None
+
     def auto_engine(self) -> AutoActionEngine | None:
         """Доступ к движку авто-действий для ControlBot."""
         return self._auto_engine
@@ -1441,6 +1475,11 @@ class DvinchikCollector:
         True — лента продолжена.
         """
         mode = await self._match_stop_prev_mode()
+        reason = await self.mode_block_reason(mode)
+        if reason is not None:
+            # Лимит ❤️ исчерпан — остаёмся в OBSERVE, баннер не снимаем.
+            logger.warning(f"AutoAction: «Продолжить» отклонено: {reason}")
+            return False
         self._mode_before_match_stop = None
         self.set_mode(mode)
         if self._db is not None:

@@ -83,6 +83,13 @@ def update_mode() -> tuple:
         flash(f"Неизвестный режим: {mode_str}", "error")
         return redirect(redirect_target)
 
+    # Пока лимит ❤️ исчерпан, SEMI_AUTO/AUTO не включаем (лента встанет).
+    from web.actions import mode_block_reason_sync
+    block_reason = mode_block_reason_sync(mode)
+    if block_reason is not None:
+        flash(block_reason, "error")
+        return redirect(redirect_target)
+
     live_status = "OK"
     config_path = _get_config_path()
     try:

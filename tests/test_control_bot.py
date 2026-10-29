@@ -48,6 +48,7 @@ def _make_mock_collector():
     collector.auto_engine.return_value = engine
     collector.mode = Mode.OBSERVE
     collector.set_mode = MagicMock()
+    collector.mode_block_reason = AsyncMock(return_value=None)
     collector.start_auto_stream = AsyncMock()
     return collector
 
@@ -113,6 +114,26 @@ class TestControlBotActions:
         )
         collector.set_mode.assert_called_once_with(Mode.OBSERVE)
         ev.edit.assert_awaited_once()
+
+    def test_mode_on_refused_while_like_limit_exhausted(self) -> None:
+        """/mode on при исчерпанном лимите ❤️ — режим не меняется, ответ-отказ."""
+        bot, client, collector = make_bot()
+        collector.mode_block_reason = AsyncMock(return_value="Лимит ❤️ исчерпан")
+        ev = _event(sender_id=8525808108, text="/mode on")
+        asyncio.get_event_loop().run_until_complete(bot._on_message(ev))
+        collector.set_mode.assert_not_called()
+        collector.start_auto_stream.assert_not_awaited()
+        assert "Лимит ❤️" in ev.respond.await_args.args[0]
+
+    def test_toggle_on_refused_while_like_limit_exhausted(self) -> None:
+        """Кнопка ON при исчерпанном лимите — alert, режим не меняется."""
+        bot, client, collector = make_bot()
+        collector.mode_block_reason = AsyncMock(return_value="Лимит ❤️ исчерпан")
+        ev = _event(sender_id=8525808108)
+        ev.data = b"control:on"
+        asyncio.get_event_loop().run_until_complete(bot._on_callback(ev))
+        collector.set_mode.assert_not_called()
+        ev.answer.assert_awaited_once_with("Лимит ❤️ исчерпан", alert=True)
 
     def test_unrelated_callback_ignored(self) -> None:
         bot, client, collector = make_bot()

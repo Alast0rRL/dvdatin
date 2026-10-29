@@ -851,6 +851,9 @@ class TestSettings:
             def set_mode(self, mode: Mode) -> None:
                 switched.append(mode)
 
+            async def mode_block_reason(self, mode: Mode) -> str | None:
+                return None
+
             async def start_auto_stream(self) -> bool:
                 stream_ran.append(True)
                 return True
@@ -877,6 +880,53 @@ class TestSettings:
             web_actions.set_collector(None)
             worker_loop.call_soon_threadsafe(worker_loop.stop)
             t.join(timeout=5)
+
+    def test_update_mode_refused_while_like_limit_exhausted(
+        self, client, tmp_path,
+    ) -> None:
+        """Лимит ❤️ исчерпан → сайт не включает SEMI_AUTO: ни YAML, ни движок."""
+        import yaml
+        from core.types import Mode
+        from web import actions as web_actions
+
+        switched = []
+
+        class _FakeCollector:
+            def set_mode(self, mode: Mode) -> None:
+                switched.append(mode)
+
+            async def mode_block_reason(self, mode: Mode) -> str | None:
+                return "Лимит ❤️ у dvai_2 исчерпан до 07:00"
+
+            async def start_auto_stream(self) -> bool:
+                return True
+
+        with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+            before = yaml.safe_load(f)["project"]["mode"]
+
+        worker_loop = asyncio.new_event_loop()
+        t = threading.Thread(target=worker_loop.run_forever, daemon=True)
+        t.start()
+        _login(client)
+        try:
+            with patch("web.actions._loop", return_value=worker_loop):
+                web_actions.set_collector(_FakeCollector())
+                with client.session_transaction() as sess:
+                    token = sess.get("_csrf_token", "")
+                resp = client.post(
+                    "/settings/mode",
+                    data={"mode": "SEMI_AUTO", "csrf_token": token},
+                    follow_redirects=True,
+                )
+                assert resp.status_code == 200
+                assert "Лимит ❤️" in resp.get_data(as_text=True)
+                assert switched == []
+        finally:
+            web_actions.set_collector(None)
+            worker_loop.call_soon_threadsafe(worker_loop.stop)
+            t.join(timeout=5)
+        with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+            assert yaml.safe_load(f)["project"]["mode"] == before
 
     def test_update_mode_without_collector(self, client, tmp_path) -> None:
         """Без привязанного коллектора режим сохраняется в YAML (как раньше)."""
