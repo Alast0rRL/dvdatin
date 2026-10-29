@@ -81,7 +81,7 @@
                     it.photos.forEach(function (ph, i) {
                         var photo = {profile_id: it.profile_id, message_id: ph.message_id,
                                      src: ph.src, pos: i + 1, count: n,
-                                     uncertain: !!it.uncertain};
+                                     uncertain: !!it.uncertain, rerate: !!it.rerate};
                         preload(photo);
                         queue.push(photo);
                     });
@@ -114,7 +114,11 @@
         photosBox.textContent = '';
         emptyBox.hidden = true;
         // Анкета из очереди «модель сомневается» — её оценка учит модель сильнее всего.
-        badge.hidden = !photo.uncertain;
+        // Старая анкета (была оценена целиком) — переоценка по одному фото.
+        badge.textContent = photo.rerate
+            ? '↻ переоценка: раньше эта анкета была оценена целиком'
+            : '🤔 модель сомневается';
+        badge.hidden = !(photo.uncertain || photo.rerate);
         resetCard();
         if (!photo.img) preload(photo);
         var img = document.createElement('img');

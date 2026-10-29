@@ -65,6 +65,8 @@ def _item_json(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "profile_id": pid,
         "uncertain": bool(item.get("uncertain")),
+        # Старая анкета, оценённая целиком, — теперь по одному фото.
+        "rerate": bool(item.get("rerate")),
         "score": item.get("score"),
         "photos": [
             {

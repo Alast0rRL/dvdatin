@@ -867,10 +867,50 @@ class SyncDB:
                 "score": scores.get(pid),
                 "uncertain": pid in scores and pid not in explore_slots,
             })
+        if len(out) < want:
+            out += self._rerate_queue(want - len(out), exclude, done, rated, scores)
+        return out
+
+    def _rerate_queue(
+        self,
+        want: int,
+        exclude: list[int],
+        done: set[int],
+        rated: set[tuple[int, int]],
+        scores: dict[int, float],
+    ) -> list[dict[str, Any]]:
+        """Новые анкеты кончились — старые, оценённые целиком (``photo_ratings``),
+        у которых 2+ фото: переоценка по одному фото (одно фото — старая оценка
+        и так про него). Сомнительные для модели — первыми."""
+        skip = set(exclude) | done
+        pids = [
+            r["profile_id"] for r in self._query("SELECT profile_id FROM photo_ratings")
+            if r["profile_id"] not in skip
+        ]
+        pids.sort(key=lambda p: abs(scores.get(p, 0.5) - 0.5))
+        out: list[dict[str, Any]] = []
+        for pid in pids:
+            if len(out) >= want:
+                break
+            all_photos = self._rating_photos(pid)
+            photos = [p for p in all_photos if (pid, p["message_id"]) not in rated]
+            if len(all_photos) < self.RERATE_MIN_PHOTOS or not photos:
+                done.add(pid)  # нечего переоценивать — больше не проверяем
+                continue
+            out.append({
+                "profile_id": pid,
+                "photos": photos,
+                "score": scores.get(pid),
+                "uncertain": False,
+                "rerate": True,
+            })
         return out
 
     #: Каждая N-я анкета очереди /rate — из обычного порядка, а не «сомнительных».
     RATE_EXPLORE_EVERY = 5
+
+    #: Старую анкету (оценена целиком) переоцениваем по фото, если фото столько и больше.
+    RERATE_MIN_PHOTOS = 2
 
     def _rate_done_profiles(self) -> set[int]:
         """Анкеты, у которых оценены все фото (кэш в памяти процесса: иначе

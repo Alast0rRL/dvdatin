@@ -2173,6 +2173,33 @@ class TestPhotoRating:
         assert 2 not in {i["profile_id"] for i in sync.get_rating_queue(limit=10)}
         assert sync.get_photo_rating_stats()["profiles_rated"] == 1
 
+    def test_old_multi_photo_profile_rerated_after_new_ones(self, sync_db) -> None:
+        """Новые кончились — старая анкета с 2+ фото идёт на переоценку по фото."""
+        sync, _, db = sync_db
+
+        async def _seed() -> None:
+            await db.link_profile_message(
+                profile_id=1, telegram_message_id=112, chat_id=1234060895,
+                created_at="2026-01-01", account_session="dvai",
+            )
+            await db.save_raw_message(
+                telegram_message_id=112, chat_id=1234060895, sender_id=1,
+                sender_username="", sender_name="Leo", message_date="2026-01-01",
+                text="", raw_entities="[]", reply_markup="[]", media_type="photo",
+                received_at="2026-01-01", account_session="dvai",
+            )
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        for pid in (1, 2):
+            sync._execute(
+                "INSERT INTO photo_ratings (profile_id, rating, created_at) "
+                "VALUES (?, 'LIKE', 'x')", (pid,),
+            )
+        items = sync.get_rating_queue(limit=10)
+        assert [i["profile_id"] for i in items] == [3, 1]  # 2 — одно фото, не нужна
+        assert not items[0].get("rerate") and items[1]["rerate"]
+        assert [p["message_id"] for p in items[1]["photos"]] == [111, 112]
+
     def test_undo_returns_profile_to_queue(self, client, sync_db) -> None:
         sync, _, _ = sync_db
         _login(client)
