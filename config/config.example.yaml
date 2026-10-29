@@ -120,6 +120,14 @@ auto_actions:
     sticker_set: "Flame"           # t.me/addstickers/Flame
     sticker_emojis: ["👋", "🔥"]   # первый стикер с таким эмодзи
     sticker_index: -1              # >= 0 — взять стикер по номеру в наборе
+  # Автопереписка (режим AUTO): девушка ответила на стикер → через delay_min
+  # минут бот пересылает ей её же анкету из чата Leo и закрепляет у обоих.
+  match_intro:
+    enabled: true
+    modes: ["AUTO"]
+    delay_min: 30
+    pin: true
+    reply_check_hours: 72          # сверка ответа по истории (после рестарта)
 
 # Stage 7.5: панель управления режимом через Telegram-бота (ControlBot).
 # Команды /status /on /off /stream /recent /help — только от allowed_user_ids.

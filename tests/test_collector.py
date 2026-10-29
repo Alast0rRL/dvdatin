@@ -364,7 +364,7 @@ class TestCollectorIntegration:
         stats = CollectorStats()
         collector = DvinchikCollector(client, db, config, stats=stats)
         collector.register()
-        assert client.add_event_handler.call_count == 3
+        assert client.add_event_handler.call_count == 4
 
     def test_handle_profile(self) -> None:
         client = AsyncMock()

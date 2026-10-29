@@ -31,6 +31,7 @@ from collectors.auto_action import (
 from collectors.dedup import Dedup
 from collectors.dvinchik_parser import DvinchikParser
 from collectors.match_greeter import MatchGreeter
+from collectors.match_intro import INTRO_SENT, MatchIntro
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from core.types import Mode
 from models.decision import AIDecision
@@ -296,6 +297,10 @@ class DvinchikCollector:
             config.auto_actions.match_greeting, db
         )
         self._dvinchik_chat_id = config.dvinchik.chat_id
+        # Автопереписка (AUTO): её ответ на привет → её анкета + закреп.
+        self._match_intro = MatchIntro(
+            config.auto_actions.match_intro, db, config.dvinchik.chat_id,
+        )
         self._allowed_chat_ids = set(
             config.sources.allowed_chat_ids
             or ([config.dvinchik.chat_id] if config.dvinchik.chat_id else [])
@@ -668,6 +673,7 @@ class DvinchikCollector:
             except Exception as e:
                 logger.error(f"Сверка истории чата: {e}")
             await self.retry_match_greetings()
+            await self.run_match_intros()
 
     async def _stream_snapshot(
         self, limit: int = STREAM_ERROR_SNAPSHOT_LIMIT
@@ -1234,6 +1240,67 @@ class DvinchikCollector:
             logger.error(f"MatchGreeting error: {e}")
             return
         await self._notify_greeting(session, match, status)
+        if status == "SENT":
+            await self._enroll_match_intro(client, session, match)
+
+    async def _enroll_match_intro(
+        self, client: object, session: str, match: ParsedMatch, *,
+        use_context: bool = True,
+    ) -> None:
+        """Привет ушёл → ждём её ответа (автопереписка, ``match_intro``)."""
+        try:
+            profile_id = await self._db.find_match_profile(
+                match.name, self._dvinchik_chat_id, session,
+                use_context=use_context,
+            )
+            await self._match_intro.enroll(client, session, match, profile_id)
+        except Exception as e:
+            logger.error(f"MatchIntro: не завёл переписку {match.name}: {e}")
+
+    async def _handle_private_message(
+        self, event: events.NewMessage.Event,
+    ) -> None:
+        """Входящее в личке: если это девушка после привета — планируем анкету.
+
+        Чат Leo (и прочие источники ленты) сюда не относятся. Текст не
+        логируется и не сохраняется.
+        """
+        try:
+            chat_id = event.chat_id
+            if chat_id in self._allowed_chat_ids:
+                return
+            sender_id = int(getattr(event, "sender_id", 0) or chat_id or 0)
+            session = self._session_for_client(getattr(event, "client", None))
+            date = getattr(getattr(event, "message", None), "date", None)
+            await self._match_intro.note_reply(
+                session, sender_id, self.mode.value,
+                at=date if isinstance(date, datetime) else None,
+            )
+        except Exception as e:
+            logger.error(f"MatchIntro: ошибка обработки ответа: {e}")
+
+    async def run_match_intros(self) -> None:
+        """Отправка созревших анкет девушкам (раз в цикл сверки истории)."""
+        for client, session in zip(self._clients, self._client_sessions):
+            try:
+                results = await self._match_intro.process(
+                    client, session, self.mode.value,
+                )
+            except Exception as e:
+                logger.error(f"MatchIntro: проход {session}: {e}")
+                continue
+            for row, status in results:
+                if status != INTRO_SENT:
+                    continue
+                who = (
+                    f"@{row['username']}" if row.get("username")
+                    else f"id {row.get('user_id')}"
+                )
+                pin = " и закрепил 📌" if row.get("pinned") else ""
+                await self._auto_engine.notify_owner(
+                    f"💬 {row.get('name') or who} ({who}) ответила на привет — "
+                    f"отправил ей её анкету{pin} с {session or 'аккаунта'}"
+                )
 
     async def _notify_greeting(
         self, session: str, match: ParsedMatch, status: str, *,
@@ -1276,6 +1343,10 @@ class DvinchikCollector:
                 await self._notify_greeting(
                     session, match, status, delayed=True,
                 )
+                if status == "SENT":
+                    await self._enroll_match_intro(
+                        client, session, match, use_context=False,
+                    )
 
     def _halt_on_match_card(self, card_msg: object) -> bool:
         """Синхронная часть остановки: режим OBSERVE + снятие цепочек.
@@ -1721,6 +1792,11 @@ class DvinchikCollector:
             client.add_event_handler(
                 self._handle_callback_query,
                 events.CallbackQuery(),
+            )
+            # Личные сообщения девушек после взаимного лайка (автопереписка).
+            client.add_event_handler(
+                self._handle_private_message,
+                events.NewMessage(incoming=True, func=lambda e: e.is_private),
             )
         logger.info(
             f"Collector registered ({len(self._clients)} account(s)): "

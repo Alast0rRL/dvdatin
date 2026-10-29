@@ -206,6 +206,26 @@ class MatchGreetingConfig(BaseModel):
     sticker_index: int = -1
 
 
+class MatchIntroConfig(BaseModel):
+    """Начало знакомства после ответа девушки (автопереписка, режим AUTO).
+
+    Бот отправил ей стикер-привет; когда она ответила, через ``delay_min``
+    минут он пересылает ей её же анкету из чата Leo и закрепляет её у обоих
+    (``pin``). Один раз на девушку и аккаунт. Только в режимах ``modes``.
+    """
+
+    enabled: bool = True
+    #: Режимы, в которых бот ведёт переписку сам (по умолчанию — только AUTO).
+    modes: list[str] = ["AUTO"]
+    #: Через сколько минут после её первого ответа слать анкету.
+    delay_min: float = 30.0
+    #: Закреплять анкету в чате у обоих.
+    pin: bool = True
+    #: Сверка «ответила ли» по истории чата (если событие пропущено при
+    #: рестарте) — только для приветствий не старше этого срока.
+    reply_check_hours: float = 72.0
+
+
 class AutoActionsConfig(BaseModel):
     """Настройки авто-действий (Stage 7, SEMI_AUTO).
 
@@ -241,6 +261,8 @@ class AutoActionsConfig(BaseModel):
     captcha: CaptchaConfig = CaptchaConfig()
     #: Стикер-приветствие девушке после взаимного лайка.
     match_greeting: MatchGreetingConfig = MatchGreetingConfig()
+    #: Её ответ на привет → через 30 мин её анкета + закреп (режим AUTO).
+    match_intro: MatchIntroConfig = MatchIntroConfig()
 
     @field_validator("interval_sec")
     @classmethod

@@ -240,6 +240,31 @@ CREATE TABLE IF NOT EXISTS app_state (
     updated_at TEXT NOT NULL
 );
 
+-- match_dialogs: автопереписка с девушкой после взаимного лайка (режим AUTO).
+-- Строка заводится, когда бот отправил ей стикер-привет. Её первый ответ →
+-- status SCHEDULED + due_at (через delay_min); в срок бот пересылает ей её же
+-- анкету из чата Leo и закрепляет у обоих → INTRO_SENT. Ключ — аккаунт +
+-- user_id девушки (у каждого аккаунта своя переписка).
+-- status: WAITING_REPLY | SCHEDULED | INTRO_SENT | NO_PROFILE | ERROR
+CREATE TABLE IF NOT EXISTS match_dialogs (
+    account_session TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    profile_id INTEGER,
+    status TEXT NOT NULL,
+    greeted_at TEXT NOT NULL,
+    replied_at TEXT,
+    due_at TEXT,
+    sent_at TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_session, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
+    ON match_dialogs(status);
+
 -- photo_ratings: быстрая разметка внешности на сайте (/rate). Владелец
 -- листает фото анкет (без текста) и отмечает «нравится / нет / пропустить».
 -- Это обучающие метки для модели «твой вкус по фото», на действия бота не
@@ -1717,6 +1742,151 @@ class Database:
         except Exception as e:
             logger.warning(f"get_state({key}): {e}")
             return None
+
+    # ── Автопереписка с матчами (match_dialogs) ──────────────────────
+
+    #: Поля match_dialogs, которые можно менять через update_match_dialog.
+    _MATCH_DIALOG_FIELDS: frozenset[str] = frozenset({
+        "username", "name", "profile_id", "status", "replied_at", "due_at",
+        "sent_at", "pinned", "error",
+    })
+
+    async def add_match_dialog(
+        self,
+        account_session: str,
+        user_id: int,
+        *,
+        username: str = "",
+        name: str = "",
+        profile_id: int | None = None,
+        greeted_at: str | None = None,
+    ) -> bool:
+        """Заводит переписку (WAITING_REPLY). False — уже была (не трогаем)."""
+        try:
+            cursor = await self._connection.execute(
+                """INSERT OR IGNORE INTO match_dialogs
+                (account_session, user_id, username, name, profile_id,
+                 status, greeted_at)
+                VALUES (?, ?, ?, ?, ?, 'WAITING_REPLY', ?)""",
+                (
+                    account_session or "", int(user_id), username or "",
+                    name or "", profile_id,
+                    greeted_at or datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await self._connection.commit()
+            return (cursor.rowcount or 0) > 0
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"add_match_dialog: {e}")
+            return False
+
+    async def get_match_dialog(
+        self, account_session: str, user_id: int,
+    ) -> dict | None:
+        """Переписка с девушкой на аккаунте или None."""
+        cursor = await self._connection.execute(
+            "SELECT * FROM match_dialogs WHERE account_session = ? AND user_id = ?",
+            (account_session or "", int(user_id)),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_dict(cursor, row) if row else None
+
+    async def update_match_dialog(
+        self, account_session: str, user_id: int, **fields: object,
+    ) -> None:
+        """Обновляет поля переписки (только из _MATCH_DIALOG_FIELDS)."""
+        bad = set(fields) - self._MATCH_DIALOG_FIELDS
+        if bad:
+            msg = f"update_match_dialog: неизвестные поля {sorted(bad)}"
+            raise ValueError(msg)
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        try:
+            await self._connection.execute(
+                f"UPDATE match_dialogs SET {cols} "
+                "WHERE account_session = ? AND user_id = ?",
+                (*fields.values(), account_session or "", int(user_id)),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"update_match_dialog: {e}")
+
+    async def list_match_dialogs(
+        self, account_session: str, status: str, limit: int = 50,
+    ) -> list[dict]:
+        """Переписки аккаунта в статусе (старые первыми)."""
+        cursor = await self._connection.execute(
+            """SELECT * FROM match_dialogs
+            WHERE account_session = ? AND status = ?
+            ORDER BY greeted_at LIMIT ?""",
+            (account_session or "", status, int(limit)),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
+
+    async def find_match_profile(
+        self,
+        name: str,
+        chat_id: int,
+        account_session: str = "",
+        *,
+        use_context: bool = True,
+    ) -> int | None:
+        """Анкета девушки, с которой случился взаимный лайк.
+
+        Сначала «текущая» карточка чата аккаунта (MATCH приходит сразу после
+        её анкеты), если имя совпадает; иначе — по имени среди лайкнутых.
+        """
+        needle = (name or "").strip().lower()
+        if use_context:
+            try:
+                ctx = await self.get_chat_profile_context(chat_id, account_session)
+                pid = (
+                    await self.resolve_profile_by_message(ctx, account_session)
+                    if ctx is not None else None
+                )
+                if pid is not None:
+                    cursor = await self._connection.execute(
+                        "SELECT name FROM profiles WHERE id = ?", (pid,)
+                    )
+                    row = await cursor.fetchone()
+                    if row and (row[0] or "").strip().lower() == needle:
+                        return pid
+            except Exception as e:
+                logger.warning(f"find_match_profile(context): {e}")
+        return await self._resolve_profile_by_name(name)
+
+    async def get_profile_card_message_ids(
+        self, profile_id: int, account_session: str, window: int = 10,
+    ) -> list[int]:
+        """telegram_message_id последнего показа анкеты на аккаунте.
+
+        Альбом анкеты — подряд идущие id: берём самую свежую карточку с
+        текстом (подпись анкеты) и её фото в пределах ``window`` id. Только
+        id ЭТОГО аккаунта (у аккаунтов свои пространства id в чате Leo).
+        """
+        cursor = await self._connection.execute(
+            """SELECT pm.telegram_message_id,
+                COALESCE((SELECT rm.text FROM raw_messages rm
+                    WHERE rm.chat_id = pm.chat_id
+                      AND rm.telegram_message_id = pm.telegram_message_id
+                      AND rm.account_session = pm.account_session
+                      AND rm.is_outgoing = 0 LIMIT 1), '') AS text
+            FROM profile_messages pm
+            WHERE pm.profile_id = ? AND pm.account_session = ?
+            ORDER BY pm.telegram_message_id""",
+            (profile_id, account_session or ""),
+        )
+        rows = [(int(r[0]), r[1] or "") for r in await cursor.fetchall()]
+        if not rows:
+            return []
+        with_text = [mid for mid, text in rows if text.strip()]
+        anchor = with_text[-1] if with_text else rows[-1][0]
+        ids = sorted({mid for mid, _ in rows if abs(mid - anchor) <= window})
+        return ids[:window]
 
     async def delete_state(self, key: str) -> None:
         """Удаляет рантайм-значение."""
