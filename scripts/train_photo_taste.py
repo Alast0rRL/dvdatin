@@ -17,9 +17,10 @@
 # (5 повторов × 5 фолдов, фолды по анкетам — фото одной девушки не попадают
 # одновременно в обучение и в проверку).
 #
-# Модель пишется с ``aggregate: mean_prob``: бот оценивает каждое фото анкеты
-# и усредняет score (services/photo_taste.py); пороги «верхние N% анкет»
-# считаются так же — по среднему score фото каждой анкеты.
+# Модель пишется с ``aggregate: max_prob`` (по умолчанию, --aggregate mean —
+# прежнее среднее): бот оценивает каждое фото анкеты и берёт ЛУЧШЕЕ — хватит
+# одного фото во вкусе (services/photo_taste.py); пороги «верхние N% анкет»
+# считаются так же — по score лучшего фото каждой анкеты.
 #
 # Сравнение со старой моделью — на ОДНИХ И ТЕХ ЖЕ новых оценках (поставленных
 # после её обучения, она их не видела): старая модель против out-of-fold
@@ -88,10 +89,13 @@ def profile_photo_vectors(con: sqlite3.Connection) -> dict[int, list[np.ndarray]
     return out
 
 
-def profile_score(vecs: list[np.ndarray], w: np.ndarray, bias: float) -> float:
-    """Как бот (aggregate=mean_prob): среднее score отдельных фото."""
+def profile_score(
+    vecs: list[np.ndarray], w: np.ndarray, bias: float, aggregate: str = "max_prob",
+) -> float:
+    """Как бот: score лучшего фото (max_prob) или среднее score фото (mean_prob)."""
     z = np.array([v @ w + bias for v in vecs])
-    return float(np.mean(1.0 / (1.0 + np.exp(-z))))
+    probs = 1.0 / (1.0 + np.exp(-z))
+    return float(np.max(probs) if aggregate == "max_prob" else np.mean(probs))
 
 
 def rescore(db_path: Path, model: dict) -> int:
@@ -114,7 +118,9 @@ def rescore(db_path: Path, model: dict) -> int:
         vecs = vectors.get(pid)
         if not vecs:
             continue
-        score = profile_score(vecs, w, float(model["bias"]))
+        score = profile_score(
+            vecs, w, float(model["bias"]), model.get("aggregate", "max_prob"),
+        )
         if score >= model["like_threshold"]:
             verdict = "LIKE"
         elif score <= model["dislike_threshold"]:
@@ -196,6 +202,25 @@ def oof_predictions(
     return mean, aucs
 
 
+def report_profile_auc(data: dict, oof: np.ndarray) -> None:
+    """AUC на уровне анкеты (оценки по одному фото): анкета ❤️, если
+    понравилось хоть одно фото; оценка — среднее или лучшее фото (out-of-fold)."""
+    kind, groups, y = data["kind"], data["groups"], data["y"]
+    by_pid: dict[int, tuple[list[float], int]] = {}
+    for i in np.flatnonzero(kind == "photo"):
+        probs, liked = by_pid.get(int(groups[i]), ([], 0))
+        probs.append(float(oof[i]))
+        by_pid[int(groups[i])] = (probs, max(liked, int(y[i])))
+    labels = np.array([liked for _, liked in by_pid.values()])
+    if len(labels) < 30 or labels.min() == labels.max():
+        return
+    mean_s = [float(np.mean(p)) for p, _ in by_pid.values()]
+    max_s = [float(np.max(p)) for p, _ in by_pid.values()]
+    print(f"Анкеты с оценками фото: {len(labels)} (❤️ хоть одно фото: {int(labels.sum())}) — "
+          f"AUC по среднему {roc_auc_score(labels, mean_s):.3f}, "
+          f"по лучшему фото {roc_auc_score(labels, max_s):.3f}")
+
+
 def model_scores(model: dict, X: np.ndarray) -> np.ndarray:
     """Вероятности сохранённой модели (как PhotoTasteModel в боте)."""
     w = np.asarray(model["weights"], dtype=np.float64)
@@ -210,6 +235,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--tolerance", type=float, default=0.01)
+    ap.add_argument("--aggregate", choices=("max", "mean"), default="max",
+                    help="оценка анкеты: лучшее фото (max, по умолчанию) или среднее")
     ap.add_argument("--no-rescore", action="store_true",
                     help="не пересчитывать вердикты photo_scores новой моделью")
     args = ap.parse_args()
@@ -248,12 +275,17 @@ def main() -> int:
             print(f"Сравнение {cmp_note}, которых текущая модель не видела: "
                   f"текущая {old_auc_cmp:.3f}, новая {new_auc_cmp:.3f}")
 
+    aggregate = f"{args.aggregate}_prob"
+    report_profile_auc(data, oof)
+
     C = float(LogisticRegressionCV(Cs=CS, cv=5, scoring="roc_auc", class_weight="balanced",
                                    max_iter=5000).fit(X, y).C_[0])
     final = LogisticRegression(C=C, class_weight="balanced", max_iter=5000).fit(X, y)
     w_final, b_final = final.coef_[0].astype(np.float64), float(final.intercept_[0])
-    # Пороги — по оценке АНКЕТЫ так, как её считает бот (среднее score фото).
-    s_all = np.array([profile_score(v, w_final, b_final) for v in profiles.values()])
+    # Пороги — по оценке АНКЕТЫ так, как её считает бот (лучшее/среднее фото).
+    s_all = np.array([
+        profile_score(v, w_final, b_final, aggregate) for v in profiles.values()
+    ])
     like_thr = float(np.quantile(s_all, 1 - LIKE_SHARE))
     # Пороги «верхние N% анкет» — для режима decide (photo_taste.like_share).
     like_thresholds = {
@@ -271,13 +303,15 @@ def main() -> int:
         "like_threshold": like_thr,
         "dislike_threshold": dislike_thr,
         "like_thresholds": like_thresholds,
-        # Бот: score анкеты = среднее score её фото (services/photo_taste.py).
-        "aggregate": "mean_prob",
+        # Бот: score анкеты = лучшее (max_prob) или среднее (mean_prob) score
+        # её фото (services/photo_taste.py).
+        "aggregate": aggregate,
         "trained_on": {"examples": int(len(y)), "photos": n_photo,
                        "profiles": int(len(set(groups.tolist()))), "likes": int(y.sum())},
         "oof_auc": round(auc, 3),
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }
+    print(f"Оценка анкеты: {'лучшее фото' if aggregate == 'max_prob' else 'среднее по фото'}")
     print(f"Пороги: LIKE ≥ {like_thr:.3f} (верхние {LIKE_SHARE:.0%}), "
           f"DISLIKE ≤ {dislike_thr:.3f} (нижние {DISLIKE_SHARE:.0%}), C={C}")
 

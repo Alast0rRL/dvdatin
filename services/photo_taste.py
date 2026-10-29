@@ -5,7 +5,9 @@
 #   mean_emb  (старые модели) — эмбеддинги фото усредняются и нормируются,
 #             score = sigmoid(w·x + b);
 #   mean_prob (обучение с оценками по одному фото, с 2026-10-29) — score
-#             каждого фото отдельно, оценка анкеты = их среднее.
+#             каждого фото отдельно, оценка анкеты = их среднее;
+#   max_prob  (с 2026-10-29, по просьбе владельца) — оценка анкеты = score
+#             ЛУЧШЕГО фото: хватит одного фото во вкусе, чтобы был лайк.
 # Обучена на разметке владельца со страницы /rate (photo_ratings: LIKE=1,
 # DISLIKE/VICE=0, SKIP исключён) — офлайн 2026-10-22: 1391 анкета, 168 ❤️,
 # AUC 0.83 на отложенных анкетах. Веса — JSON на сервере
@@ -59,7 +61,8 @@ class PhotoTasteModel:
         # Порог score для «верхних N% анкет» (из обучения: like_thresholds).
         self._like_by_share: dict[float, float] = {}
         self.version = ""
-        # mean_emb — среднее эмбеддингов; mean_prob — среднее score по фото.
+        # mean_emb — среднее эмбеддингов; mean_prob — среднее score по фото;
+        # max_prob — score лучшего фото.
         self.aggregate = "mean_emb"
         self._failed = False
         self._mtime = 0.0
@@ -113,8 +116,9 @@ class PhotoTasteModel:
                 float(k): float(v) for k, v in (data.get("like_thresholds") or {}).items()
             }
             self.version = str(data.get("version", ""))
+            aggregate = data.get("aggregate")
             self.aggregate = (
-                "mean_prob" if data.get("aggregate") == "mean_prob" else "mean_emb"
+                aggregate if aggregate in ("mean_prob", "max_prob") else "mean_emb"
             )
             logger.info(
                 f"PhotoTaste: модель {self.version} загружена "
@@ -142,12 +146,15 @@ class PhotoTasteModel:
         if emb is None or len(emb) == 0 or not self.load():
             return None
         w = self._weights_array(emb.shape[1])
-        if self.aggregate == "mean_prob":
+        if self.aggregate in ("mean_prob", "max_prob"):
             probs = []
             for row in emb:
                 norm = float((row @ row) ** 0.5) or 1.0
                 probs.append(_sigmoid(float(row @ w) / norm + self._bias))
-            s = sum(probs) / len(probs)
+            if self.aggregate == "max_prob":
+                s = max(probs)  # хватит одного фото во вкусе
+            else:
+                s = sum(probs) / len(probs)
         else:
             mean = emb.mean(axis=0)
             norm = float((mean @ mean) ** 0.5) or 1.0

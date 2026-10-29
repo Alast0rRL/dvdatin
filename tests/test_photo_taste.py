@@ -71,6 +71,15 @@ class TestTasteModel:
         assert abs(two.score - expected) < 1e-6
         assert m.aggregate == "mean_prob"
 
+    def test_max_prob_one_good_photo_is_enough(self, tmp_path: Path) -> None:
+        """aggregate=max_prob: score анкеты = лучшее фото — хватит одного во вкусе."""
+        m = make_model(tmp_path, aggregate="max_prob")
+        card = m.score(np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]))
+        assert m.aggregate == "max_prob"
+        assert abs(card.score - 1 / (1 + np.exp(-4.0))) < 1e-6
+        # По среднему было бы 0.66 → REVIEW; по лучшему фото — LIKE.
+        assert card.verdict == "LIKE"
+
     def test_old_model_keeps_mean_emb(self, tmp_path: Path) -> None:
         assert make_model(tmp_path).load() and make_model(tmp_path).aggregate == "mean_emb"
 
@@ -534,7 +543,7 @@ class TestTrainScript:
         ).fetchone()
         con.close()
         assert version == data["version"] and verdict in ("LIKE", "REVIEW", "DISLIKE")
-        assert data["aggregate"] == "mean_prob"
+        assert data["aggregate"] == "max_prob"
 
     def test_train_on_single_photo_ratings(self, tmp_path: Path) -> None:
         """Оценки по одному фото + старые оценки анкет целиком — одна модель."""
@@ -590,7 +599,7 @@ class TestTrainScript:
         assert res.returncode == 0, res.stdout + res.stderr
         assert "фото по одному: 450" in res.stdout
         data = json.loads(model.read_text(encoding="utf-8"))
-        assert data["aggregate"] == "mean_prob" and data["oof_auc"] > 0.8
+        assert data["aggregate"] == "max_prob" and data["oof_auc"] > 0.8
         assert data["trained_on"]["photos"] == 450
         con = sqlite3.connect(db)
         version = con.execute("SELECT model_version FROM photo_scores").fetchone()[0]

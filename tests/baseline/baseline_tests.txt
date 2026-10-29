@@ -957,3 +957,4 @@ tests/test_match_greeter.py::TestCollectorGreetsOnMatch::test_set_redirect_live
 tests/test_web.py::TestAccountSettings::test_redirect_arrow_toggles
 tests/test_web.py::TestAccountSettings::test_redirect_unknown_account_refused
 tests/test_web.py::TestAccountSettings::test_no_redirect_arrow_with_one_account
+tests/test_photo_taste.py::TestTasteModel::test_max_prob_one_good_photo_is_enough
