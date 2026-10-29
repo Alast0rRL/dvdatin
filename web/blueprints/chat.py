@@ -169,7 +169,11 @@ def index() -> str:
         signature=_chat_signature(signals),
         pending=pending,
         modes=MODES,
-        mode=db.get_mode(config_path),
+        # Плашка режима — режим основного аккаунта (у каждого аккаунта свой).
+        mode=next(
+            (a["mode"] for a in accounts if a["session"] == account_session),
+            db.get_mode(config_path),
+        ),
         accounts=accounts,
         account_session=account_session,
         filter_cfg=db.get_filter_config(config_path),
@@ -355,13 +359,18 @@ def resume_search() -> tuple:
     from core.types import Mode
     from web.actions import mode_block_reason_sync, resume_search_sync
 
-    block_reason = mode_block_reason_sync(Mode.SEMI_AUTO)
+    # Аккаунт, на котором остановился поиск (из баннера); пусто — основной.
+    account = (request.form.get("account_session") or "").strip() or None
+    block_reason = (
+        mode_block_reason_sync(Mode.SEMI_AUTO, account) if account
+        else mode_block_reason_sync(Mode.SEMI_AUTO)
+    )
     if block_reason is not None:
         flash(block_reason, "error")
         return redirect(_safe_next())
 
     try:
-        status = resume_search_sync()
+        status = resume_search_sync(account) if account else resume_search_sync()
     except Exception:
         status = "ERROR"
     if status == "OK":

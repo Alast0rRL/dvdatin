@@ -72,6 +72,8 @@ def update_mode() -> tuple:
         return ("CSRF token invalid", 403)
 
     mode_str = request.form.get("mode", "OBSERVE")
+    # Строка аккаунта в шапке присылает его сессию; без неё — основной аккаунт.
+    account = (request.form.get("account_session") or "").strip()
     redirect_target = request.form.get("next", "")
     if not redirect_target or not redirect_target.startswith("/") or redirect_target.startswith("//"):
         redirect_target = url_for("chat.index")
@@ -83,19 +85,28 @@ def update_mode() -> tuple:
         flash(f"Неизвестный режим: {mode_str}", "error")
         return redirect(redirect_target)
 
+    config_path = _get_config_path()
+    if account:
+        accounts, _ = _get_accounts(config_path)
+        if account not in [a["session"] for a in accounts]:
+            flash(f"Аккаунт {account!r} не найден", "error")
+            return redirect(redirect_target)
+
     # Пока лимит ❤️ исчерпан, SEMI_AUTO/AUTO не включаем (лента встанет).
     from web.actions import mode_block_reason_sync
-    block_reason = mode_block_reason_sync(mode)
+    block_reason = mode_block_reason_sync(mode, account or None)
     if block_reason is not None:
         flash(block_reason, "error")
         return redirect(redirect_target)
 
     live_status = "OK"
-    config_path = _get_config_path()
     try:
         from app.config import AppConfig
         config = AppConfig.load(config_path)
-        config.persist_mode(config_path, mode)
+        if account:
+            config.persist_account_mode(config_path, account, mode)
+        else:
+            config.persist_mode(config_path, mode)
     except Exception as e:
         flash(f"Ошибка: {e}", "error")
         return redirect(redirect_target)
@@ -103,18 +114,20 @@ def update_mode() -> tuple:
     # Живое переключение: обновляем AutoActionEngine и пробуем запустить ленту.
     try:
         from web.actions import set_mode_sync
-        live_status = set_mode_sync(mode)
+        live_status = set_mode_sync(mode, account or None)
     except Exception as e:
         from loguru import logger
         logger.error(f"Web mode switch: {type(e).__name__}: {e!r}")
         live_status = "ERROR"
 
+    who = f"{account}: " if account else ""
     if live_status == "OK":
-        flashed = f"Режим переключён на {mode.value} (активен сразу)"
+        flashed = f"{who}режим переключён на {mode.value} (активен сразу)"
     elif live_status == "ERROR":
-        flashed = f"Режим сохранён, но не активирован на лету: {mode.value}"
+        flashed = f"{who}режим сохранён, но не активирован на лету: {mode.value}"
     else:
-        flashed = f"Режим переключён на {mode.value} (применится после перезапуска)"
+        flashed = f"{who}режим переключён на {mode.value} (применится после перезапуска)"
+    flashed = flashed[0].upper() + flashed[1:]
     flash(flashed, "success" if live_status == "OK" else "warning")
 
     return redirect(redirect_target)
@@ -123,7 +136,10 @@ def update_mode() -> tuple:
 @settings_bp.route("/settings/account", methods=["POST"])
 @login_required
 def update_account() -> tuple:
-    """Переключает аккаунт-исполнитель авто-действий (на лету)."""
+    """Делает аккаунт основным: его чат в ленте, с него ручные кнопки (на лету).
+
+    Режимы аккаунтов не трогает — у каждого своя строка в шапке.
+    """
     token = request.form.get("csrf_token", "")
     if token != session.get("_csrf_token"):
         flash("Ошибка безопасности", "error")
@@ -159,7 +175,7 @@ def update_account() -> tuple:
         live_status = "ERROR"
 
     if live_status == "OK":
-        flashed = f"Аккаунт переключён на {account_session} (активен сразу)"
+        flashed = f"В ленте — {account_session} (основной аккаунт)"
     elif live_status == "ERROR":
         flashed = f"Аккаунт сохранён, но не активирован на лету: {account_session}"
     else:
@@ -205,13 +221,26 @@ def _get_accounts(config_path: Path) -> tuple[list[dict], str]:
         return [], ""
     with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    accounts_raw = raw.get("telegram", {}).get("accounts", [])
+    accounts_raw = (raw.get("telegram") or {}).get("accounts") or []
+    auto_actions = raw.get("auto_actions") or {}
+    account_session = auto_actions.get("account_session", "")
+    account_modes = auto_actions.get("account_modes") or {}
+    project_mode = str((raw.get("project") or {}).get("mode") or "OBSERVE")
     accounts = []
     for acc in accounts_raw:
         session = acc.get("session") or ""
         if session:
-            accounts.append({"session": session, "phone": acc.get("phone", "")})
-    account_session = raw.get("auto_actions", {}).get("account_session", "")
+            # Режим аккаунта — как AppConfig.mode_for: своя запись, иначе у
+            # основного project.mode, у остальных OBSERVE.
+            if session in account_modes:
+                acc_mode = str(account_modes[session])
+            elif session == account_session:
+                acc_mode = project_mode
+            else:
+                acc_mode = "OBSERVE"
+            accounts.append({
+                "session": session, "phone": acc.get("phone", ""), "mode": acc_mode,
+            })
     return accounts, account_session
 
 

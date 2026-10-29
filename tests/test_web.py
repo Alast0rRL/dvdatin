@@ -329,6 +329,7 @@ class TestAppShell:
         Регресс: переключение аккаунта спрятано было за ⚙-панель, хотя это
         «горячий» селектор — как и режим работы.
         """
+        TestAccountSettings._write_config(None, client.application.config["CONFIG_PATH"].parent)
         _login(client)
         data = client.get("/").get_data(as_text=True)
         drawer = _drawer_html(data)
@@ -339,14 +340,10 @@ class TestAppShell:
         assert "Аккаунт-исполнитель" not in drawer
 
         # В шапке — есть, и он рядом с переключателем режима.
-        assert 'id="account-form"' in data
+        assert 'id="acct-rows"' in data
         assert "/settings/account" in data
         assert 'name="account_session"' in data
-        assert 'id="account-select"' in data
-        # Авто-отправка по выбору значения (кнопка «ОК» — фолбэк без JS).
-        assert "data-auto-submit" in data
         assert 'name="csrf_token"' in data
-        assert data.index('id="mode-switch"') < data.index('id="account-form"')
 
     def test_settings_values_loaded_into_drawer(self, client) -> None:
         """Значения фильтров/режима подставляются из config.yaml."""
@@ -969,6 +966,93 @@ class TestAccountSettings:
         with open(cfg_path, "w", encoding="utf-8") as f:
             yaml.dump(cfg_data, f, allow_unicode=True)
 
+    def test_topbar_has_row_per_account(self, client, tmp_path) -> None:
+        """Своя строка «режим + аккаунт» на каждый аккаунт, режимы раздельные."""
+        import re
+        self._write_config(tmp_path)
+        cfg_path = tmp_path / "config.yaml"
+        import yaml
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        cfg["auto_actions"]["account_modes"] = {"dvai": "AUTO"}
+        cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        rows = re.findall(r'<div class="acct-row[^"]*"\s+data-account="([^"]*)"', data)
+        assert rows == ["dvai", "dvai_2"]
+        top = data[data.index('id="acct-rows"'):]
+        row1 = top[:top.index('data-account="dvai_2"')]
+        row2 = top[top.index('data-account="dvai_2"'):top.index("</header>")]
+        # dvai — своя запись AUTO; dvai_2 (основной) — project.mode.
+        assert re.search(r'value="AUTO"\s+class="[^"]*is-active', row1)
+        assert re.search(r'value="SEMI_AUTO"\s+class="[^"]*is-active', row2)
+        assert 'name="account_session" value="dvai"' in row1
+        # Основной аккаунт подсвечен.
+        assert re.search(r'class="acct-row is-main"\s+data-account="dvai_2"', data)
+        assert not re.search(r'class="acct-row is-main"\s+data-account="dvai"', data)
+
+    def test_update_mode_for_one_account(self, client, tmp_path) -> None:
+        """Режим из строки аккаунта меняет только этот аккаунт."""
+        self._write_config(tmp_path)
+        import asyncio
+        import threading
+        import yaml
+        from web import actions as web_actions
+
+        calls = []
+
+        class _FakeCollector:
+            def set_mode(self, mode, session=None) -> None:
+                calls.append(("set", mode.value, session))
+
+            async def mode_block_reason(self, mode, session=None):
+                calls.append(("check", mode.value, session))
+                return None
+
+            async def start_auto_stream(self, session=None) -> bool:
+                calls.append(("stream", session))
+                return True
+
+        worker_loop = asyncio.new_event_loop()
+        t = threading.Thread(target=worker_loop.run_forever, daemon=True)
+        t.start()
+        _login(client)
+        try:
+            with patch("web.actions._loop", return_value=worker_loop):
+                web_actions.set_collector(_FakeCollector())
+                with client.session_transaction() as sess:
+                    token = sess.get("_csrf_token", "")
+                resp = client.post(
+                    "/settings/mode",
+                    data={"mode": "AUTO", "account_session": "dvai",
+                          "csrf_token": token},
+                    follow_redirects=True,
+                )
+                assert resp.status_code == 200
+        finally:
+            web_actions.set_collector(None)
+            worker_loop.call_soon_threadsafe(worker_loop.stop)
+            t.join(timeout=5)
+        assert ("check", "AUTO", "dvai") in calls
+        assert ("set", "AUTO", "dvai") in calls
+        assert ("stream", "dvai") in calls
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["auto_actions"]["account_modes"] == {"dvai": "AUTO"}
+        # Режим основного аккаунта (dvai_2) не тронут.
+        assert cfg["project"]["mode"] == "SEMI_AUTO"
+
+    def test_update_mode_unknown_account_refused(self, client, tmp_path) -> None:
+        self._write_config(tmp_path)
+        import yaml
+        _login(client)
+        with client.session_transaction() as sess:
+            token = sess.get("_csrf_token", "")
+        client.post(
+            "/settings/mode",
+            data={"mode": "AUTO", "account_session": "nope", "csrf_token": token},
+        )
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert "account_modes" not in cfg["auto_actions"]
+
     def test_account_dropdown_in_app_drawer(self, client, tmp_path) -> None:
         self._write_config(tmp_path)
         _login(client)
@@ -1030,7 +1114,9 @@ class TestAccountSettings:
                 switched.append(session)
                 return True
 
-            async def start_auto_stream(self) -> bool:
+            async def start_auto_stream(self, session: str | None = None) -> bool:
+                # Подталкивается лента именно нового основного аккаунта.
+                assert session == "dvai"
                 stream_ran.append(True)
                 return True
 

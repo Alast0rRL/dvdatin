@@ -11,12 +11,13 @@
     {% if stream_error.reason %}
     <div class="stream-error__reason">Последнее в чате — {{ stream_error.reason }}</div>
     {% endif %}
-    {% if stream_error.kind == 'match_stop' or stream_error.message == 'Поиск остановлен: тебя лайкнули' %}
+    {% if stream_error.kind == 'match_stop' or (stream_error.message or '').startswith('Поиск остановлен') %}
     <div class="stream-error__hint">
         Режим переключён на OBSERVE. «Продолжить» откроет её анкету и вернёт прежний режим.
     </div>
     <form method="post" action="{{ url_for('chat.resume_search') }}" class="stream-error__actions">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if stream_error.session %}<input type="hidden" name="account_session" value="{{ stream_error.session }}">{% endif %}
         <button type="submit" class="btn btn--sm btn--primary" id="resume-search">▶ Продолжить</button>
     </form>
     {% else %}

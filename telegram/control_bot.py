@@ -120,6 +120,11 @@ class ControlBot:
             logger.error(f"ControlBot error (/help): {e}")
             await event.respond("Ошибка.")
 
+    def _primary(self) -> str | None:
+        """Основной аккаунт: панель управляет им (у второго — свой режим на сайте)."""
+        session = getattr(self._collector, "primary_session", None)
+        return session if isinstance(session, str) else None
+
     async def _cmd_mode(self, event: events.NewMessage.Event, raw: str | None = None) -> None:
         if not self._is_authorized(event.sender_id):
             return
@@ -146,7 +151,7 @@ class ControlBot:
                 engine = self._collector.auto_engine()
                 if engine is not None and engine.enabled:
                     try:
-                        started = await self._collector.start_auto_stream()
+                        started = await self._collector.start_auto_stream(self._primary())
                         if started:
                             text += "\nПоток анкет запущен."
                     except Exception as e:
@@ -171,7 +176,7 @@ class ControlBot:
             )
             return
         try:
-            started = await self._collector.start_auto_stream()
+            started = await self._collector.start_auto_stream(self._primary())
             if started:
                 await event.respond(
                     "Активная анкета обработана (лайк/дизлайк отправлен)."
@@ -235,7 +240,7 @@ class ControlBot:
                 self._collector.set_mode(Mode.SEMI_AUTO)
                 text = self._render_status()
                 if self._collector.auto_engine().enabled:
-                    started = await self._collector.start_auto_stream()
+                    started = await self._collector.start_auto_stream(self._primary())
                     if started:
                         text += "\nПоток анкет запущен."
                 await event.edit(text, buttons=self._toggle_buttons())
@@ -251,7 +256,7 @@ class ControlBot:
                 if engine is None or not engine.enabled:
                     await event.answer("Авто-действия выключены", alert=True)
                     return
-                started = await self._collector.start_auto_stream()
+                started = await self._collector.start_auto_stream(self._primary())
                 if started:
                     await event.answer("Команда потока отправлена")
                 else:

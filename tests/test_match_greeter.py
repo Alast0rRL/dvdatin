@@ -332,6 +332,8 @@ class TestCollectorGreetsOnMatch:
 
     def test_retry_runs_per_account_and_notifies_sent(self) -> None:
         collector, other, auto = self._collector("SEMI_AUTO")
+        # Уведомление шлёт движок того аккаунта, где была очередь (dvai).
+        collector.auto_engine("dvai").notify_owner = AsyncMock(return_value=True)
         sent = ParsedMatch(name="Олеся", telegram_username="lkk263")
         collector._match_greeter.retry_queued = AsyncMock(
             side_effect=[[(sent, "SENT")], []]
@@ -339,7 +341,8 @@ class TestCollectorGreetsOnMatch:
         run(collector.retry_match_greetings())
         calls = collector._match_greeter.retry_queued.await_args_list
         assert [c.args[1] for c in calls] == ["dvai", "dvai_2"]
-        text = collector._auto_engine.notify_owner.await_args.args[0]
+        collector._auto_engine.notify_owner.assert_not_awaited()
+        text = collector.auto_engine("dvai").notify_owner.await_args.args[0]
         assert "Олеся" in text and "очереди" in text
 
     def test_mode_value_passed(self) -> None:

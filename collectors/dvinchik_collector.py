@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Iterator
 
 from loguru import logger
 from rich.console import Console
@@ -113,6 +115,11 @@ CITY_CHECK_ANSWER: str = "нет"
 #: см. ``_stop_on_match_card_if_needed``) — владелец разбирает лайки сам.
 MATCH_CARD_FRAGMENT: str = "понравил"
 MATCH_SHOW_FRAGMENT: str = "показать"
+#: Другой вариант того же события — без кнопок, посреди ленты (прод
+#: 2026-10-29, dvai msg=744851): «Кому-то понравилась твоя анкета!
+#: Заканчивай с вопросом выше и посмотрим кто это». Leo покажет её после
+#: ответа на текущую анкету — поиск тоже останавливаем.
+MATCH_NOTICE_FRAGMENTS: tuple[str, ...] = ("понравилась твоя анкета", "посмотрим кто")
 MATCH_SHOW_SKIP_FRAGMENT: str = "не хочу"
 #: На реальных карточках Leo клавиатура нумерованная: [«1 👍», «2 💤»],
 #: т.е. слова «показать» в тексте кнопки НЕТ (он только в тексте карточки).
@@ -252,6 +259,16 @@ def _detect_media_type(msg: object) -> str:
     return "unknown"
 
 
+#: Аккаунт (session), от имени которого сейчас идёт обработка. Ставится на
+#: входе хендлеров Telegram, в worker'е (по ``RawTask.account_session``) и в
+#: циклах по аккаунтам; ``DvinchikCollector._auto_engine`` по нему выбирает
+#: движок авто-действий ЭТОГО аккаунта (у каждого аккаунта свой режим и
+#: своя лента Leo). None — основной аккаунт (``auto_actions.account_session``).
+_CURRENT_SESSION: ContextVar[str | None] = ContextVar(
+    "dvai_current_session", default=None,
+)
+
+
 class DvinchikCollector:
     """Перехватывает входящие сообщения и сохраняет в БД."""
 
@@ -311,7 +328,11 @@ class DvinchikCollector:
         # аккаунта привязывался к карточке другого.
         self._pending_profiles: dict[tuple[str, int], int] = {}
         # Режим до остановки на карточке взаимного лайка («Продолжить»).
-        self._mode_before_match_stop: Mode | None = None
+        self._mode_before_match_stop: dict[str, Mode] = {}
+        # Карточки/уведомления о лайке, по которым владелец нажал «Продолжить»
+        # ((session, msg_id)): у уведомления без кнопок нечего нажать, и без
+        # этой отметки поиск тут же остановился бы на нём снова.
+        self._match_ack: set[tuple[str, int]] = set()
         self._stats = stats
         # C: per-chat блокировка для гарантии порядка PROFILE → MEDIA_ONLY
         # при конкурентных handlers (без глобальной блокировки).
@@ -344,149 +365,225 @@ class DvinchikCollector:
         # Готовые результаты последних карточек: расчёт может закончиться
         # РАНЬШЕ, чем коллектор дойдёт до решения (задача уже снята из pending).
         self._photo_shadow_results: dict[tuple[str, int, int], dict] = {}
-        # Stage 7: авто-действия (SEMI_AUTO). Клиент ищется по сессии
-        # (config.auto_actions.account_session) среди accounts/clients (они
-        # параллельны: main.py строит clients в том же порядке, что accounts).
-        self._auto_engine = self._build_auto_engine()
+        # Stage 7: авто-действия. Свой AutoActionEngine на КАЖДЫЙ вошедший
+        # аккаунт (свой режим, rate-limit, гейт карточки, лимит ❤️): оба
+        # аккаунта могут листать ленту одновременно. Основной аккаунт
+        # (auto_actions.account_session) — лента сайта, ручные кнопки, ControlBot.
         self._config_path = config_path
+        self._primary_session: str = config.auto_actions.account_session
+        self._engines: dict[str, AutoActionEngine] = {}
+        for session_name in self._client_sessions:
+            if session_name not in self._engines:
+                self._engines[session_name] = self._build_auto_engine(session_name)
+        if self._primary_session not in self._engines:
+            # Основной аккаунт не вошёл/не задан — движок без клиента (выключен).
+            self._engines[self._primary_session] = self._build_auto_engine(
+                self._primary_session
+            )
         # Worker потребляет RawQueue и выполняет pipeline вне Telegram-хендлера.
         # Если worker не задан (тесты/отладка) — обработка идёт синхронно в
         # хендлере (fallback). В проде всегда привязан worker.
         self._worker = worker
+
+    # ── Движки авто-действий по аккаунтам ──────────────────────────────
+
+    @property
+    def _auto_engine(self) -> AutoActionEngine:
+        """Движок аккаунта, от имени которого идёт обработка (см. ``_CURRENT_SESSION``)."""
+        session = _CURRENT_SESSION.get()
+        if session is not None and session in self._engines:
+            return self._engines[session]
+        return self._engines[self._primary_session]
+
+    @_auto_engine.setter
+    def _auto_engine(self, engine: AutoActionEngine) -> None:
+        """Подменяет движок (тесты): он становится основным и движком своего клиента."""
+        session = self._session_for_client(getattr(engine, "client", None))
+        key = session or self._primary_session
+        self._engines[key] = engine
+        self._primary_session = key
+
+    @contextlib.contextmanager
+    def _session_scope(self, session: str | None) -> Iterator[None]:
+        """Обработка от имени аккаунта ``session`` (его движок, его режим)."""
+        token = _CURRENT_SESSION.set(session or None)
+        try:
+            yield
+        finally:
+            _CURRENT_SESSION.reset(token)
+
+    def _bind_client(self, client: object) -> None:
+        """Привязывает текущую задачу к аккаунту клиента (вход хендлера)."""
+        _CURRENT_SESSION.set(self._session_for_client(client) or None)
+
+    def _current_session(self) -> str:
+        """Сессия аккаунта, от имени которого идёт обработка."""
+        session = _CURRENT_SESSION.get()
+        if session is not None and session in self._engines:
+            return session
+        return self._primary_session
+
+    def _resolve_session(self, session: str | None) -> str:
+        """None/неизвестный → основной аккаунт."""
+        if session and session in self._engines:
+            return session
+        return self._primary_session
+
+    @property
+    def primary_session(self) -> str:
+        """Основной аккаунт (лента сайта, ручные кнопки, ControlBot)."""
+        return self._primary_session
+
+    def account_sessions(self) -> list[str]:
+        """Аккаунты, у которых есть движок (вошедшие + основной)."""
+        return [s for s in self._engines if s]
 
     @property
     def _mode_label(self) -> str:
         """Дружелюбная строка текущего режима для вывода решений."""
         eng = self._auto_engine
         mode = eng.mode.value if eng is not None else self._config.project.mode.value
+        session = eng.account_session if eng is not None else ""
+        prefix = f"{session}: " if session and len(self._engines) > 1 else ""
         if eng is None or not eng.enabled:
-            return f"{mode} (действий нет)"
-        return f"{mode} (авто-действия ❤️/👎 активны)"
+            return f"{prefix}{mode} (действий нет)"
+        return f"{prefix}{mode} (авто-действия ❤️/👎 активны)"
 
     @property
     def mode(self) -> Mode:
-        """Текущий режим работы (источник истины — AutoActionEngine)."""
-        if self._auto_engine is not None:
-            return self._auto_engine.mode
-        return self._config.project.mode
+        """Режим основного аккаунта."""
+        return self.mode_for(None)
 
-    def set_mode(self, mode: Mode) -> None:
-        """Меняет режим на лету (ControlBot) и сохраняет в config.yaml.
+    def mode_for(self, session: str | None) -> Mode:
+        """Режим аккаунта ``session`` (None — основной)."""
+        engine = self._engines.get(self._resolve_session(session))
+        if engine is not None:
+            return engine.mode
+        return self._config.mode_for(session or self._primary_session)
 
-        Обновляет движок авто-действий и live-конфиг, чтобы переключение
-        пережило restart приложения.
+    def set_mode(self, mode: Mode, session: str | None = None) -> None:
+        """Меняет режим аккаунта на лету и сохраняет в config.yaml.
+
+        ``session`` None — основной аккаунт (ControlBot, старые вызовы).
+        Режим каждого аккаунта — ``auto_actions.account_modes``; у основного
+        дублируется в ``project.mode``.
         """
-        if self._auto_engine is not None:
-            self._auto_engine.mode = mode
-        self._config.project.mode = mode
+        target = self._resolve_session(session)
+        engine = self._engines.get(target)
+        if engine is not None:
+            engine.mode = mode
+        if target == self._primary_session:
+            self._config.project.mode = mode
         try:
-            self._config.persist_mode(self._config_path, mode)
-            logger.info(f"Режим изменён на {mode.value} (сохранён в config.yaml)")
+            if target:
+                self._config.persist_account_mode(self._config_path, target, mode)
+            else:
+                self._config.persist_mode(self._config_path, mode)
+            logger.info(
+                f"Режим {target or 'аккаунта'} изменён на {mode.value} "
+                "(сохранён в config.yaml)"
+            )
         except Exception as e:
             logger.error(f"Не удалось сохранить режим в config.yaml: {e}")
 
-    async def mode_block_reason(self, mode: Mode) -> str | None:
-        """Почему нельзя включить режим ``mode`` (None — можно).
+    async def mode_block_reason(
+        self, mode: Mode, session: str | None = None,
+    ) -> str | None:
+        """Почему нельзя включить режим ``mode`` аккаунту (None — можно).
 
-        SEMI_AUTO/AUTO не включаем, пока у аккаунта-исполнителя исчерпан
-        дневной лимит ❤️: на первой же анкете, которую бот решит лайкнуть,
-        он ничего не отправит (``LIKE_LIMIT``), Leo будет ждать реакцию —
-        лента встанет (прод 2026-10-29). Ошибка чтения состояния не мешает
-        переключению.
+        SEMI_AUTO/AUTO не включаем, пока у аккаунта исчерпан дневной лимит
+        ❤️: на первой же анкете, которую бот решит лайкнуть, он ничего не
+        отправит (``LIKE_LIMIT``), Leo будет ждать реакцию — лента встанет
+        (прод 2026-10-29). Ошибка чтения состояния не мешает переключению.
         """
-        if mode not in (Mode.SEMI_AUTO, Mode.AUTO) or self._auto_engine is None:
+        engine = self._engines.get(self._resolve_session(session))
+        if mode not in (Mode.SEMI_AUTO, Mode.AUTO) or engine is None:
             return None
         try:
-            until = await self._auto_engine.like_limit_until()
+            until = await engine.like_limit_until()
         except Exception as e:
             logger.error(f"Не удалось проверить лимит ❤️ перед сменой режима: {e}")
             return None
         if until is None:
             return None
         reset = datetime.fromtimestamp(until).strftime("%H:%M")
-        session = self._auto_engine.account_session or "аккаунт"
+        name = engine.account_session or "аккаунт"
         return (
-            f"Лимит ❤️ у {session} исчерпан до {reset} — {mode.value} не "
+            f"Лимит ❤️ у {name} исчерпан до {reset} — {mode.value} не "
             "включаю: на первой анкете для лайка лента встанет."
         )
 
-    async def request_mode(self, mode: Mode) -> str | None:
+    async def request_mode(
+        self, mode: Mode, session: str | None = None,
+    ) -> str | None:
         """Меняет режим, если это разрешено; иначе возвращает причину отказа."""
-        reason = await self.mode_block_reason(mode)
+        reason = await self.mode_block_reason(mode, session)
         if reason is not None:
             logger.warning(f"Смена режима на {mode.value} отклонена: {reason}")
             return reason
-        self.set_mode(mode)
+        self.set_mode(mode, session)
         return None
 
-    def auto_engine(self) -> AutoActionEngine | None:
-        """Доступ к движку авто-действий для ControlBot."""
-        return self._auto_engine
+    def auto_engine(self, session: str | None = None) -> AutoActionEngine | None:
+        """Движок авто-действий аккаунта (None — основной)."""
+        return self._engines.get(self._resolve_session(session))
 
-    def _build_auto_engine(self) -> AutoActionEngine:
-        """Строит AutoActionEngine для сессии из config.auto_actions.
+    def _build_auto_engine(self, session: str) -> AutoActionEngine:
+        """Строит AutoActionEngine аккаунта ``session``.
 
-        Клиент — по имени сессии ``auto_actions.account_session``; для
-        авто-уведомлений — «другой» аккаунт (на него пересылается карточка
-        анкеты с причиной, Бармалей↔Меланхолик). См. ``_clients_for_session``.
+        Клиент — по имени сессии; для авто-уведомлений — «другой» аккаунт
+        (на него пересылается карточка анкеты с причиной, Бармалей↔Меланхолик).
+        См. ``_clients_for_session``. Режим — ``AppConfig.mode_for(session)``.
         """
-        mode = self._config.project.mode
         auto_cfg = self._config.auto_actions
-        target_session = auto_cfg.account_session
-
         client, notify_client = (
-            self._clients_for_session(target_session)
-            if target_session else (None, None)
+            self._clients_for_session(session) if session else (None, None)
         )
 
-        if auto_cfg.enabled and client is None:
+        if (
+            auto_cfg.enabled and client is None
+            and session == auto_cfg.account_session
+        ):
             logger.warning(
-                f"AutoAction: account_session={target_session!r} не найден среди "
-                f"accounts; авто-действия отключены"
+                f"AutoAction: account_session={session!r} не найден среди "
+                f"accounts; авто-действия основного аккаунта отключены"
             )
 
         return AutoActionEngine(
             client=client,
             config=auto_cfg,
-            mode=mode,
+            mode=self._config.mode_for(session),
             chat_id=self._dvinchik_chat_id,
             notify_client=notify_client,
             db=self._db,
-            account_session=target_session,
+            account_session=session,
         )
 
     def switch_auto_account(self, session: str) -> bool:
-        """Переключает аккаунт-исполнитель авто-действий на лету (Веб-панель).
+        """Делает аккаунт ``session`` основным (Веб-панель).
 
-        Ищет клиент по имени сессии (``_clients_for_session``), переуказывает
-        живому движку новый client и сохраняет выбор в config.yaml (переживает
-        restart).
+        Основной аккаунт — лента сайта, ручные ❤️/👎 и ответы на капчи с сайта,
+        ControlBot. Режимы аккаунтов не меняются: у каждого свой движок.
+        Сохраняет выбор в config.yaml (переживает restart).
         """
-        client, notify_client = self._clients_for_session(session)
-
-        if client is None:
+        client, _ = self._clients_for_session(session)
+        if client is None or session not in self._engines:
             logger.warning(
                 f"AutoAction: account_session={session!r} не найден среди accounts"
             )
             return False
 
-        if self._auto_engine is None:
-            self._auto_engine = self._build_auto_engine()
-            if self._auto_engine is not None:
-                self._auto_engine.swap_client(
-                    client, notify_client, account_session=session,
-                )
-        else:
-            self._auto_engine.swap_client(
-                client, notify_client, account_session=session,
-            )
-
+        old = self._primary_session
+        if old != session and old not in self._client_sessions:
+            # Движок-заглушка невошедшего аккаунта больше не нужен.
+            self._engines.pop(old, None)
+        self._primary_session = session
         self._config.auto_actions.account_session = session
         try:
             self._config.persist_account_session(self._config_path, session)
-            logger.info(f"Авто-аккаунт сменён на {session!r} (сохранён в config.yaml)")
+            logger.info(f"Основной аккаунт сменён на {session!r} (сохранён в config.yaml)")
         except Exception as e:
-            logger.error(f"Не удалось сохранить авто-аккаунт в config.yaml: {e}")
+            logger.error(f"Не удалось сохранить основной аккаунт в config.yaml: {e}")
         return True
 
     def _resolve_client_sessions(
@@ -556,7 +653,20 @@ class DvinchikCollector:
         if self._worker is not None:
             await self._worker.stop()
 
-    async def start_auto_stream(self) -> bool:
+    async def start_all_auto_streams(self) -> None:
+        """Запускает ленту на всех аккаунтах с включёнными авто-действиями."""
+        for session in self.account_sessions():
+            if self._engines[session].enabled:
+                await self.start_auto_stream(session)
+
+    async def start_auto_stream(self, session: str | None = None) -> bool:
+        """Лента Leo на аккаунте ``session`` (None — текущий/основной)."""
+        if session is None:
+            return await self._start_auto_stream_impl()
+        with self._session_scope(session):
+            return await self._start_auto_stream_impl()
+
+    async def _start_auto_stream_impl(self) -> bool:
         """Обрабатывает активную анкету или продолжает ленту Leo.
 
         ✨🔍 НЕ отправляется: команда не приводит новые анкеты, а показанная
@@ -630,6 +740,7 @@ class DvinchikCollector:
         now = datetime.now(timezone.utc)
         for client in self._clients:
             account_session = self._session_for_client(client)
+            token = _CURRENT_SESSION.set(account_session or None)
             # Карточка «Ты понравился…», пропущенная живым хендлером, тоже
             # должна остановить поиск — но только самая свежая и только если
             # после неё мы ещё ничего не отправляли (иначе уже разобрана).
@@ -692,6 +803,8 @@ class DvinchikCollector:
                 logger.error(
                     f"Сверка истории чата ({account_session or '?'}) не удалась: {e}"
                 )
+            finally:
+                _CURRENT_SESSION.reset(token)
         if added:
             logger.info(f"Сверка истории чата: досохранено {added} сообщений")
         return added
@@ -770,8 +883,14 @@ class DvinchikCollector:
         if not reason and snapshot:
             reason = snapshot[-1]
         now = datetime.now(timezone.utc)
+        session = self._current_session()
         payload = {
-            "message": "Бот не может продолжить ленту анкет Дайвинчика",
+            "session": session,
+            "message": (
+                f"Бот не может продолжить ленту анкет Дайвинчика ({session})"
+                if len(self._engines) > 1
+                else "Бот не может продолжить ленту анкет Дайвинчика"
+            ),
             "reason": reason,
             "snapshot": snapshot,
             "at": now.isoformat(),
@@ -809,7 +928,16 @@ class DvinchikCollector:
         if self._db is None:
             return
         try:
-            if await self._db.get_state(STREAM_ERROR_STATE_KEY):
+            raw = await self._db.get_state(STREAM_ERROR_STATE_KEY)
+            if raw:
+                # Баннер другого аккаунта не трогаем: его лента всё ещё стоит.
+                owner = ""
+                try:
+                    owner = (json.loads(raw) or {}).get("session") or ""
+                except Exception:
+                    owner = ""
+                if owner and owner != self._current_session():
+                    return
                 await self._db.delete_state(STREAM_ERROR_STATE_KEY)
         except Exception as e:
             logger.error(f"AutoAction: не удалось сбросить сбой потока: {e}")
@@ -1211,7 +1339,12 @@ class DvinchikCollector:
         low = (getattr(msg, "text", "") or "").lower()
         if MATCH_CARD_FRAGMENT not in low:
             return False
+        if (self._current_session(), getattr(msg, "id", None)) in self._match_ack:
+            # Владелец нажал «Продолжить» на этой карточке — больше не стоп.
+            return False
         if MATCH_SHOW_FRAGMENT in low:
+            return True
+        if any(f in low for f in MATCH_NOTICE_FRAGMENTS):
             return True
         return any(
             self._is_match_show_button(t) for t in self._extract_button_texts(msg)
@@ -1268,7 +1401,7 @@ class DvinchikCollector:
         session = task.account_session or self._session_for_client(client)
         try:
             status = await self._match_greeter.greet(
-                client, session, match, self.mode.value,
+                client, session, match, self.mode_for(session).value,
             )
         except Exception as e:
             logger.error(f"MatchGreeting error: {e}")
@@ -1299,6 +1432,7 @@ class DvinchikCollector:
         Чат Leo (и прочие источники ленты) сюда не относятся. Текст не
         логируется и не сохраняется.
         """
+        self._bind_client(getattr(event, "client", None))
         try:
             chat_id = event.chat_id
             if chat_id in self._allowed_chat_ids:
@@ -1307,7 +1441,7 @@ class DvinchikCollector:
             session = self._session_for_client(getattr(event, "client", None))
             date = getattr(getattr(event, "message", None), "date", None)
             await self._match_intro.note_reply(
-                session, sender_id, self.mode.value,
+                session, sender_id, self.mode_for(session).value,
                 at=date if isinstance(date, datetime) else None,
             )
         except Exception as e:
@@ -1316,13 +1450,19 @@ class DvinchikCollector:
     async def run_match_intros(self) -> None:
         """Отправка созревших анкет девушкам (раз в цикл сверки истории)."""
         for client, session in zip(self._clients, self._client_sessions):
+            with self._session_scope(session):
+                await self._run_match_intros_for(client, session)
+
+    async def _run_match_intros_for(self, client: object, session: str) -> None:
+        """Проход автопереписки по одному аккаунту."""
+        if True:
             try:
                 results = await self._match_intro.process(
-                    client, session, self.mode.value,
+                    client, session, self.mode_for(session).value,
                 )
             except Exception as e:
                 logger.error(f"MatchIntro: проход {session}: {e}")
-                continue
+                return
             for row, status in results:
                 if status != INTRO_SENT:
                     continue
@@ -1366,13 +1506,19 @@ class DvinchikCollector:
     async def retry_match_greetings(self) -> None:
         """Дописывает девушкам, отложенным из-за спам-блока (после паузы)."""
         for client, session in zip(self._clients, self._client_sessions):
+            with self._session_scope(session):
+                await self._retry_match_greetings_for(client, session)
+
+    async def _retry_match_greetings_for(self, client: object, session: str) -> None:
+        """Дозапись очереди приветствий одного аккаунта."""
+        if True:
             try:
                 results = await self._match_greeter.retry_queued(
-                    client, session, self.mode.value,
+                    client, session, self.mode_for(session).value,
                 )
             except Exception as e:
                 logger.error(f"MatchGreeting: дозапись очереди {session}: {e}")
-                continue
+                return
             for match, status in results:
                 await self._notify_greeting(
                     session, match, status, delayed=True,
@@ -1402,8 +1548,9 @@ class DvinchikCollector:
         )
         self._auto_engine.note_card(self._dvinchik_chat_id, card_msg.id)
         self._auto_engine.abort_like_chains(self._dvinchik_chat_id)
-        self._mode_before_match_stop = self.mode
-        self.set_mode(Mode.OBSERVE)
+        session = self._current_session()
+        self._mode_before_match_stop[session] = self.mode_for(session)
+        self.set_mode(Mode.OBSERVE, session)
         return True
 
     async def _stop_on_match_card(self, card_msg: object) -> bool:
@@ -1425,7 +1572,7 @@ class DvinchikCollector:
             if await self._db.get_state(MATCH_STOP_STATE_KEY) == card_key:
                 notify = False
             await self._db.set_state(MATCH_STOP_STATE_KEY, card_key)
-            prev_mode = self._mode_before_match_stop
+            prev_mode = self._mode_before_match_stop.get(self._current_session())
             if prev_mode is not None and prev_mode != Mode.OBSERVE:
                 await self._db.set_state(MATCH_STOP_PREV_MODE_KEY, prev_mode.value)
             await self._db.set_state(
@@ -1433,7 +1580,13 @@ class DvinchikCollector:
                 json.dumps(
                     {
                         "kind": "match_stop",
-                        "message": "Поиск остановлен: тебя лайкнули",
+                        "session": self._current_session(),
+                        "message": (
+                            f"Поиск остановлен ({self._current_session()}): "
+                            "тебя лайкнули"
+                            if len(self._engines) > 1
+                            else "Поиск остановлен: тебя лайкнули"
+                        ),
                         "reason": card_text,
                         "snapshot": [f"Leo: {card_text[:120]}"],
                         "at": datetime.now(timezone.utc).isoformat(),
@@ -1452,7 +1605,7 @@ class DvinchikCollector:
 
     async def _match_stop_prev_mode(self) -> Mode:
         """Режим, который был до остановки на карточке лайка (иначе SEMI_AUTO)."""
-        prev = self._mode_before_match_stop
+        prev = self._mode_before_match_stop.get(self._current_session())
         if prev is None and self._db is not None:
             try:
                 raw = await self._db.get_state(MATCH_STOP_PREV_MODE_KEY)
@@ -1464,7 +1617,19 @@ class DvinchikCollector:
             prev = Mode.SEMI_AUTO
         return prev
 
-    async def resume_after_match_stop(self) -> bool:
+    async def resume_after_match_stop(self, session: str | None = None) -> bool:
+        """«Продолжить» на аккаунте ``session`` (None — из баннера, иначе основной)."""
+        if session is None and self._db is not None:
+            try:
+                raw = await self._db.get_state(STREAM_ERROR_STATE_KEY)
+                if raw:
+                    session = (json.loads(raw) or {}).get("session") or None
+            except Exception as e:
+                logger.error(f"AutoAction: не удалось прочитать баннер стопа: {e}")
+        with self._session_scope(self._resolve_session(session)):
+            return await self._resume_after_match_stop_impl()
+
+    async def _resume_after_match_stop_impl(self) -> bool:
         """Кнопка «Продолжить» после остановки на карточке «Ты понравился…».
 
         Возвращает режим, который был до остановки (по умолчанию SEMI_AUTO),
@@ -1475,13 +1640,14 @@ class DvinchikCollector:
         True — лента продолжена.
         """
         mode = await self._match_stop_prev_mode()
-        reason = await self.mode_block_reason(mode)
+        session = self._current_session()
+        reason = await self.mode_block_reason(mode, session)
         if reason is not None:
             # Лимит ❤️ исчерпан — остаёмся в OBSERVE, баннер не снимаем.
             logger.warning(f"AutoAction: «Продолжить» отклонено: {reason}")
             return False
-        self._mode_before_match_stop = None
-        self.set_mode(mode)
+        self._mode_before_match_stop.pop(session, None)
+        self.set_mode(mode, session)
         if self._db is not None:
             try:
                 await self._db.delete_state(MATCH_STOP_PREV_MODE_KEY)
@@ -1503,6 +1669,9 @@ class DvinchikCollector:
                 None,
             )
             if button is None:
+                # Уведомление без кнопок («Кому-то понравилась твоя анкета…»):
+                # владелец разобрался сам — продолжаем ленту мимо него.
+                self._match_ack.add((self._current_session(), msg.id))
                 break
             logger.info(
                 f"AutoAction: карточка лайка (msg={msg.id}) — жму «{button}»"
@@ -1844,6 +2013,7 @@ class DvinchikCollector:
 
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
         """Обработчик: сохраняет RAW потом парсит."""
+        self._bind_client(getattr(event, "client", None))
         # === SOURCE FILTER (allowlist) ===
         # Источник отбрасывается ДО любых операций: до classify, логирования,
         # создания/сохранения RAW, фильтра, AI и скачивания media.
@@ -2045,6 +2215,7 @@ class DvinchikCollector:
         строкой (``is_outgoing``), а не как сообщение от Leo. ``sent_messages`` /
         ``auto_actions_log`` в ленту НЕ подмешиваются — это журналы действий.
         """
+        self._bind_client(getattr(event, "client", None))
         chat_id = event.chat_id
         if chat_id != self._dvinchik_chat_id:
             return
@@ -2222,6 +2393,7 @@ class DvinchikCollector:
         Если лайк ставится через inline-кнопку — callback_data будет виден
         в логе.
         """
+        self._bind_client(getattr(event, "client", None))
         data = event.data
         if isinstance(data, bytes):
             data = data.decode("utf-8", errors="replace")
@@ -2702,6 +2874,12 @@ class DvinchikCollector:
         Вызывается worker'ом (в проде) или напрямую из хендлера (fallback).
         RAW к этому моменту уже сохранён — ошибки pipeline не теряют сырьё.
         """
+        # Обработка — от имени аккаунта-получателя (его движок и режим).
+        _CURRENT_SESSION.set(
+            task.account_session
+            or self._session_for_client(getattr(task.msg, "client", None))
+            or None
+        )
         chat_id = task.chat_id
         msg = task.msg
         text = task.text

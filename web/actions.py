@@ -44,15 +44,43 @@ def set_collector(collector: "DvinchikCollector | None") -> None:
     _collector = collector
 
 
+def _current_engine() -> "AutoActionEngine | None":
+    """Движок основного аккаунта: с коллектора (если есть), иначе заданный."""
+    if _collector is not None:
+        getter = getattr(_collector, "auto_engine", None)
+        if callable(getter):
+            try:
+                engine = getter()
+            except Exception:
+                engine = None
+            if engine is not None:
+                return engine
+    return _engine
+
+
 def _loop():
-    """Get the event loop from the engine's client."""
-    if _engine is None:
-        return None
-    client = getattr(_engine, "_client", None)
-    if client is None:
-        # No client attached yet (or fake engine in tests): no way to bridge.
-        return None
-    return getattr(client, "_loop", None)
+    """Event loop Telethon-клиентов (движка или любого аккаунта коллектора)."""
+    clients = []
+    engine = _current_engine()
+    if engine is not None:
+        clients.append(getattr(engine, "_client", None))
+    if _collector is not None:
+        clients.extend(getattr(_collector, "_clients", None) or [])
+    for client in clients:
+        loop = getattr(client, "_loop", None) if client is not None else None
+        if isinstance(loop, asyncio.AbstractEventLoop):
+            return loop
+    return None
+
+
+def _with_session(func, *args, session: str | None = None):
+    """Вызов метода коллектора с аккаунтом только если он задан.
+
+    Старые вызовы (и фейки в тестах) — без аргумента ``session``.
+    """
+    if session:
+        return func(*args, session)
+    return func(*args)
 
 
 def send_reaction_sync(action: str) -> str:
@@ -61,7 +89,8 @@ def send_reaction_sync(action: str) -> str:
     Called from the Flask sync thread (web quick_action).  Returns a
     human-readable status string ("SENT", "DISABLED", "ERROR").
     """
-    if _engine is None:
+    engine = _current_engine()
+    if engine is None:
         return "DISABLED"
 
     text = LIKE_TEXT if action == "LIKE" else DISLIKE_TEXT
@@ -72,7 +101,7 @@ def send_reaction_sync(action: str) -> str:
 
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _engine.manual_reaction(text),
+            engine.manual_reaction(text),
             loop,
         )
         result = future.result(timeout=30)
@@ -93,7 +122,8 @@ def send_captcha_answer_sync(answer: str) -> str:
     stream resumes immediately and the next identical captcha is answered
     automatically from captcha_memory.  Returns "SENT"/"DISABLED"/"ERROR".
     """
-    if _engine is None or not _engine.enabled:
+    engine = _current_engine()
+    if engine is None or not engine.enabled:
         return "DISABLED"
 
     text = (answer or "").strip()
@@ -107,7 +137,7 @@ def send_captcha_answer_sync(answer: str) -> str:
 
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _engine.send_text(text),
+            engine.send_text(text),
             loop,
         )
         result = future.result(timeout=30)
@@ -121,12 +151,10 @@ def send_captcha_answer_sync(answer: str) -> str:
 
 
 def set_account_sync(session: str) -> str:
-    """Switch the auto-action account on the running collector.
+    """Делает аккаунт основным (лента сайта, ручные кнопки) на живом коллекторе.
 
-    Called from the Flask sync thread.  Updates the running AutoActionEngine
-    in place so the change takes effect immediately (no restart needed),
-    then kicks the stream on the new account.  Returns a status string
-    ("OK", "DISABLED" when no collector/engine attached, "ERROR").
+    Режимы аккаунтов не меняются (у каждого свой движок); ленту основного
+    аккаунта на всякий случай подталкиваем. Статус: "OK", "DISABLED", "ERROR".
     """
     if _collector is None:
         return "DISABLED"
@@ -148,7 +176,7 @@ def set_account_sync(session: str) -> str:
         return "OK"
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _collector.start_auto_stream(), loop,
+            _with_session(_collector.start_auto_stream, session=session), loop,
         )
         future.result(timeout=30)
     except Exception as e:
@@ -159,7 +187,7 @@ def set_account_sync(session: str) -> str:
     return "OK"
 
 
-def mode_block_reason_sync(mode: "Mode") -> str | None:
+def mode_block_reason_sync(mode: "Mode", session: str | None = None) -> str | None:
     """Причина, по которой нельзя включить режим (лимит ❤️), иначе None.
 
     Вызывается ДО сохранения режима в config.yaml. Без коллектора/цикла
@@ -172,7 +200,7 @@ def mode_block_reason_sync(mode: "Mode") -> str | None:
         return None
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _collector.mode_block_reason(mode), loop,
+            _with_session(_collector.mode_block_reason, mode, session=session), loop,
         )
         return future.result(timeout=30)
     except Exception as e:
@@ -180,8 +208,8 @@ def mode_block_reason_sync(mode: "Mode") -> str | None:
         return None
 
 
-def set_mode_sync(mode: "Mode") -> str:
-    """Switch the live mode on the running collector and kick the stream.
+def set_mode_sync(mode: "Mode", session: str | None = None) -> str:
+    """Switch the live mode of one account (None — main) and kick its stream.
 
     Called from the Flask sync thread.  Unlike the persisted-only path
     (settings.py), this updates ``AutoActionEngine`` in place so the switch
@@ -192,7 +220,7 @@ def set_mode_sync(mode: "Mode") -> str:
         return "DISABLED"
 
     try:
-        _collector.set_mode(mode)
+        _with_session(_collector.set_mode, mode, session=session)
     except Exception as e:
         logger.error(f"Mode bridge: set_mode failed: {type(e).__name__}: {e!r}")
         return "ERROR"
@@ -204,7 +232,7 @@ def set_mode_sync(mode: "Mode") -> str:
         return "OK"
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _collector.start_auto_stream(), loop,
+            _with_session(_collector.start_auto_stream, session=session), loop,
         )
         future.result(timeout=30)
     except Exception as e:
@@ -215,7 +243,7 @@ def set_mode_sync(mode: "Mode") -> str:
     return "OK"
 
 
-def resume_search_sync() -> str:
+def resume_search_sync(session: str | None = None) -> str:
     """Кнопка «Продолжить» в баннере остановки поиска (карточка лайка).
 
     Возвращает режим до остановки и продолжает ленту
@@ -230,7 +258,8 @@ def resume_search_sync() -> str:
         return "DISABLED"
     try:
         future = asyncio.run_coroutine_threadsafe(
-            _collector.resume_after_match_stop(), loop,
+            _with_session(_collector.resume_after_match_stop, session=session),
+            loop,
         )
         future.result(timeout=30)
     except Exception as e:

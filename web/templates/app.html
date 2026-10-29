@@ -1,44 +1,51 @@
 {% extends "base.html" %}
 {% block title %}DvAI — события{% endblock %}
 
-{# ── Режим работы + аккаунт-исполнитель — в шапке, без открытия панели ── #}
+{# ── Режим работы — СВОЯ строка на каждый аккаунт ──
+   У каждого аккаунта свой движок и режим: можно листать ленту сразу на двух.
+   Кнопка с именем аккаунта делает его основным (его чат — в ленте сайта,
+   с него уходят ручные ❤️/👎 и ответы на капчи). #}
 {% block mode_switch %}
-<form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch" id="mode-switch">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-    {% for m in modes %}
-    <button type="submit" name="mode" value="{{ m }}"
-            class="mode-switch__btn mode-switch__btn--{{ m|lower }} {% if mode == m %}is-active{% endif %}"
-            title="{{ {'OBSERVE': 'только смотрим', 'SEMI_AUTO': 'авто-действия + ручные кнопки на REVIEW', 'AUTO': 'полная автоматика'}[m] }}">
-        {{ m|replace('_', ' ') }}
-    </button>
-    {% endfor %}
-</form>
-
-{# С него отправляются ❤️/👎 и «Берем)» в чат Leo. Переключается сразу
-   по выбору (app.js, data-auto-submit); кнопка — фолбэк без JS. #}
-<form method="POST" action="{{ url_for('settings.update_account') }}" class="account-form" id="account-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-    <label class="account-form__label" for="account-select" title="Аккаунт-исполнитель">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"
-             aria-hidden="true">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-        </svg>
-    </label>
-    <select name="account_session" id="account-select" class="input account-form__select"
-            data-auto-submit aria-label="Аккаунт-исполнитель">
-        {% for acc in accounts %}
-        <option value="{{ acc.session }}" {% if acc.session == account_session %}selected{% endif %}>
-            {{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}
-        </option>
-        {% else %}
-        <option value="" disabled>аккаунты не заданы</option>
+<div class="acct-rows" id="acct-rows">
+{% set rows = accounts if accounts else [{'session': '', 'phone': '', 'mode': mode}] %}
+{% for acc in rows %}
+<div class="acct-row {% if acc.session and acc.session == account_session %}is-main{% endif %}"
+     data-account="{{ acc.session }}">
+    <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch"
+          {% if loop.first %}id="mode-switch"{% endif %}
+          aria-label="Режим {{ acc.session or 'бота' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+        {% if acc.session %}<input type="hidden" name="account_session" value="{{ acc.session }}">{% endif %}
+        {% for m in modes %}
+        <button type="submit" name="mode" value="{{ m }}"
+                class="mode-switch__btn mode-switch__btn--{{ m|lower }} {% if acc.mode == m %}is-active{% endif %}"
+                title="{{ {'OBSERVE': 'только смотрим', 'SEMI_AUTO': 'авто-действия + ручные кнопки на REVIEW', 'AUTO': 'полная автоматика'}[m] }}">
+            {{ m|replace('_', ' ') }}
+        </button>
         {% endfor %}
-    </select>
-    <button type="submit" class="btn btn--sm account-form__go">ОК</button>
-</form>
+    </form>
+    {% if acc.session %}
+    <form method="POST" action="{{ url_for('settings.update_account') }}" class="account-form"
+          {% if loop.first %}id="account-form"{% endif %}>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+        <input type="hidden" name="account_session" value="{{ acc.session }}">
+        <button type="submit" class="account-form__name"
+                {% if acc.session == account_session %}aria-current="true"{% endif %}
+                title="{% if acc.session == account_session %}Основной аккаунт: его чат в ленте{% else %}Показать чат этого аккаунта в ленте{% endif %}">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"
+                 aria-hidden="true">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            </svg>
+            <span class="account-form__text">{{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}</span>
+        </button>
+    </form>
+    {% endif %}
+</div>
+{% endfor %}
+</div>
 {% endblock %}
 
 {% block topbar_status %}

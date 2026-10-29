@@ -238,6 +238,11 @@ class AutoActionsConfig(BaseModel):
     enabled: bool = False
     # Сессия аккаунта, от имени которого шлём действия (например "dvai_2").
     account_session: str = ""
+    # Режим каждого аккаунта отдельно ({session: OBSERVE|SEMI_AUTO|AUTO}): оба
+    # аккаунта могут листать ленту одновременно, каждый со своим режимом.
+    # Нет записи → у основного (account_session) project.mode, у остальных
+    # OBSERVE. См. AppConfig.mode_for / persist_account_mode.
+    account_modes: dict[str, Mode] = {}
     # Интервал между действиями в секундах. Держим МАЛЫМ (по умолчанию 2 с):
     # Leo показывает одну карточку и принимает ❤️/👎 только пока она на экране,
     # а ленту листает САМА (~каждые 2–10 с). При 10 с реакция уезжала на
@@ -514,9 +519,51 @@ class AppConfig(BaseModel):
         project = raw.get("project") or {}
         project["mode"] = mode.value
         raw["project"] = project
+        # Режим основного аккаунта мог уже лежать в account_modes — держим в
+        # синхроне, иначе mode_for() вернул бы старое значение.
+        primary = self.auto_actions.account_session
+        auto_actions = raw.get("auto_actions") or {}
+        modes = auto_actions.get("account_modes")
+        if primary and isinstance(modes, dict) and primary in modes:
+            modes[primary] = mode.value
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
         self.project.mode = mode
+        if primary and primary in self.auto_actions.account_modes:
+            self.auto_actions.account_modes[primary] = mode
+
+    def mode_for(self, session: str) -> "Mode":
+        """Режим аккаунта ``session`` (см. ``auto_actions.account_modes``)."""
+        if session in self.auto_actions.account_modes:
+            return self.auto_actions.account_modes[session]
+        if not session or session == self.auto_actions.account_session:
+            return self.project.mode
+        return Mode.OBSERVE
+
+    def persist_account_mode(self, path: Path, session: str, mode: "Mode") -> None:
+        """Сохраняет режим аккаунта в ``auto_actions.account_modes``.
+
+        Для основного аккаунта (``account_session``) заодно пишет
+        ``project.mode`` — его читают старые места (ControlBot /status, логи).
+        """
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        else:
+            raw = {}
+        auto_actions = raw.get("auto_actions") or {}
+        modes = dict(auto_actions.get("account_modes") or {})
+        modes[session] = mode.value
+        auto_actions["account_modes"] = modes
+        raw["auto_actions"] = auto_actions
+        if session == self.auto_actions.account_session:
+            project = raw.get("project") or {}
+            project["mode"] = mode.value
+            raw["project"] = project
+            self.project.mode = mode
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+        self.auto_actions.account_modes[session] = mode
 
     def persist_account_session(self, path: Path, session: str) -> None:
         """Сохраняет auto_actions.account_session в YAML-файл.

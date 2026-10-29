@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import yaml
 import json
 import sqlite3
 import time
@@ -311,6 +313,56 @@ class TestCollectorActiveCard:
         assert engine.enabled is False
         assert engine.is_stale_card(1234060895, 34647) is True
         notify.assert_awaited_once()
+        client.send_message.assert_not_called()
+
+    def test_match_notice_without_buttons_stops_search(self) -> None:
+        """«Кому-то понравилась твоя анкета! …посмотрим кто это» — тоже стоп.
+
+        Прод 2026-10-29 (dvai msg=744851): уведомление без кнопок пришло
+        посреди ленты, бот счёл его неизвестным, поставил 👎 анкете перед ним
+        и продолжил листать через «1 🚀».
+        """
+        collector, client, engine = self._collector()
+        engine.note_card(1234060895, 744850)  # анкета перед уведомлением
+        engine.notify_owner = AsyncMock(return_value=True)
+        event = make_event(
+            text=(
+                "Кому-то понравилась твоя анкета! Заканчивай с вопросом "
+                "выше и посмотрим кто это"
+            ),
+            msg_id=744851,
+            sender_id=1234060895,
+        )
+        event.message.out = False
+        event.client = client
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        assert collector.mode is Mode.OBSERVE
+        assert engine.is_stale_card(1234060895, 744850) is True
+        client.send_message.assert_not_called()
+
+    def test_resume_passes_notice_without_buttons(self) -> None:
+        """«Продолжить» на уведомлении без кнопок не останавливает поиск снова."""
+        collector, client, engine = self._collector()
+        engine.notify_owner = AsyncMock(return_value=True)
+        notice = MagicMock()
+        notice.id = 744851
+        notice.out = False
+        notice.text = "Кому-то понравилась твоя анкета! Заканчивай с вопросом выше и посмотрим кто это"
+        notice.reply_markup = None
+        assert collector._is_match_card(notice) is True
+        collector._recent_history = AsyncMock(return_value=[notice])
+        collector.start_auto_stream = AsyncMock(return_value=True)
+        collector._db.get_state = AsyncMock(return_value=None)
+        with patch.object(AppConfig, "persist_mode"):
+            ok = asyncio.get_event_loop().run_until_complete(
+                collector.resume_after_match_stop()
+            )
+        assert ok is True
+        assert collector._is_match_card(notice) is False
         client.send_message.assert_not_called()
 
     def test_match_card_from_other_account_does_not_stop(self) -> None:
@@ -4008,6 +4060,59 @@ class TestCollectorSwitchAccount:
         }
         return AppConfig(**data)
 
+    def test_each_account_has_own_engine_and_mode(self, tmp_path) -> None:
+        """Режим ставится аккаунту отдельно; второй аккаунт не трогается."""
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("auto_actions:\n  account_session: dvai_2\n", encoding="utf-8")
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+        dvai, dvai_2 = collector.auto_engine("dvai"), collector.auto_engine("dvai_2")
+        assert dvai is not dvai_2
+        assert dvai.client is collector._clients[0]
+        assert dvai_2.client is collector._clients[1]
+        # Без записи в account_modes второй аккаунт стартует в OBSERVE.
+        assert dvai.mode == Mode.OBSERVE and dvai_2.mode == Mode.SEMI_AUTO
+
+        collector.set_mode(Mode.AUTO, "dvai")
+        assert dvai.mode == Mode.AUTO and dvai.enabled
+        assert dvai_2.mode == Mode.SEMI_AUTO
+        saved = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert saved["auto_actions"]["account_modes"] == {"dvai": "AUTO"}
+        # Режим основного аккаунта (project.mode) не изменился.
+        assert "project" not in saved
+
+        # Перезапуск: режимы читаются из account_modes.
+        cfg = self._make_config()
+        cfg.auto_actions.account_modes = {"dvai": Mode.AUTO}
+        restarted = DvinchikCollector([AsyncMock(), AsyncMock()], make_db_mock(), cfg)
+        assert restarted.auto_engine("dvai").mode == Mode.AUTO
+        assert restarted.auto_engine("dvai_2").mode == Mode.SEMI_AUTO
+
+    def test_message_handled_by_receiving_account_engine(self) -> None:
+        """Карточка с dvai обрабатывается движком dvai, а не основного (dvai_2)."""
+        collector = self._make_collector()
+        seen = []
+
+        async def fake_process(task) -> None:
+            seen.append(collector._auto_engine.account_session)
+
+        collector._process_message = fake_process
+        for i, client in enumerate(collector._clients):
+            event = make_event(text="Аня, 18, Санкт-Петербург", msg_id=500 + i)
+            event.client = client
+            event.message.client = client
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+        # Вне обработки — основной аккаунт.
+        assert collector._auto_engine.account_session == "dvai_2"
+        task_sessions = [
+            c.kwargs.get("account_session")
+            for c in collector._db.save_raw_message.await_args_list
+        ]
+        assert task_sessions == ["dvai", "dvai_2"]
+        assert seen == ["dvai", "dvai_2"]
+
     def test_switch_account_changes_client(self, tmp_path) -> None:
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(
@@ -4046,9 +4151,12 @@ class TestCollectorSwitchAccount:
         collector = self._make_collector()
         collector._config_path = cfg_path
         assert collector.mode.value == "SEMI_AUTO"
-        # Переключение аккаунта не должно ронять режим движка.
+        # У каждого аккаунта свой режим: смена основного аккаунта режимы не
+        # переносит и не роняет (dvai_2 продолжает листать в SEMI_AUTO).
         collector.switch_auto_account("dvai")
-        assert collector.auto_engine().mode == Mode.SEMI_AUTO
+        assert collector.auto_engine("dvai_2").mode == Mode.SEMI_AUTO
+        assert collector.auto_engine("dvai").mode == Mode.OBSERVE
+        assert collector.auto_engine("dvai_2").enabled
 
     def test_engine_keeps_account_session_for_id_filtering(self) -> None:
         """Движок знает аккаунт-исполнитель, чтобы не слать чужие id."""

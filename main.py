@@ -287,9 +287,10 @@ async def main() -> None:
     except Exception as e:
         logger.warning(f"Web UI не запущен: {e}")
 
-    # Stage 7 (SEMI_AUTO): обработка активной анкеты на авто-аккаунте
+    # Stage 7 (SEMI_AUTO): активная анкета / продолжение ленты на КАЖДОМ аккаунте
+    # с включёнными авто-действиями (у аккаунтов свои режимы).
     auto_task = asyncio.create_task(
-        collector.start_auto_stream()
+        collector.start_all_auto_streams()
     )
 
     # Любая ошибка бота (ERROR в логе) → сообщение «твинку» в Telegram (тот же
