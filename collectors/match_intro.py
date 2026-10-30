@@ -13,6 +13,9 @@
    Анкету видел только ДРУГОЙ аккаунт (перенаправление лички) — он пересылает
    её этому аккаунту, а этот — девушке (``_relay_card``); пересланное
    пересылкой сохраняет «переслано от Leo».
+   Пересылается та карточка, что шла перед уведомлением о матче
+   (``card_session`` + ``card_message_id``), а не «последний показ профиля»:
+   под одним profile_id бывают разные девушки с тем же «имя, возраст».
 
 Правила:
 - только в режимах ``match_intro.modes`` (по умолчанию AUTO); вне их ответы не
@@ -111,8 +114,15 @@ class MatchIntro:
         account_session: str,
         match: ParsedMatch,
         profile_id: int | None,
+        *,
+        card_session: str = "",
+        card_message_id: int = 0,
     ) -> bool:
-        """Привет ушёл → ждём её ответа. True — переписка заведена."""
+        """Привет ушёл → ждём её ответа. True — переписка заведена.
+
+        ``card_session`` / ``card_message_id`` — её карточка в чате Leo перед
+        уведомлением о матче (её и пересылаем, см. ``_find_card``).
+        """
         if self._db is None or not self._config.enabled:
             return False
         user_id = match.telegram_user_id or 0
@@ -133,6 +143,8 @@ class MatchIntro:
                 username=match.telegram_username or "",
                 name=match.name or "",
                 profile_id=profile_id,
+                card_session=card_session,
+                card_message_id=card_message_id,
             )
         except Exception as e:
             logger.error(f"MatchIntro: не завёл переписку: {e}")
@@ -231,7 +243,7 @@ class MatchIntro:
             )
             await self._update(account_session, user_id, status=OWNER_CHAT)
             return OWNER_CHAT
-        source, ids = await self._find_card(row.get("profile_id"), account_session)
+        source, ids = await self._find_card(row, account_session)
         if not ids:
             logger.warning(
                 f"MatchIntro: анкета {name} не найдена — не шлю"
@@ -333,15 +345,33 @@ class MatchIntro:
         return False
 
     async def _find_card(
-        self, profile_id: object, account_session: str,
+        self, row: dict, account_session: str,
     ) -> tuple[str, list[int]]:
         """(аккаунт, id сообщений анкеты в его чате Leo).
 
-        Сначала свой аккаунт; нет — другой вошедший аккаунт, который её видел
-        (матч был на нём, а личка перенаправлена сюда).
+        Известна карточка матча (``card_session`` + ``card_message_id``) —
+        только она: одна запись profiles может склеить разных девушек с тем
+        же «имя, возраст», и «последний показ профиля» — чужая анкета (прод
+        2026-10-30: @Miamikii получила анкету другой «Мяу, 18»). Карточка
+        не нашлась — не шлём ничего.
+
+        Карточка неизвестна (старые строки, дозапись после спам-блока) —
+        последний показ: сначала свой аккаунт, нет — другой вошедший.
         """
+        profile_id = row.get("profile_id")
         if profile_id is None or self._db is None:
             return account_session, []
+        card_session = row.get("card_session") or ""
+        card_id = int(row.get("card_message_id") or 0)
+        if card_id and card_session:
+            try:
+                ids = await self._db.get_profile_card_message_ids(
+                    int(profile_id), card_session, anchor=card_id,
+                )
+            except Exception as e:
+                logger.error(f"MatchIntro: не получил сообщения анкеты: {e}")
+                ids = []
+            return card_session, ids
         sessions = [account_session] + [
             s for s in self.clients if s and s != account_session
         ]

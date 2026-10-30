@@ -99,6 +99,32 @@ class TestMatchDialogDb:
         # Имя не совпало с текущей карточкой → по имени среди лайкнутых (нет).
         assert run(db.find_match_profile("Олеся", LEO, "dvai_2")) is None
 
+    def test_find_match_card_returns_card_of_match(self, db: Database) -> None:
+        """Карточка перед матчем известна → её id; по имени — карточки нет."""
+        pid = run(_profile(db, "Роза", 1000, "dvai_2", []))
+        run(db.set_chat_profile_context(LEO, 1000, "dvai_2"))
+        assert run(db.find_match_card("Роза", LEO, "dvai_2")) == (pid, 1000)
+        assert run(db.find_match_card(
+            "Роза", LEO, "dvai_2", use_context=False,
+        ))[1] == 0
+
+    def test_card_ids_by_anchor_not_last_showing(self, db: Database) -> None:
+        """Под одним profile_id — две разные «Роза, 19»: берём карточку матча."""
+        pid = run(_profile(db, "Роза", 1000, "dvai", [1001]))
+        run(db.link_profile_message(pid, 5000, LEO, NOW, account_session="dvai"))
+        run(db.link_profile_message(pid, 5001, LEO, NOW, account_session="dvai"))
+        assert run(db.get_profile_card_message_ids(pid, "dvai", anchor=1000)) == [
+            1000, 1001,
+        ]
+        assert run(db.get_profile_card_message_ids(pid, "dvai", anchor=9000)) == []
+
+    def test_card_columns_saved(self, db: Database) -> None:
+        run(db.add_match_dialog(
+            "dvai_2", 5, card_session="dvai", card_message_id=746612,
+        ))
+        row = run(db.get_match_dialog("dvai_2", 5))
+        assert row["card_session"] == "dvai" and row["card_message_id"] == 746612
+
 
 def make_intro(db: object, **cfg: object) -> MatchIntro:
     return MatchIntro(MatchIntroConfig(**cfg), db, LEO)
@@ -257,7 +283,7 @@ class TestMatchIntro:
         """Анкета есть только в чате Leo dvai; пишет девушке dvai_2."""
         db = make_db()
         db.get_profile_card_message_ids = AsyncMock(
-            side_effect=lambda pid, session: [11, 12] if session == "dvai" else []
+            side_effect=lambda pid, session, **kw: [11, 12] if session == "dvai" else []
         )
         src = make_client(sent=[
             SimpleNamespace(id=501, message=""),
@@ -306,6 +332,38 @@ class TestMatchIntro:
         assert status == ERROR
         dst.forward_messages.assert_not_called()
         assert "relay" in db.update_match_dialog.await_args.kwargs["error"]
+
+    def test_match_card_beats_own_old_showing(self) -> None:
+        """Прод 2026-10-30 (@Miamikii): матч на dvai, личка на dvai_2. На dvai_2
+        был старый показ того же profile_id — другой девушки. Шлём карточку
+        матча с dvai, а не «последний показ» на своём аккаунте."""
+        fwd = SimpleNamespace(from_id=LEO)
+        db, src, dst, intro = self._relay_setup([
+            {"id": 9, "message": "Роза, 19 – люблю котиков", "fwd_from": fwd},
+            {"id": 8, "message": "", "fwd_from": fwd},
+        ])
+        calls: list[tuple] = []
+
+        async def card_ids(pid, session, anchor=None):
+            calls.append((session, anchor))
+            if session == "dvai" and anchor == 746612:
+                return [11, 12]
+            return [34048, 34049]  # чужая «Роза» на dvai_2
+
+        db.get_profile_card_message_ids = AsyncMock(side_effect=card_ids)
+        row = due_row(card_session="dvai", card_message_id=746612)
+        assert run(intro.send_intro(dst, "dvai_2", row)) == INTRO_SENT
+        assert calls == [("dvai", 746612)]
+        assert src.forward_messages.await_args.args[1] == [11, 12]
+
+    def test_match_card_missing_sends_nothing(self) -> None:
+        """Карточка матча не нашлась — не шлём «похожую» анкету."""
+        db = make_db()
+        db.get_profile_card_message_ids = AsyncMock(return_value=[])
+        client = make_client()
+        row = due_row(card_session="dvai_2", card_message_id=500)
+        assert run(make_intro(db).send_intro(client, "dvai_2", row)) == NO_PROFILE
+        client.forward_messages.assert_not_called()
 
     def test_own_card_preferred_over_other_account(self) -> None:
         db = make_db()
@@ -384,14 +442,33 @@ class TestCollectorIntro:
     def _collector(self, mode: str = "AUTO"):
         collector, other, auto = _Greeting()._collector(mode)
         collector._db.find_match_profile = AsyncMock(return_value=3)
+        collector._db.find_match_card = AsyncMock(return_value=(3, 900))
         collector._match_intro.enroll = AsyncMock(return_value=True)
         return collector, other, auto
 
     def test_greeting_sent_enrolls(self) -> None:
         collector, _, auto = self._collector()
         run(collector._process_message(_Greeting._task(auto)))
-        args = collector._match_intro.enroll.await_args.args
+        call = collector._match_intro.enroll.await_args
+        args = call.args
         assert args[0] is auto and args[1] == "dvai_2" and args[3] == 3
+        # Запомнили карточку матча: аккаунт + id сообщения перед матчем.
+        assert call.kwargs == {"card_session": "dvai_2", "card_message_id": 900}
+
+    def test_redirected_match_card_from_match_account(self) -> None:
+        """Матч на dvai_2, личка на dvai → карточку ищем в ленте dvai_2."""
+        collector, other, auto = _Greeting()._collector(
+            "AUTO", redirects={"dvai_2": "dvai"},
+        )
+        collector._engines["dvai"].notify_owner = AsyncMock(return_value=True)
+        collector._db.find_match_profile = AsyncMock(return_value=3)
+        collector._db.find_match_card = AsyncMock(return_value=(3, 900))
+        collector._match_intro.enroll = AsyncMock(return_value=True)
+        run(collector._process_message(_Greeting._task(auto)))
+        assert collector._db.find_match_card.await_args.args[2] == "dvai_2"
+        call = collector._match_intro.enroll.await_args
+        assert call.args[1] == "dvai"
+        assert call.kwargs == {"card_session": "dvai_2", "card_message_id": 900}
 
     def test_greeting_not_sent_does_not_enroll(self) -> None:
         collector, _, auto = self._collector()

@@ -102,11 +102,18 @@ class MatchDialogsMixin:
         ``source`` — аккаунт матча при перенаправлении (анкета — в его ленте).
         """
         try:
-            profile_id = await self._db.find_match_profile(
-                match.name, self._dvinchik_chat_id, source or session,
+            # Карточка — из ленты аккаунта матча: под одним profile_id бывают
+            # разные девушки с тем же «имя, возраст» (прод 2026-10-30).
+            card_session = source or session
+            profile_id, card_id = await self._db.find_match_card(
+                match.name, self._dvinchik_chat_id, card_session,
                 use_context=use_context,
             )
-            await self._match_intro.enroll(client, session, match, profile_id)
+            await self._match_intro.enroll(
+                client, session, match, profile_id,
+                card_session=card_session if card_id else "",
+                card_message_id=card_id,
+            )
         except Exception as e:
             logger.error(f"MatchIntro: не завёл переписку {match.name}: {e}")
 

@@ -249,6 +249,9 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- script_*: сценарий знакомства после анкеты (collectors/match_script.py):
 -- шаг, время последнего сообщения бота, отложенный ответ (вид + срок), id
 -- последнего сообщения бота (новее исходящее = пишет владелец), варианты фраз.
+-- card_session / card_message_id: ЕЁ карточка в чате Leo (аккаунт матча + id
+-- сообщения перед уведомлением о матче). Одна запись profiles может склеить
+-- разных девушек с тем же «имя, возраст» — пересылаем именно эту карточку.
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -268,6 +271,8 @@ CREATE TABLE IF NOT EXISTS match_dialogs (
     script_pending TEXT NOT NULL DEFAULT '',
     script_msg_id INTEGER NOT NULL DEFAULT 0,
     script_variant TEXT NOT NULL DEFAULT '',
+    card_session TEXT NOT NULL DEFAULT '',
+    card_message_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -476,10 +481,13 @@ class Database:
         "script_pending": "TEXT NOT NULL DEFAULT ''",
         "script_msg_id": "INTEGER NOT NULL DEFAULT 0",
         "script_variant": "TEXT NOT NULL DEFAULT ''",
+        # Её карточка в чате Leo (аккаунт + id сообщения) на момент матча.
+        "card_session": "TEXT NOT NULL DEFAULT ''",
+        "card_message_id": "INTEGER NOT NULL DEFAULT 0",
     }
 
     async def _ensure_match_dialogs_script_columns(self) -> None:
-        """Добавляет в match_dialogs колонки сценария (идемпотентно)."""
+        """Добавляет в match_dialogs колонки сценария и карточки (идемпотентно)."""
         cols = await self._connection.execute("PRAGMA table_info(match_dialogs)")
         names = {row[1] for row in await cols.fetchall()}
         for col, decl in self._MATCH_SCRIPT_COLUMNS.items():
@@ -1843,7 +1851,7 @@ class Database:
         "username", "name", "profile_id", "status", "replied_at", "due_at",
         "sent_at", "pinned", "error",
         "script_step", "script_at", "script_due_at", "script_pending",
-        "script_msg_id", "script_variant",
+        "script_msg_id", "script_variant", "card_session", "card_message_id",
     })
 
     async def add_match_dialog(
@@ -1855,18 +1863,21 @@ class Database:
         name: str = "",
         profile_id: int | None = None,
         greeted_at: str | None = None,
+        card_session: str = "",
+        card_message_id: int = 0,
     ) -> bool:
         """Заводит переписку (WAITING_REPLY). False — уже была (не трогаем)."""
         try:
             cursor = await self._connection.execute(
                 """INSERT OR IGNORE INTO match_dialogs
                 (account_session, user_id, username, name, profile_id,
-                 status, greeted_at)
-                VALUES (?, ?, ?, ?, ?, 'WAITING_REPLY', ?)""",
+                 status, greeted_at, card_session, card_message_id)
+                VALUES (?, ?, ?, ?, ?, 'WAITING_REPLY', ?, ?, ?)""",
                 (
                     account_session or "", int(user_id), username or "",
                     name or "", profile_id,
                     greeted_at or datetime.now(timezone.utc).isoformat(),
+                    card_session or "", int(card_message_id or 0),
                 ),
             )
             await self._connection.commit()
@@ -2144,10 +2155,26 @@ class Database:
         *,
         use_context: bool = True,
     ) -> int | None:
-        """Анкета девушки, с которой случился взаимный лайк.
+        """Анкета девушки, с которой случился взаимный лайк (см. find_match_card)."""
+        pid, _card = await self.find_match_card(
+            name, chat_id, account_session, use_context=use_context,
+        )
+        return pid
+
+    async def find_match_card(
+        self,
+        name: str,
+        chat_id: int,
+        account_session: str = "",
+        *,
+        use_context: bool = True,
+    ) -> tuple[int | None, int]:
+        """(profile_id, id её карточки в чате Leo аккаунта или 0).
 
         Сначала «текущая» карточка чата аккаунта (MATCH приходит сразу после
-        её анкеты), если имя совпадает; иначе — по имени среди лайкнутых.
+        её анкеты), если имя совпадает — тогда известна и сама карточка.
+        Иначе — по имени среди лайкнутых, карточка неизвестна (0): под одной
+        записью profiles бывают разные девушки с тем же «имя, возраст».
         """
         needle = (name or "").strip().lower()
         if use_context:
@@ -2163,19 +2190,22 @@ class Database:
                     )
                     row = await cursor.fetchone()
                     if row and (row[0] or "").strip().lower() == needle:
-                        return pid
+                        return pid, int(ctx or 0)
             except Exception as e:
                 logger.warning(f"find_match_profile(context): {e}")
-        return await self._resolve_profile_by_name(name)
+        return await self._resolve_profile_by_name(name), 0
 
     async def get_profile_card_message_ids(
         self, profile_id: int, account_session: str, window: int = 10,
+        anchor: int | None = None,
     ) -> list[int]:
-        """telegram_message_id последнего показа анкеты на аккаунте.
+        """telegram_message_id показа анкеты на аккаунте.
 
         Альбом анкеты — подряд идущие id: берём самую свежую карточку с
         текстом (подпись анкеты) и её фото в пределах ``window`` id. Только
         id ЭТОГО аккаунта (у аккаунтов свои пространства id в чате Leo).
+        ``anchor`` — известная карточка (id перед уведомлением о матче):
+        берём только сообщения рядом с ней, а не последний показ профиля.
         """
         cursor = await self._connection.execute(
             """SELECT pm.telegram_message_id,
@@ -2192,8 +2222,9 @@ class Database:
         rows = [(int(r[0]), r[1] or "") for r in await cursor.fetchall()]
         if not rows:
             return []
-        with_text = [mid for mid, text in rows if text.strip()]
-        anchor = with_text[-1] if with_text else rows[-1][0]
+        if anchor is None:
+            with_text = [mid for mid, text in rows if text.strip()]
+            anchor = with_text[-1] if with_text else rows[-1][0]
         ids = sorted({mid for mid, _ in rows if abs(mid - anchor) <= window})
         return ids[:window]
 

@@ -609,6 +609,9 @@ tests/test_match_intro.py::TestMatchDialogDb::test_add_is_idempotent
 tests/test_match_intro.py::TestMatchDialogDb::test_update_and_list
 tests/test_match_intro.py::TestMatchDialogDb::test_card_ids_last_showing_of_account
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_profile_by_context
+tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_returns_card_of_match
+tests/test_match_intro.py::TestMatchDialogDb::test_card_ids_by_anchor_not_last_showing
+tests/test_match_intro.py::TestMatchDialogDb::test_card_columns_saved
 tests/test_match_intro.py::TestMatchIntro::test_enroll_resolves_user_id_by_username
 tests/test_match_intro.py::TestMatchIntro::test_enroll_disabled
 tests/test_match_intro.py::TestMatchIntro::test_reply_schedules_in_30_min
@@ -626,11 +629,14 @@ tests/test_match_intro.py::TestMatchIntro::test_forward_error_marks_error
 tests/test_match_intro.py::TestMatchIntro::test_flood_postpones
 tests/test_match_intro.py::TestMatchIntro::test_card_relayed_from_account_that_saw_it
 tests/test_match_intro.py::TestMatchIntro::test_relay_copies_not_found_is_error
+tests/test_match_intro.py::TestMatchIntro::test_match_card_beats_own_old_showing
+tests/test_match_intro.py::TestMatchIntro::test_match_card_missing_sends_nothing
 tests/test_match_intro.py::TestMatchIntro::test_own_card_preferred_over_other_account
 tests/test_match_intro.py::TestMatchIntro::test_owner_chatting_cancels_intro
 tests/test_match_intro.py::TestMatchIntro::test_only_her_reply_after_greeting_sends
 tests/test_match_intro.py::TestMatchIntro::test_missed_reply_found_in_history
 tests/test_match_intro.py::TestCollectorIntro::test_greeting_sent_enrolls
+tests/test_match_intro.py::TestCollectorIntro::test_redirected_match_card_from_match_account
 tests/test_match_intro.py::TestCollectorIntro::test_greeting_not_sent_does_not_enroll
 tests/test_match_intro.py::TestCollectorIntro::test_private_reply_goes_to_intro
 tests/test_match_intro.py::TestCollectorIntro::test_leo_chat_is_not_a_reply
