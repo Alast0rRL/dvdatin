@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -12,6 +14,30 @@ from models.raw import ParsedProfile
 
 if TYPE_CHECKING:
     from database.database import Database
+
+
+# Порог похожести описаний, при котором карточка считается той же анкетой.
+# Небольшая правка (смайлик, пара слов) — та же девушка; другое описание при
+# тех же «имя, возраст, город» — другая (прод 2026-10-30: №1367 «Мяу, 18»
+# склеил анкеты с подписями 24 / 55 / 140 / 406 символов).
+DESCRIPTION_MATCH_RATIO = 0.7
+
+_NON_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def normalize_description(text: str) -> str:
+    """Описание для сравнения: регистр, пунктуация, эмодзи и пробелы не важны."""
+    return _NON_WORD_RE.sub(" ", (text or "").casefold()).strip()
+
+
+def description_similarity(a: str, b: str) -> float:
+    """Похожесть двух описаний анкеты, 0..1 (оба пустые — 1.0)."""
+    na, nb = normalize_description(a), normalize_description(b)
+    if na == nb:
+        return 1.0
+    if not na or not nb:
+        return 0.0
+    return SequenceMatcher(None, na, nb, autojunk=False).ratio()
 
 
 class ProfileService:
@@ -96,13 +122,16 @@ class ProfileService:
     ) -> Profile:
         """Находит существующий профиль или создаёт новый.
 
-        Стратегия поиска: fingerprint (normalized_name + age + city).
+        fingerprint (имя + возраст + город) даёт кандидатов, а та же анкета —
+        кандидат с похожим описанием (``DESCRIPTION_MATCH_RATIO``). Разные
+        девушки с одинаковым «имя, возраст» получают свои profile_id; при
+        равной похожести берётся самый свежий кандидат.
         """
         fp = compute_fingerprint(
             parsed.name, parsed.age or 0, parsed.normalized_city,
         )
 
-        existing = await self._db.find_profile_by_fingerprint(fp)
+        existing = await self._find_same_profile(fp, parsed.description)
 
         if existing:
             return await self._update_existing(
@@ -110,6 +139,28 @@ class ProfileService:
             )
 
         return await self.create_profile(parsed, account_session=account_session)
+
+    async def _find_same_profile(
+        self, fingerprint: str, description: str,
+    ) -> dict | None:
+        """Кандидат с тем же fingerprint и похожим описанием или None."""
+        candidates = await self._db.find_profiles_by_fingerprint(fingerprint)
+        best: dict | None = None
+        best_ratio = 0.0
+        for row in candidates:  # свежие первыми: при равенстве побеждает свежий
+            ratio = description_similarity(
+                description, row.get("description", "") or "",
+            )
+            if ratio >= DESCRIPTION_MATCH_RATIO and ratio > best_ratio:
+                best, best_ratio = row, ratio
+                if ratio == 1.0:
+                    break
+        if best is None and candidates:
+            logger.info(
+                f"Profile fingerprint shared by {len(candidates)} profile(s), "
+                "description differs — new profile"
+            )
+        return best
 
     async def _update_existing(
         self,

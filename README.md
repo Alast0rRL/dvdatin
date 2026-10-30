@@ -8,7 +8,7 @@
 ## 1. Features
 
 - **RAW-first коллектор** (`collectors/dvinchik_collector.py`): каждое сообщение Telegram сохраняется в SQLite **до любого разбора**. Потеря RAW считается ошибкой. Фоновая обработка (`RawQueue`/`RawWorker`) не блокирует приём событий; после рестарта необработанные RAW доставляются повторно (at-least-once).
-- **Классификация и парсинг анкет** (`dvinchik_parser.py`): PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN; выделение имени/возраста/города/описания; нормализация городов (`city_normalizer.py`); дедупликация по fingerprint (in-memory + `UNIQUE` в БД).
+- **Классификация и парсинг анкет** (`dvinchik_parser.py`): PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN; выделение имени/возраста/города/описания; нормализация городов (`city_normalizer.py`); дедупликация анкет: fingerprint «имя + возраст + город» даёт кандидатов, та же анкета — кандидат с похожим описанием (`ProfileService.upsert_profile`, см. «Дедупликация анкет»).
 - **Multi-account**: несколько Telegram-аккаунтов в `telegram.accounts`, общий pipeline, одно сообщение обрабатывается один раз.
 - **Фильтрация** (`services/filter_engine.py`, `services/filter_service.py`): возраст/город/полнота данных → PASS / REJECT / REVIEW; правила из `config.yaml` (`filters:`), история в `filter_results`.
 - **Детерминированный скоринг (Stage 8)**: `Profile.text` → `profile_normalizer` → `feature_extractor` (правила H01–H09 / P01–P04; персональная калибровка в `config/preferences.yaml`) → `score_engine` → `decision_service` → **LIKE / REVIEW / DISLIKE**. Без LLM/CLIP/сети: один и тот же текст всегда даёт один и тот же результат. `DecisionService.evaluate()` считается для **всех** результатов фильтра. Хард-негатив H01 («Не ищет отношения») срабатывает только на однозначные формулировки («ищу друга», «не ищу отношения», «просто ищу общение») — «можно пообщаться/погулять» это обычная открытость, а не отказ от отношений. Решение на основе **информативности** (`informative + clean → LIKE`): достаточно значимых слов (≥10) ИЛИ найден позитивный признак; черновые/короткие, но чистые анкеты → REVIEW. `like_threshold`/`review_threshold` остались в конфиге, но для решения инертны.
@@ -45,7 +45,7 @@ Telegram (RAW)
    → PROFILE-карточка: note_card (гейт «реакция в свою карточку»),
         стоп на карточке взаимного лайка, фоновый CLIP-расчёт фото (_schedule_photo_shadow)
    → classify: PROFILE / MEDIA_ONLY / MATCH / SERVICE / UNKNOWN
-   → PROFILE → upsert_profile (fingerprint-дедуп)
+   → PROFILE → upsert_profile (fingerprint + похожесть описания)
    → FilterService.evaluate(profile) → PASS / REJECT / REVIEW
    → DecisionService.evaluate(profile, filter_result)   # ДЛЯ ВСЕХ результатов
         профиль → profile_normalizer → feature_extractor
@@ -126,7 +126,7 @@ dvdatin/
 | Таблица | Назначение |
 |---|---|
 | `raw_messages` | Сырые сообщения чата (append-only; включает `raw_entities`, `reply_markup`, `is_outgoing`, `account_session` — аккаунт-получатель); UNIQUE `(account_session, chat_id, telegram_message_id, is_outgoing)` |
-| `profiles` | Профили (name/age/city/description/fingerprint/status…) |
+| `profiles` | Профили (name/age/city/description/fingerprint/status…). `fingerprint` = sha256(имя \| возраст \| город) — **не уникален**: под ним бывает несколько девушек, `description` — последнее описание анкеты (по нему повторный показ находит свою запись) |
 | `profile_messages` | Связь профиль ↔ сообщения (в т.ч. MEDIA_ONLY); `account_session` — аккаунт-получатель (для скачивания фото тем клиентом, кто реально видел сообщение) |
 | `chat_context` | Контекст «последняя анкета» СТРОГО на аккаунт (`PRIMARY KEY (account_session, chat_id)`): у аккаунтов свой чат с Leo в одном `chat_id` |
 | `filter_results` | История фильтрации (PASS/REJECT/REVIEW) |
@@ -427,6 +427,12 @@ URL-ы: `/login` → **`/`** — единственный экран прило�
 
 - `ai_scores` (CLIP/LLM-скоры): больше не создаётся; существующая таблица в старых БД не удаляется (идемпотентная схема), но не пишется скорингом.
 - `ai_decisions.scoring_version="v1"` в исторических записях старых БД — новые решения пишут `deterministic-v2`.
+
+### Дедупликация анкет
+
+`ProfileService.upsert_profile`: `Database.find_profiles_by_fingerprint` отдаёт все записи с тем же «имя, возраст, город» (свежие первыми), повторный показ — та из них, чьё описание похоже на новое: `description_similarity` (регистр, пунктуация, эмодзи и пробелы не важны; `difflib.SequenceMatcher`) ≥ `DESCRIPTION_MATCH_RATIO` = 0.7. Небольшая правка подписи (смайлик, пара слов) — та же анкета, описание обновляется; другое описание — новый `profile_id`. Пустое описание совпадает только с пустым. Карточки без шапки «имя, возраст» (fingerprint `|0|`) тоже разделяются по тексту.
+
+Причина (прод 2026-10-30): дедуп шёл только по fingerprint, и №1367 «Мяу, 18» склеил разных девушек (подписи 24 / 55 / 140 / 406 символов, «Санкт-Петербург» и «Питер», аккаунты dvai и dvai_2) — портились статистика, обучение фото-модели и журнал, а автопереписка переслала девушке чужую анкету (последнее исправлено в faa4401 пересылкой карточки матча). **Старые склеенные записи не разделялись** — они остаются как есть; новый показ девушки, чьё описание записано в склеенной записи последним, возвращается в неё, остальные получают свои id. Ограничения: две девушки с одинаковыми «имя, возраст, город» и пустым/почти одинаковым описанием всё ещё склеятся (фото при дедупе не сравниваются — они качаются позже, в фоне); девушка, полностью переписавшая описание, получит новый id.
 
 ### Известные ограничения / замечания
 

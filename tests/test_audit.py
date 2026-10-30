@@ -164,16 +164,22 @@ class TestAudit4Upsert:
 
 class TestAudit5Description:
     def test_upsert_updates_description(self, svc: ProfileService) -> None:
+        """Небольшая правка описания — та же анкета, описание обновляется.
+
+        Совсем другое описание при тех же «имя, возраст, город» — другая
+        девушка (см. test_profile.py::TestDedupByDescription).
+        """
         loop = asyncio.get_event_loop()
         prof = loop.run_until_complete(
-            svc.upsert_profile(p(desc="Старое", msg_id=100))
+            svc.upsert_profile(p(desc="Люблю котиков и кофе", msg_id=100))
         )
-        loop.run_until_complete(
-            svc.upsert_profile(p(desc="Новое описание", msg_id=101))
+        prof2 = loop.run_until_complete(
+            svc.upsert_profile(p(desc="Люблю котиков и кофе ☕️", msg_id=101))
         )
+        assert prof2.id == prof.id
         fetched = loop.run_until_complete(svc.get_profile(prof.id))
         assert fetched is not None
-        assert fetched.description == "Новое описание"
+        assert fetched.description == "Люблю котиков и кофе ☕️"
 
     def test_raw_message_preserved(self, db: Database, svc: ProfileService) -> None:
         """RAW messages не удаляются при обновлении description."""

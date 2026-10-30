@@ -1282,16 +1282,19 @@ class Database:
             return None
         return int(row[0])
 
-    async def find_profile_by_fingerprint(self, fingerprint: str) -> dict | None:
-        """Ищет профиль по fingerprint."""
+    async def find_profiles_by_fingerprint(self, fingerprint: str) -> list[dict]:
+        """Все профили с этим fingerprint, свежие первыми.
+
+        fingerprint (имя + возраст + город) — лишь ключ кандидатов: под ним
+        бывают разные девушки, выбирает ``ProfileService`` по описанию.
+        """
         cursor = await self._connection.execute(
-            "SELECT * FROM profiles WHERE fingerprint = ?",
+            "SELECT * FROM profiles WHERE fingerprint = ? "
+            "ORDER BY last_seen_at DESC, id DESC",
             (fingerprint,),
         )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return self._row_to_dict(cursor, row)
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
 
     async def update_profile_last_seen(self, profile_id: int, last_seen_at: str) -> None:
         """Обновляет last_seen_at и переводит статус в SEEN."""

@@ -877,6 +877,12 @@ tests/test_profile.py::TestMediaOnlyNoProfile::test_media_only_no_self_profile
 tests/test_profile.py::TestRawFirst::test_raw_exists_before_profile
 tests/test_profile.py::TestTransactionRollback::test_atomic_create_and_link
 tests/test_profile.py::TestBackwardCompatibility::test_raw_messages_table_intact
+tests/test_profile.py::TestDedupByDescription::test_different_descriptions_get_own_ids
+tests/test_profile.py::TestDedupByDescription::test_repeat_showing_rejoins_own_profile
+tests/test_profile.py::TestDedupByDescription::test_small_edit_keeps_profile
+tests/test_profile.py::TestDedupByDescription::test_empty_vs_text_is_different
+tests/test_profile.py::TestDedupByDescription::test_unparsed_cards_not_glued
+tests/test_profile.py::TestDedupByDescription::test_similarity_normalizes_case_and_emoji
 tests/test_web.py::TestLogin::test_login_page_renders
 tests/test_web.py::TestLogin::test_login_success
 tests/test_web.py::TestLogin::test_login_wrong_password

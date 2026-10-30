@@ -155,6 +155,99 @@ class TestDescriptionUpdate:
         assert fetched.description == "Новое"
 
 
+class TestDedupByDescription:
+    """Одинаковые «имя, возраст, город» — разные девушки, если описания разные.
+
+    Прод 2026-10-30: №1367 «Мяу, 18» склеил анкеты с подписями 24 / 55 / 140 /
+    406 символов (города «Санкт-Петербург» и «Питер»), и девушке ушла чужая
+    анкета. fingerprint — ключ кандидатов, ту же анкету выбирает описание.
+    """
+
+    MEOWS = [
+        "люблю котиков",
+        "Ищу друзей для прогулок по центру, инст meow.18",
+        "Учусь в СПбГУ на филфаке, по вечерам рисую и хожу на концерты. "
+        "Если тоже любишь инди-рок — пиши!",
+        "Просто ищу общение, без пошлостей 🙏",
+    ]
+
+    def _meow(self, desc: str, msg_id: int, raw_city: str = "Питер") -> ParsedProfile:
+        return make_parsed(
+            name="Мяу", age=18, raw_city=raw_city,
+            normalized_city="Санкт-Петербург",
+            description=desc, source_message_id=msg_id,
+        )
+
+    def test_different_descriptions_get_own_ids(self, service: ProfileService) -> None:
+        loop = asyncio.get_event_loop()
+        ids = [
+            loop.run_until_complete(service.upsert_profile(
+                self._meow(d, 100 + i, raw_city="Санкт-Петербург" if i % 2 else "Питер"),
+                account_session="dvai" if i % 2 else "dvai_2",
+            )).id
+            for i, d in enumerate(self.MEOWS)
+        ]
+        assert len(set(ids)) == len(self.MEOWS)
+
+    def test_repeat_showing_rejoins_own_profile(self, service: ProfileService) -> None:
+        """Повторный показ возвращается к своей записи, а не к последней."""
+        loop = asyncio.get_event_loop()
+        first = [
+            loop.run_until_complete(
+                service.upsert_profile(self._meow(d, 100 + i))
+            )
+            for i, d in enumerate(self.MEOWS)
+        ]
+        again = [
+            loop.run_until_complete(
+                service.upsert_profile(self._meow(d, 200 + i))
+            )
+            for i, d in enumerate(self.MEOWS)
+        ]
+        assert [p.id for p in again] == [p.id for p in first]
+        assert all(p.status == "SEEN" for p in again)
+        for p, d in zip(first, self.MEOWS):
+            fetched = loop.run_until_complete(service.get_profile(p.id))
+            assert fetched is not None
+            assert fetched.description == d
+            assert fetched.message_count == 2
+
+    def test_small_edit_keeps_profile(self, service: ProfileService) -> None:
+        loop = asyncio.get_event_loop()
+        p1 = loop.run_until_complete(service.upsert_profile(
+            self._meow("люблю котиков и аниме", 100)))
+        p2 = loop.run_until_complete(service.upsert_profile(
+            self._meow("Люблю котиков, аниме и музыку!", 101)))
+        assert p2.id == p1.id
+
+    def test_empty_vs_text_is_different(self, service: ProfileService) -> None:
+        loop = asyncio.get_event_loop()
+        p1 = loop.run_until_complete(service.upsert_profile(self._meow("", 100)))
+        p2 = loop.run_until_complete(service.upsert_profile(
+            self._meow("Ищу друзей для прогулок", 101)))
+        p3 = loop.run_until_complete(service.upsert_profile(self._meow("", 102)))
+        assert p2.id != p1.id
+        assert p3.id == p1.id
+
+    def test_unparsed_cards_not_glued(self, service: ProfileService) -> None:
+        """Карточки без «имя, возраст» (fingerprint «|0|») не сливаются в одну."""
+        loop = asyncio.get_event_loop()
+        p1 = loop.run_until_complete(service.upsert_profile(make_parsed(
+            name="", age=0, raw_city="", normalized_city="",
+            description="какой-то текст без шапки", source_message_id=100)))
+        p2 = loop.run_until_complete(service.upsert_profile(make_parsed(
+            name="", age=0, raw_city="", normalized_city="",
+            description="совсем другая анкета, другой человек", source_message_id=101)))
+        assert p1.id != p2.id
+
+    def test_similarity_normalizes_case_and_emoji(self) -> None:
+        from services.profile_service import description_similarity
+        assert description_similarity("Привет!!", "привет 🐱") == 1.0
+        assert description_similarity("", "") == 1.0
+        assert description_similarity("", "текст") == 0.0
+        assert description_similarity(self.MEOWS[0], self.MEOWS[3]) < 0.7
+
+
 # ── 6. Изменение raw_city ────────────────────────────────────────────
 
 class TestRawCityUpdate:
