@@ -162,6 +162,8 @@ def due_row(**kw: object) -> dict:
         "user_id": 77, "username": "rosa", "name": "Роза", "profile_id": 3,
         "status": SCHEDULED, "greeted_at": NOW,
         "due_at": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        # Карточка матча — в ленте пишущего аккаунта.
+        "card_session": "dvai_2", "card_message_id": 12,
     }
     row.update(kw)
     return row
@@ -313,7 +315,7 @@ class TestMatchIntro:
             {"id": 8, "message": "", "fwd_from": fwd},
             {"id": 7, "message": "старая чужая", "fwd_from": fwd},
         ])
-        status = run(intro.send_intro(dst, "dvai_2", due_row()))
+        status = run(intro.send_intro(dst, "dvai_2", due_row(card_session="dvai")))
         assert status == INTRO_SENT
         sargs = src.forward_messages.await_args
         assert sargs.args[1] == [11, 12] and sargs.kwargs["from_peer"] == LEO
@@ -328,7 +330,7 @@ class TestMatchIntro:
 
     def test_relay_copies_not_found_is_error(self) -> None:
         db, src, dst, intro = self._relay_setup([])
-        status = run(intro.send_intro(dst, "dvai_2", due_row()))
+        status = run(intro.send_intro(dst, "dvai_2", due_row(card_session="dvai")))
         assert status == ERROR
         dst.forward_messages.assert_not_called()
         assert "relay" in db.update_match_dialog.await_args.kwargs["error"]
@@ -365,7 +367,7 @@ class TestMatchIntro:
         assert run(make_intro(db).send_intro(client, "dvai_2", row)) == NO_PROFILE
         client.forward_messages.assert_not_called()
 
-    def test_own_card_preferred_over_other_account(self) -> None:
+    def test_own_card_sent_from_leo_chat(self) -> None:
         db = make_db()
         src = make_client()
         intro = make_intro(db)
@@ -374,6 +376,18 @@ class TestMatchIntro:
         assert run(intro.send_intro(client, "dvai_2", due_row())) == INTRO_SENT
         src.forward_messages.assert_not_called()
         assert client.forward_messages.await_args.kwargs["from_peer"] == LEO
+
+    def test_unknown_card_sends_nothing(self) -> None:
+        """Прод 2026-10-30 (@nrvmux): карточка матча неизвестна — «по имени /
+        последнему показу» не ищем (там чужие девушки), анкету не шлём."""
+        db = make_db()  # «последний показ» нашёлся бы — [11, 12]
+        intro = make_intro(db)
+        client = make_client()
+        intro.clients = {"dvai": make_client(), "dvai_2": client}
+        row = due_row(card_session="", card_message_id=0)
+        assert run(intro.send_intro(client, "dvai_2", row)) == NO_PROFILE
+        db.get_profile_card_message_ids.assert_not_called()
+        client.forward_messages.assert_not_called()
 
     @staticmethod
     def _chat(*msgs: tuple[bool, str]) -> MagicMock:
@@ -501,3 +515,15 @@ class TestCollectorIntro:
         run(collector.run_match_intros())
         text = collector._auto_engine.notify_owner.await_args.args[0]
         assert "Роза" in text and "анкету" in text and "закрепил" in text
+
+    def test_run_notifies_owner_when_card_missing(self) -> None:
+        """Анкету не нашли — владелец узнаёт, что ей надо ответить самому."""
+        collector, _, _ = self._collector()
+        collector._match_script.start = AsyncMock()
+        collector._match_intro.process = AsyncMock(
+            side_effect=[[], [(due_row(), NO_PROFILE)]]
+        )
+        run(collector.run_match_intros())
+        text = collector._auto_engine.notify_owner.await_args.args[0]
+        assert "@rosa" in text and "Напиши ей сам" in text
+        collector._match_script.start.assert_not_called()

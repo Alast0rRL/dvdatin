@@ -631,7 +631,8 @@ tests/test_match_intro.py::TestMatchIntro::test_card_relayed_from_account_that_s
 tests/test_match_intro.py::TestMatchIntro::test_relay_copies_not_found_is_error
 tests/test_match_intro.py::TestMatchIntro::test_match_card_beats_own_old_showing
 tests/test_match_intro.py::TestMatchIntro::test_match_card_missing_sends_nothing
-tests/test_match_intro.py::TestMatchIntro::test_own_card_preferred_over_other_account
+tests/test_match_intro.py::TestMatchIntro::test_own_card_sent_from_leo_chat
+tests/test_match_intro.py::TestMatchIntro::test_unknown_card_sends_nothing
 tests/test_match_intro.py::TestMatchIntro::test_owner_chatting_cancels_intro
 tests/test_match_intro.py::TestMatchIntro::test_only_her_reply_after_greeting_sends
 tests/test_match_intro.py::TestMatchIntro::test_missed_reply_found_in_history
@@ -641,6 +642,7 @@ tests/test_match_intro.py::TestCollectorIntro::test_greeting_not_sent_does_not_e
 tests/test_match_intro.py::TestCollectorIntro::test_private_reply_goes_to_intro
 tests/test_match_intro.py::TestCollectorIntro::test_leo_chat_is_not_a_reply
 tests/test_match_intro.py::TestCollectorIntro::test_run_notifies_owner_on_sent
+tests/test_match_intro.py::TestCollectorIntro::test_run_notifies_owner_when_card_missing
 tests/test_match_script.py::TestClassify::test_kinds[\u0427\u0442\u043e \u044d\u0442\u043e?-asks_what]
 tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u0442\u044b \u043c\u043d\u0435 \u043c\u043e\u044e \u0430\u043d\u043a\u0435\u0442\u0443 \u0441\u043a\u0438\u043d\u0443\u043b-asks_what]
 tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u043d\u0430\u0445\u0440\u0435\u043d\u0430-asks_what]
@@ -863,6 +865,12 @@ tests/test_profile.py::TestUpsert::test_upsert_creates_new
 tests/test_profile.py::TestUpsert::test_upsert_updates_existing
 tests/test_profile.py::TestRepeatDiscovery::test_same_profile_different_messages
 tests/test_profile.py::TestDescriptionUpdate::test_description_updates
+tests/test_profile.py::TestDedupByDescription::test_different_descriptions_get_own_ids
+tests/test_profile.py::TestDedupByDescription::test_repeat_showing_rejoins_own_profile
+tests/test_profile.py::TestDedupByDescription::test_small_edit_keeps_profile
+tests/test_profile.py::TestDedupByDescription::test_empty_vs_text_is_different
+tests/test_profile.py::TestDedupByDescription::test_unparsed_cards_not_glued
+tests/test_profile.py::TestDedupByDescription::test_similarity_normalizes_case_and_emoji
 tests/test_profile.py::TestRawCityUpdate::test_raw_city_updates
 tests/test_profile.py::TestFingerprint::test_same_input_same_fingerprint
 tests/test_profile.py::TestFingerprint::test_different_name_different_fingerprint
@@ -877,12 +885,6 @@ tests/test_profile.py::TestMediaOnlyNoProfile::test_media_only_no_self_profile
 tests/test_profile.py::TestRawFirst::test_raw_exists_before_profile
 tests/test_profile.py::TestTransactionRollback::test_atomic_create_and_link
 tests/test_profile.py::TestBackwardCompatibility::test_raw_messages_table_intact
-tests/test_profile.py::TestDedupByDescription::test_different_descriptions_get_own_ids
-tests/test_profile.py::TestDedupByDescription::test_repeat_showing_rejoins_own_profile
-tests/test_profile.py::TestDedupByDescription::test_small_edit_keeps_profile
-tests/test_profile.py::TestDedupByDescription::test_empty_vs_text_is_different
-tests/test_profile.py::TestDedupByDescription::test_unparsed_cards_not_glued
-tests/test_profile.py::TestDedupByDescription::test_similarity_normalizes_case_and_emoji
 tests/test_web.py::TestLogin::test_login_page_renders
 tests/test_web.py::TestLogin::test_login_success
 tests/test_web.py::TestLogin::test_login_wrong_password

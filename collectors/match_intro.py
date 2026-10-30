@@ -355,37 +355,23 @@ class MatchIntro:
         2026-10-30: @Miamikii получила анкету другой «Мяу, 18»). Карточка
         не нашлась — не шлём ничего.
 
-        Карточка неизвестна (старые строки, дозапись после спам-блока) —
-        последний показ: сначала свой аккаунт, нет — другой вошедший.
+        Карточка неизвестна (старые строки, дозапись после спам-блока, имя
+        не совпало с карточкой перед матчем) — тоже ничего: поиск «по имени /
+        последнему показу» слал чужих (прод 2026-10-30, @nrvmux).
         """
         profile_id = row.get("profile_id")
-        if profile_id is None or self._db is None:
-            return account_session, []
         card_session = row.get("card_session") or ""
         card_id = int(row.get("card_message_id") or 0)
-        if card_id and card_session:
-            try:
-                ids = await self._db.get_profile_card_message_ids(
-                    int(profile_id), card_session, anchor=card_id,
-                )
-            except Exception as e:
-                logger.error(f"MatchIntro: не получил сообщения анкеты: {e}")
-                ids = []
-            return card_session, ids
-        sessions = [account_session] + [
-            s for s in self.clients if s and s != account_session
-        ]
-        for session in sessions:
-            try:
-                ids = await self._db.get_profile_card_message_ids(
-                    int(profile_id), session,
-                )
-            except Exception as e:
-                logger.error(f"MatchIntro: не получил сообщения анкеты: {e}")
-                continue
-            if ids:
-                return session, ids
-        return account_session, []
+        if profile_id is None or self._db is None or not (card_id and card_session):
+            return account_session, []
+        try:
+            ids = await self._db.get_profile_card_message_ids(
+                int(profile_id), card_session, anchor=card_id,
+            )
+        except Exception as e:
+            logger.error(f"MatchIntro: не получил сообщения анкеты: {e}")
+            ids = []
+        return card_session, ids
 
     async def _relay_card(
         self, client: Any, source: str, ids: list[int],

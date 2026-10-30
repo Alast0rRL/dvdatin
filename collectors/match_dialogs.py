@@ -9,7 +9,7 @@ from datetime import datetime
 from loguru import logger
 from telethon import events
 
-from collectors.match_intro import INTRO_SENT
+from collectors.match_intro import INTRO_SENT, NO_PROFILE
 from services.match_script_rules import (
     ASKS_BOT,
     DELETED,
@@ -170,14 +170,22 @@ class MatchDialogsMixin:
                 logger.error(f"MatchIntro: проход {session}: {e}")
                 return
             for row, status in results:
+                who = (
+                    f"@{row['username']}" if row.get("username")
+                    else f"id {row.get('user_id')}"
+                )
+                if status == NO_PROFILE:
+                    # Её карточку матча не нашли — чужую не шлём, пишет владелец.
+                    await self._auto_engine.notify_owner(
+                        f"💬 {row.get('name') or who} ({who}) ответила на привет "
+                        f"на {session or 'аккаунте'} — её анкету не нашёл, "
+                        "не слал. Напиши ей сам."
+                    )
+                    continue
                 if status != INTRO_SENT:
                     continue
                 await self._match_script.start(
                     session, int(row["user_id"]), row.get("sent_msg_id"),
-                )
-                who = (
-                    f"@{row['username']}" if row.get("username")
-                    else f"id {row.get('user_id')}"
                 )
                 pin = " и закрепил 📌" if row.get("pinned") else ""
                 await self._auto_engine.notify_owner(
