@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'NEW',
+    audience TEXT NOT NULL DEFAULT '',
     UNIQUE(source_chat_id, source_message_id)
 );
 
@@ -463,6 +464,9 @@ class Database:
         # качаются ТЕМ аккаунтом, который реально видел сообщение (message_id в
         # диалоге с Leo у каждого аккаунта своя нумерация).
         await self._ensure_profile_messages_account_session()
+        # Режим «кенты»: анкеты парней-друзей помечаются audience='friends'
+        # (не идут в /rate, фото-модель и дедуп с девушками).
+        await self._ensure_profiles_audience_column()
         # Контекст чата — СТРОГО на аккаунт: у аккаунтов свой чат с Leo в ОДНОМ
         # chat_id (свои диапазоны message id), общий контекст связывал MEDIA_ONLY
         # с карточкой другого аккаунта.
@@ -834,6 +838,18 @@ class Database:
             logger.warning(f"like_outcomes backfill (manual): {e}")
         await self._connection.commit()
 
+    async def _ensure_profiles_audience_column(self) -> None:
+        """Добавляет profiles.audience (старые БД): '' — девушки, 'friends' — кенты."""
+        cols = await self._connection.execute("PRAGMA table_info(profiles)")
+        names = {row[1] for row in await cols.fetchall()}
+        if "audience" not in names:
+            await self._connection.execute(
+                "ALTER TABLE profiles "
+                "ADD COLUMN audience TEXT NOT NULL DEFAULT ''"
+            )
+            await self._connection.commit()
+            logger.info("Миграция: profiles.audience добавлен")
+
     async def _ensure_profile_messages_account_session(self) -> None:
         """Добавляет колонку account_session в profile_messages (старые БД).
 
@@ -1185,8 +1201,11 @@ class Database:
         first_seen_at: str,
         last_seen_at: str,
         status: str,
+        audience: str = "",
     ) -> int:
         """Вставляет новый профиль.
+
+        ``audience`` — '' (девушки) или 'friends' (режим «кенты»).
 
         Returns:
             ID записи.
@@ -1195,12 +1214,12 @@ class Database:
             """INSERT INTO profiles
             (name, age, raw_city, normalized_city, description,
              fingerprint, source_chat_id, source_message_id,
-             first_seen_at, last_seen_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             first_seen_at, last_seen_at, status, audience)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name, age, raw_city, normalized_city, description,
                 fingerprint, source_chat_id, source_message_id,
-                first_seen_at, last_seen_at, status,
+                first_seen_at, last_seen_at, status, audience or "",
             ),
         )
         await self._connection.commit()
@@ -1282,16 +1301,20 @@ class Database:
             return None
         return int(row[0])
 
-    async def find_profiles_by_fingerprint(self, fingerprint: str) -> list[dict]:
-        """Все профили с этим fingerprint, свежие первыми.
+    async def find_profiles_by_fingerprint(
+        self, fingerprint: str, audience: str = "",
+    ) -> list[dict]:
+        """Профили с этим fingerprint и той же аудиторией, свежие первыми.
 
         fingerprint (имя + возраст + город) — лишь ключ кандидатов: под ним
         бывают разные девушки, выбирает ``ProfileService`` по описанию.
+        Аудитории ('' девушки / 'friends' кенты) не смешиваются: парень
+        «Саша, 20» не склеится с девушкой «Саша, 20».
         """
         cursor = await self._connection.execute(
-            "SELECT * FROM profiles WHERE fingerprint = ? "
+            "SELECT * FROM profiles WHERE fingerprint = ? AND audience = ? "
             "ORDER BY last_seen_at DESC, id DESC",
-            (fingerprint,),
+            (fingerprint, audience or ""),
         )
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
@@ -1819,6 +1842,10 @@ class Database:
                     AND rm.telegram_message_id = pm.telegram_message_id
                     AND rm.is_outgoing = 0
                     AND rm.media_type = 'photo'
+              )
+              AND NOT EXISTS (  -- анкеты кентов (режим «кенты») не для модели вкуса
+                  SELECT 1 FROM profiles pf
+                  WHERE pf.id = pm.profile_id AND pf.audience = 'friends'
               )
         """
         rated_missing = """(SELECT r.profile_id FROM photo_item_ratings r

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -23,7 +22,7 @@ from core.types import Mode
 from models.action import ActionPolicy
 from models.decision import AIDecision
 from services.action_policy import ActionPolicyResolver
-from services.reason_labels import describe_reasons, evidence_in_card
+from services.reason_labels import describe_reasons
 
 if TYPE_CHECKING:
     from telethon import TelegramClient
@@ -109,8 +108,12 @@ class AutoActionEngine:
         notify_client: TelegramClient | None = None,
         db: Database | None = None,
         account_session: str | None = None,
+        like_texts: list[str] | None = None,
     ) -> None:
         self._client = client
+        # Свой пул текстов 💌 (режим «кенты»: «Здарова! Го знакомиться»);
+        # None — общий ``like_message.text`` («Берем)»).
+        self._like_texts = list(like_texts) if like_texts else None
         self._config = config
         self._mode = mode
         self._chat_id = chat_id
@@ -788,7 +791,7 @@ class AutoActionEngine:
         ``LikeMessageConfig.text`` нормализуется к списку строк; берём
         случайный вариант — чтобы лайки не выглядели одинаково.
         """
-        texts = self._config.like_message.text
+        texts = self._like_texts or self._config.like_message.text
         if isinstance(texts, str):
             return texts
         if not texts:
@@ -1254,17 +1257,3 @@ class AutoActionEngine:
         ]
         return "\n".join(lines)
 
-    @staticmethod
-    def _evidence_in_card(evidence: str, card_text: str | None) -> bool:
-        """Проверяет, что текст-свидетель реально присутствует в карточке.
-
-        Если ``card_text`` не передан — считаем, что цитату показывать можно
-        (обратная совместимость: раньше evidence всегда цитировался).
-
-        Иначе вырезаем из карточки шапку «Имя, Возраст, Город» (по разделителю
-        ``–``/``—``) и смотрим, что осталось — описание. Цитируем только если
-        описание карточки пересекается с evidence (нормализованно). Это чинит
-        случай повторного показа усечённой карточки (только заголовок, без
-        описания): тогда evidence из старого полного описания цитировать нельзя.
-        """
-        return evidence_in_card(evidence, card_text)

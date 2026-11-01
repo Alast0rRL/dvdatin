@@ -48,8 +48,9 @@ class ProfileService:
 
     async def create_profile(
         self, parsed: ParsedProfile, account_session: str = '',
+        audience: str = '',
     ) -> Profile:
-        """Создаёт новый профиль из ParsedProfile."""
+        """Создаёт новый профиль (``audience``: '' девушки / 'friends' кенты)."""
         now = datetime.now(timezone.utc).isoformat()
         fp = compute_fingerprint(
             parsed.name, parsed.age or 0, parsed.normalized_city,
@@ -67,6 +68,7 @@ class ProfileService:
             first_seen_at=now,
             last_seen_at=now,
             status=ProfileStatus.NEW,
+            audience=audience,
         )
 
         await self._db.link_profile_message(
@@ -92,6 +94,7 @@ class ProfileService:
             first_seen_at=now,
             last_seen_at=now,
             status=ProfileStatus.NEW,
+            audience=audience,
         )
 
     async def get_profile(self, profile_id: int) -> Profile | None:
@@ -119,6 +122,7 @@ class ProfileService:
 
     async def upsert_profile(
         self, parsed: ParsedProfile, account_session: str = '',
+        audience: str = '',
     ) -> Profile:
         """Находит существующий профиль или создаёт новый.
 
@@ -131,20 +135,26 @@ class ProfileService:
             parsed.name, parsed.age or 0, parsed.normalized_city,
         )
 
-        existing = await self._find_same_profile(fp, parsed.description)
+        existing = await self._find_same_profile(
+            fp, parsed.description, audience,
+        )
 
         if existing:
             return await self._update_existing(
                 existing, parsed, fp, account_session=account_session,
             )
 
-        return await self.create_profile(parsed, account_session=account_session)
+        return await self.create_profile(
+            parsed, account_session=account_session, audience=audience,
+        )
 
     async def _find_same_profile(
-        self, fingerprint: str, description: str,
+        self, fingerprint: str, description: str, audience: str = '',
     ) -> dict | None:
-        """Кандидат с тем же fingerprint и похожим описанием или None."""
-        candidates = await self._db.find_profiles_by_fingerprint(fingerprint)
+        """Кандидат с тем же fingerprint, аудиторией и похожим описанием."""
+        candidates = await self._db.find_profiles_by_fingerprint(
+            fingerprint, audience,
+        )
         best: dict | None = None
         best_ratio = 0.0
         for row in candidates:  # свежие первыми: при равенстве побеждает свежий
@@ -241,5 +251,6 @@ class ProfileService:
             first_seen_at=row.get("first_seen_at", ""),
             last_seen_at=row.get("last_seen_at", ""),
             status=row.get("status", "NEW"),
+            audience=row.get("audience", "") or "",
             message_count=msg_count,
         )

@@ -69,6 +69,8 @@ from collectors.leo_markers import (
     _CURRENT_SESSION,
 )
 
+from app.config import FriendsConfig
+
 if TYPE_CHECKING:
     from telethon import TelegramClient
 
@@ -152,6 +154,8 @@ class DvinchikCollector(
         client_sessions: list[str] | None = None,
         photo_vice: object | None = None,
         photo_shadow: object | None = None,
+        friends_filter_service: FilterService | None = None,
+        friends_decision_service: object | None = None,
     ) -> None:
         # Несколько аккаунтов: один pipeline (dedup/worker/БД) общий, хендлеры
         # регистрируются на каждом клиенте. Один и тот же message из одного
@@ -229,6 +233,10 @@ class DvinchikCollector(
         self._profile_service = profile_service
         self._filter_service = filter_service
         self._decision_service = decision_service
+        # Режим «кенты» (config.friends): у аккаунта-кентов свои фильтр и
+        # правила (парни-друзья), без фото-модели и «девичьих» признаков.
+        self._friends_filter_service = friends_filter_service
+        self._friends_decision_service = friends_decision_service
         # Stage 8: запись ручных решений владельца по REVIEW-анкетам.
         self._manual_review = manual_review
         # Проверка фото на сигарету/алкоголь (services/photo_vice.py) —
@@ -268,6 +276,20 @@ class DvinchikCollector(
         # Если worker не задан (тесты/отладка) — обработка идёт синхронно в
         # хендлере (fallback). В проде всегда привязан worker.
         self._worker = worker
+
+    def _is_friends_session(self, session: str | None) -> bool:
+        """Аккаунт в режиме «кенты» (``config.friends``)."""
+        friends_cfg = getattr(self._config, "friends", None)
+        # isinstance: в тестах config бывает MagicMock — он не «кенты».
+        return isinstance(friends_cfg, FriendsConfig) and friends_cfg.is_friends(
+            session
+        )
+
+    def _services_for(self, friends: bool) -> tuple[object | None, object | None]:
+        """Фильтр и сервис решений: свои у «кентов», общие у девушек."""
+        if friends and self._friends_filter_service is not None:
+            return self._friends_filter_service, self._friends_decision_service
+        return self._filter_service, self._decision_service
 
     def attach_worker(self, worker: DvinchikRawWorker) -> None:
         """Привязывает worker; хендлер начинает только ставить в очередь."""
@@ -560,423 +582,65 @@ class DvinchikCollector(
     PHOTO_SHADOW_WAIT_SEC = 15.0
 
     async def _process_message(self, task: RawTask) -> None:
-        """Выполняет pipeline: parse → filter → AI → decision.
+        """Выполняет pipeline: parse → filter → решение → действие.
 
         Вызывается worker'ом (в проде) или напрямую из хендлера (fallback).
         RAW к этому моменту уже сохранён — ошибки pipeline не теряют сырьё.
+        Каждый тип сообщения разбирает свой шаг ``_on_*``.
         """
         # Обработка — от имени аккаунта-получателя (его движок и режим).
-        _CURRENT_SESSION.set(
-            task.account_session
-            or self._session_for_client(getattr(task.msg, "client", None))
-            or None
-        )
-        chat_id = task.chat_id
-        msg = task.msg
-        text = task.text
-        media_type = task.media_type
-        sender_id = task.sender_id
-        sender_username = task.sender_username
-        sender_name = task.sender_name
-        msg_date = task.msg_date
-
+        _CURRENT_SESSION.set(self._task_session(task) or None)
         logger.info(
-            f"New Telegram message: chat_id={chat_id}, "
-            f"sender_id={sender_id}, message_id={task.message_id}, "
-            f"media={media_type}"
+            f"New Telegram message: chat_id={task.chat_id}, "
+            f"sender_id={task.sender_id}, message_id={task.message_id}, "
+            f"media={task.media_type}"
         )
 
-        # === Парсер работает после сохранения ===
         success = False
         try:
-            has_media = media_type != ""
-            msg_type = self._parser.classify(text, has_media=has_media)
-
-            # Stage 8.5.1: Leo отклонил лайк из-за дневного лимита
-            # («Слишком много ❤️ за сегодня. Перейди на Premium…»). Такой лайк
-            # не дошёл — помечаем последний лайк чата rejected, чтобы он не
-            # портил конверсию (вечный responded=0). Само сообщение трактуем
-            # как SERVICE, чтобы не давать ложный «Unknown message format».
-            if (
-                msg_type not in (MessageType.PROFILE, MessageType.MEDIA_ONLY)
-                and chat_id == self._dvinchik_chat_id
-            ):
-                try:
-                    if self._parser.is_like_rejection(text):
-                        await self._db.mark_like_rejected(chat_id)
-                        msg_type = MessageType.SERVICE
-                        logger.info(
-                            f"Leo: лайк отклонён (лимит). message_id={task.message_id}"
-                        )
-                        # Лайки исчерпаны до ближайших 07:00: движок перестаёт
-                        # слать ❤️ (👎 продолжает), снимает цепочки «Берем)» и
-                        # один раз уведомляет владельца. Состояние — в БД.
-                        # Лимит — свойство аккаунта: отказ, пришедший на
-                        # ДРУГОЙ аккаунт (ручные лайки владельца), лимит
-                        # исполнителя не трогает.
-                        engine_session = (
-                            self._auto_engine.account_session
-                            if self._auto_engine is not None else ""
-                        )
-                        if (
-                            self._auto_engine is not None
-                            and task.account_session
-                            and engine_session
-                            and task.account_session != engine_session
-                        ):
-                            logger.info(
-                                f"Leo: лимит ❤️ на {task.account_session} — "
-                                f"исполнитель {engine_session} не затронут"
-                            )
-                        elif self._auto_engine is not None:
-                            try:
-                                await self._auto_engine.handle_like_rejection(chat_id)
-                            except Exception as e:
-                                logger.error(
-                                    f"AutoAction: обработка лимита лайков: {e}"
-                                )
-                except Exception as e:
-                    logger.warning(f"like_rejection hook error: {e}")
-
+            msg_type = self._parser.classify(
+                task.text, has_media=task.media_type != "",
+            )
+            msg_type = await self._check_like_rejection(task, msg_type)
             logger.info(f"Message classified: type={msg_type.value}")
-
             self._print_message(
-                chat_id=chat_id,
+                chat_id=task.chat_id,
                 message_id=task.message_id,
-                sender_name=sender_name,
-                sender_username=sender_username,
-                text=text,
-                msg_date=msg_date,
-                media_type=media_type,
+                sender_name=task.sender_name,
+                sender_username=task.sender_username,
+                text=task.text,
+                msg_date=task.msg_date,
+                media_type=task.media_type,
                 msg_type=msg_type,
                 buttons=task.reply_markup_json,
             )
 
             # Stage 8 (§30): продвижение цепочки «Берем)» (LIKE_AND_MESSAGE)
-            # по ответам Leo. Только для входящих НЕ-профильных сообщений чата
-            # Дайвинчика на авто-аккаунте. step_pending сам проверяет, есть ли
-            # активная цепочка, и шлёт 💌/«Берем)» по маркерам ответов Leo.
-            if (
-                msg_type != MessageType.PROFILE
-                and self._auto_engine.enabled
-                and chat_id == self._dvinchik_chat_id
-                and msg is not None
-                and getattr(msg, "client", None) is self._auto_engine.client
+            # по ответам Leo — только НЕ-профильные сообщения авто-аккаунта.
+            # step_pending сам проверяет, есть ли активная цепочка.
+            if msg_type != MessageType.PROFILE and self._is_auto_receiver(
+                task.msg, task.chat_id,
             ):
                 try:
-                    await self._auto_engine.step_pending(text, chat_id)
+                    await self._auto_engine.step_pending(task.text, task.chat_id)
                 except Exception as e:
                     logger.error(f"AutoAction: ошибка продвижения «Берем)»: {e}")
 
             if msg_type == MessageType.PROFILE:
-                parsed = self._parser.parse_profile(
-                    text,
-                    source_message_id=task.message_id,
-                    source_chat_id=chat_id,
-                )
-
-                if self._profile_service:
-                    try:
-                        account_session = task.account_session or (
-                            self._session_for_client(
-                                getattr(msg, "client", None)
-                                if msg is not None else None
-                            )
-                        )
-                        profile = await self._profile_service.upsert_profile(
-                            parsed, account_session=account_session,
-                        )
-
-                        # PROFILE-сообщение становится "контекстом" для
-                        # последующих MEDIA_ONLY ТОГО ЖЕ аккаунта. Фиксируем сразу
-                        # после сохранения — независимо от вывода в консоль.
-                        self._pending_profiles[(account_session, chat_id)] = (
-                            task.message_id
-                        )
-                        # Персистентный контекст: переживает restart/reconnect,
-                        # когда in-memory кэш пуст (W2).
-                        try:
-                            await self._db.set_chat_profile_context(
-                                chat_id, task.message_id, account_session
-                            )
-                        except Exception as e:
-                            logger.error(f"Ошибка сохранения контекста чата: {e}")
-
-                        is_new = profile.status == "NEW"
-                        self._print_profile_stored(profile, is_new=is_new)
-                        # Теневой вердикт модели вкуса по фото (фон, не ждём).
-                        self._schedule_photo_shadow(
-                            msg, profile.id, account_session, chat_id, task.message_id,
-                        )
-
-                        if self._filter_service:
-                            try:
-                                filter_result = await self._filter_service.evaluate(profile)
-                                self._print_filter_result(profile, filter_result)
-
-                                # Deterministic scoring (Stage 8): всегда через DecisionService.
-                                # Нет изображений, нет LLM — только текстовые правила.
-                                if self._decision_service:
-                                    try:
-                                        decision = (
-                                            await self._decision_service.evaluate(
-                                                profile.id,
-                                                filter_result=filter_result,
-                                            )
-                                        )
-                                        self._print_ai_decision(profile, decision)
-                                        # Stage 7: авто-действие (SEMI_AUTO).
-                                        # Только если анкета пришла на авто-аккаунт
-                                        # (msg.client — аккаунт-получатель).
-                                        if (
-                                            self._auto_engine.enabled
-                                            and decision is not None
-                                            and msg is not None
-                                            and getattr(msg, "client", None)
-                                            is self._auto_engine.client
-                                        ):
-                                            try:
-                                                # Правило владельца: сигарета/алкоголь
-                                                # на фото → 👎. Проверяем ТОЛЬКО будущие
-                                                # лайки (остальные и так 👎) — лента не
-                                                # замедляется.
-                                                # Режим decide: лайк решает модель вкуса
-                                                # по фото (текстовые запреты главнее).
-                                                decision = await self._apply_photo_taste(
-                                                    decision,
-                                                    (
-                                                        account_session or "",
-                                                        chat_id,
-                                                        task.message_id,
-                                                    ),
-                                                )
-                                                # Правило владельца: с кем уже был
-                                                # взаимный лайк — второй раз не лайкаем.
-                                                if decision.decision == AIDecision.LIKE:
-                                                    decision = await self._apply_already_matched(
-                                                        decision, profile.id,
-                                                    )
-                                                if decision.decision == AIDecision.LIKE:
-                                                    decision = await self._apply_photo_vice(
-                                                        decision, msg,
-                                                        card_key=(
-                                                            account_session or "",
-                                                            chat_id,
-                                                            task.message_id,
-                                                        ),
-                                                    )
-                                                if await self._db.has_reaction_for_message(
-                                                    chat_id, task.message_id
-                                                ):
-                                                    logger.info(
-                                                        f"AutoAction: карточка {task.message_id} уже в журнале"
-                                                    )
-                                                else:
-                                                    action = await self._auto_engine.maybe_act(
-                                                        decision.decision, profile.id,
-                                                        message_id=task.message_id,
-                                                        reasons=decision.reasons,
-                                                        card_text=text,
-                                                        informative=decision.informative,
-                                                    )
-                                                    if action in ("LIKE", "DISLIKE"):
-                                                        try:
-                                                            await self._db.record_auto_action(
-                                                                profile.id, action,
-                                                                decision.decision.value,
-                                                                chat_id,
-                                                                task.message_id,
-                                                            )
-                                                        except Exception as e:
-                                                            logger.error(
-                                                                f"AutoAction: действие отправлено, но не записано: {e}"
-                                                            )
-                                            except Exception as e:
-                                                logger.error(
-                                                    f"AutoAction error: {e}"
-                                                )
-                                    except Exception as e:
-                                        logger.error(f"Decision service error: {e}")
-                                elif (
-                                    str(filter_result.decision) != "PASS"
-                                    and self._auto_engine.enabled
-                                    and chat_id == self._dvinchik_chat_id
-                                    and msg is not None
-                                    and getattr(msg, "client", None)
-                                    is self._auto_engine.client
-                                ):
-                                    # Фильтровые REJECT/REVIEW: AI не считается,
-                                    # но Leo всё равно ждёт реакцию на показанную
-                                    # анкету. Чтобы лента не замирала — 👎.
-                                    try:
-                                        if await self._db.has_reaction_for_message(
-                                            chat_id, task.message_id
-                                        ):
-                                            logger.info(
-                                                f"AutoAction: карточка {task.message_id} "
-                                                "уже в журнале"
-                                            )
-                                        else:
-                                            action = (
-                                                await self._auto_engine.maybe_act(
-                                                    AIDecision.DISLIKE, profile.id,
-                                                    message_id=task.message_id,
-                                                    reasons=[r.value for r in filter_result.reasons],
-                                                    card_text=text,
-                                                )
-                                            )
-                                            if action in ("LIKE", "DISLIKE"):
-                                                try:
-                                                    await self._db.record_auto_action(
-                                                        profile.id,
-                                                        action,
-                                                        filter_result.decision.value,
-                                                        chat_id,
-                                                        task.message_id,
-                                                    )
-                                                except Exception as e:
-                                                    logger.error(
-                                                        "AutoAction: действие "
-                                                        f"отправлено, но не записано: {e}"
-                                                    )
-                                    except Exception as e:
-                                        logger.error(f"AutoAction error: {e}")
-                            except Exception as e:
-                                logger.error(f"FilterService error: {e}")
-                    except Exception as e:
-                        logger.error(f"ProfileService error: {e}")
-                        self._print_profile(parsed)
-                else:
-                    self._print_profile(parsed)
-
-                if self._stats:
-                    self._stats.record_profile(
-                        filter_match=parsed.filter_result.value == "FILTER_MATCH"
-                    )
-
+                await self._on_profile(task)
             elif msg_type == MessageType.MATCH:
-                match = self._parser.parse_match(text)
-                if match:
-                    self._print_match(match)
-                    # Stage 8.5: взаимный лайк = «девушка ответила».
-                    # Привязка к профилю по имени; дубликаты на карточку
-                    # отбрасываются (INSERT OR IGNORE по chat_id+tm_id).
-                    try:
-                        await self._db.record_match_response(
-                            match.name,
-                            chat_id,
-                            task.message_id,
-                            telegram_username=match.telegram_username or "",
-                        )
-                    except Exception as e:
-                        logger.error(f"record_match_response error: {e}")
-                    await self._greet_match(task, msg, match)
-                if self._stats:
-                    self._stats.record_match()
-
+                await self._on_match(task)
             elif msg_type == MessageType.MEDIA_ONLY:
                 await self._handle_media_only(
-                    chat_id, task.message_id,
-                    account_session=task.account_session or (
-                        self._session_for_client(
-                            getattr(msg, "client", None)
-                            if msg is not None else None
-                        )
-                    ),
+                    task.chat_id, task.message_id,
+                    account_session=self._task_session(task),
                 )
                 if self._stats:
                     self._stats.record_media_only()
-
             elif msg_type == MessageType.UNKNOWN:
-                # Штатные служебные сообщения Leo (✨🔍 перед каждой анкетой,
-                # «Отправь текст…» композера) — не проблема: в WARNING они
-                # приходили на КАЖДОЙ анкете и топили настоящие ошибки в логе
-                # и debug-консоли. Обработка (кнопки, цепочка «Берем)») та же.
-                log_unknown = (
-                    logger.debug if self._is_routine_leo_text(text)
-                    else logger.warning
-                )
-                log_unknown(
-                    f"Unknown message format: message_id={task.message_id}, "
-                    f"preview={text[:100]}"
-                )
-                if self._stats:
-                    self._stats.record_unknown()
-                # Stage 7: Leo при исчерпании ленты шлёт промо с кнопкой
-                # «Смотреть анкеты». Если это сообщение в чате Дайвинчика
-                # на авто-аккаунте — нажимаем кнопку (продолжаем ленту).
-                if (
-                    self._auto_engine.enabled
-                    and chat_id == self._dvinchik_chat_id
-                    and msg is not None
-                    and getattr(msg, "client", None) is self._auto_engine.client
-                ):
-                    try:
-                        texts = self._extract_button_texts(msg)
-                        if self._is_match_card(msg):
-                            # «Ты понравился N девушке, показать её?» —
-                            # останавливаем поиск, владелец решает сам.
-                            await self._stop_on_match_card_if_needed()
-                        elif any(VIEW_BUTTON_FRAGMENT in t for t in texts):
-                            await self._press_view_button_if_needed()
-                        elif (
-                            len(texts) >= CAPTCHA_MIN_BUTTONS
-                            and any(m in (text or "").lower() for m in CAPTCHA_MARKERS)
-                        ):
-                            # Капча/сделка/проверка — выученный ответ или вывод на сайт.
-                            await self._handle_captcha(msg)
-                        elif self._is_unknown_keyboard(msg):
-                            # Незнакомый вопрос Leo с кнопками (без маркеров
-                            # капчи) — тоже капча: на сайт + владельцу.
-                            await self._handle_captcha(msg, any_keyboard=True)
-                        else:
-                            # Рекламное/промо-сообщение без кнопки на самом себе:
-                            # «🚀 Смотреть анкеты» может прийти на ОТДЕЛЬНОМ сообщении
-                            # после рекламы. Сканируем последние сообщения чата —
-                            # _press_view_button_if_needed уже идемпотентен (жмёт
-                            # только если кнопка реально есть и ещё не нажата), а
-                            # меню/Premium-промо такой кнопки не содержат → не
-                            # зацикливаемся. Плюс Premium-промо с кнопкой «Пока
-                            # без Premium» (после ❤️/👎) — нажимаем отказ, чтобы
-                            # лента не встала. И главное меню ([«1 🚀», …]) —
-                            # нажатие «1 🚀» продолжает ленту (см.
-                            # _press_menu_view_if_needed).
-                            history = await self._recent_history()
-                            if not await self._stop_on_match_card_if_needed(history):
-                                await self._continue_stream_if_needed(history)
-                    except Exception as e:
-                        logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
-
+                await self._on_unknown(task)
             elif msg_type == MessageType.SERVICE:
-                if self._stats:
-                    self._stats.record_service()
-                # Сетка: промо/меню/капчи Leo иногда классифицируются как
-                # SERVICE (например «лайкают» в промо-тексте), но могут нести
-                # кнопку «Смотреть анкеты». Если это чат Дайвинчика на авто-
-                # аккаунте — пробуем продолжить ленту (идемпотентно).
-                if (
-                    self._auto_engine.enabled
-                    and chat_id == self._dvinchik_chat_id
-                    and msg is not None
-                    and getattr(msg, "client", None) is self._auto_engine.client
-                ):
-                    try:
-                        # Капча под видом SERVICE (прод 2026-11-01: «Найди свой
-                        # денежный мэтч ❤️» [Подробнее | скип] — бот молча встал).
-                        if self._is_captcha_message(msg):
-                            await self._handle_captcha(msg)
-                        elif self._is_unknown_keyboard(msg):
-                            await self._handle_captcha(msg, any_keyboard=True)
-                        else:
-                            # Одна выборка истории на все проверки (FloodWait).
-                            history = await self._recent_history()
-                            if not await self._stop_on_match_card_if_needed(history):
-                                await self._continue_stream_if_needed(history)
-                    except Exception as e:
-                        logger.error(
-                            f"AutoAction: ошибка нажатия кнопки ленты "
-                            f"(SERVICE): {e}"
-                        )
+                await self._on_service(task)
 
             success = True
         except Exception as e:
@@ -991,12 +655,323 @@ class DvinchikCollector(
                     logger.error(f"Ошибка пометки RAW обработанным: {e}")
             else:
                 # Ошибка pipeline: RAW остаётся processed_at=NULL, чтобы W3
-                # повторил обработку после restart (at-least-once). Ошибка
-                # одного RAW не роняет worker — исключение уже перехвачено.
+                # повторил обработку после restart (at-least-once).
                 logger.warning(
                     f"Pipeline НЕ завершён для RAW id={task.raw_id}; "
                     f"processed_at не помечен — W3 повторит после restart."
                 )
+
+    # ── Шаги pipeline ─────────────────────────────────────────────────
+
+    def _task_session(self, task: RawTask) -> str:
+        """Аккаунт-получатель сообщения (из задачи или по клиенту сообщения)."""
+        if task.account_session:
+            return task.account_session
+        client = getattr(task.msg, "client", None) if task.msg is not None else None
+        return self._session_for_client(client)
+
+    def _is_auto_receiver(self, msg: object, chat_id: int | None = None) -> bool:
+        """Сообщение пришло на аккаунт активного движка, и тот включён.
+
+        ``chat_id`` задан — ещё и сообщение из чата Leo. Действуем в Telegram
+        только при True: иначе реакция ушла бы не с того аккаунта.
+        """
+        if not self._auto_engine.enabled or msg is None:
+            return False
+        if chat_id is not None and chat_id != self._dvinchik_chat_id:
+            return False
+        return getattr(msg, "client", None) is self._auto_engine.client
+
+    async def _check_like_rejection(
+        self, task: RawTask, msg_type: MessageType,
+    ) -> MessageType:
+        """Stage 8.5.1: Leo отклонил лайк из-за дневного лимита.
+
+        «Слишком много ❤️ за сегодня…» — лайк не дошёл: помечаем последний
+        лайк чата rejected (не портит конверсию), движок перестаёт слать ❤️ до
+        сброса. Лимит — свойство аккаунта: отказ на ДРУГОМ аккаунте (ручные
+        лайки владельца) лимит исполнителя не трогает. Само сообщение —
+        SERVICE, чтобы не давать ложный «Unknown message format».
+        """
+        if (
+            msg_type in (MessageType.PROFILE, MessageType.MEDIA_ONLY)
+            or task.chat_id != self._dvinchik_chat_id
+        ):
+            return msg_type
+        try:
+            if not self._parser.is_like_rejection(task.text):
+                return msg_type
+            await self._db.mark_like_rejected(task.chat_id)
+            logger.info(f"Leo: лайк отклонён (лимит). message_id={task.message_id}")
+            engine = self._auto_engine
+            engine_session = engine.account_session if engine is not None else ""
+            if (
+                engine is not None
+                and task.account_session
+                and engine_session
+                and task.account_session != engine_session
+            ):
+                logger.info(
+                    f"Leo: лимит ❤️ на {task.account_session} — "
+                    f"исполнитель {engine_session} не затронут"
+                )
+            elif engine is not None:
+                try:
+                    await engine.handle_like_rejection(task.chat_id)
+                except Exception as e:
+                    logger.error(f"AutoAction: обработка лимита лайков: {e}")
+            return MessageType.SERVICE
+        except Exception as e:
+            logger.warning(f"like_rejection hook error: {e}")
+            return msg_type
+
+    async def _on_profile(self, task: RawTask) -> None:
+        """Анкета: сохранить → фильтр → решение → фото-шаги → реакция."""
+        chat_id = task.chat_id
+        parsed = self._parser.parse_profile(
+            task.text,
+            source_message_id=task.message_id,
+            source_chat_id=chat_id,
+        )
+        if self._stats:
+            self._stats.record_profile(
+                filter_match=parsed.filter_result.value == "FILTER_MATCH"
+            )
+        if not self._profile_service:
+            self._print_profile(parsed)
+            return
+
+        account_session = self._task_session(task)
+        friends = self._is_friends_session(account_session)
+        try:
+            profile = await self._profile_service.upsert_profile(
+                parsed, account_session=account_session,
+                audience="friends" if friends else "",
+            )
+        except Exception as e:
+            logger.error(f"ProfileService error: {e}")
+            self._print_profile(parsed)
+            return
+
+        # Анкета — «контекст» для следующих MEDIA_ONLY ТОГО ЖЕ аккаунта:
+        # в памяти и в БД (переживает restart/reconnect, W2).
+        self._pending_profiles[(account_session, chat_id)] = task.message_id
+        try:
+            await self._db.set_chat_profile_context(
+                chat_id, task.message_id, account_session
+            )
+        except Exception as e:
+            logger.error(f"Ошибка сохранения контекста чата: {e}")
+
+        self._print_profile_stored(profile, is_new=profile.status == "NEW")
+        card_key = (account_session or "", chat_id, task.message_id)
+        # Теневой вердикт модели вкуса по фото (фон, не ждём).
+        # Модель — про девушек: анкеты кентов её не касаются.
+        if not friends:
+            self._schedule_photo_shadow(
+                task.msg, profile.id, account_session, chat_id, task.message_id,
+            )
+
+        filter_service, decision_service = self._services_for(friends)
+        if not filter_service:
+            return
+        try:
+            filter_result = await filter_service.evaluate(profile)
+            self._print_filter_result(profile, filter_result)
+        except Exception as e:
+            logger.error(f"FilterService error: {e}")
+            return
+
+        if not decision_service:
+            # Без сервиса решений фильтровые REJECT/REVIEW всё равно требуют
+            # реакции: Leo ждёт её на показанную анкету — 👎, лента не встаёт.
+            if (
+                str(filter_result.decision) != "PASS"
+                and self._is_auto_receiver(task.msg, chat_id)
+            ):
+                await self._react_to_card(
+                    task, profile.id, AIDecision.DISLIKE,
+                    reasons=[r.value for r in filter_result.reasons],
+                    logged_decision=filter_result.decision.value,
+                )
+            return
+
+        # Детерминированный скоринг (Stage 8): только текстовые правила.
+        try:
+            decision = await decision_service.evaluate(
+                profile.id, filter_result=filter_result,
+            )
+            self._print_ai_decision(profile, decision)
+        except Exception as e:
+            logger.error(f"Decision service error: {e}")
+            return
+        # Stage 7: авто-действие — только если анкета пришла на авто-аккаунт.
+        if decision is None or not self._is_auto_receiver(task.msg):
+            return
+        try:
+            decision = await self._refine_decision(
+                decision, profile.id, task.msg, card_key, friends,
+            )
+        except Exception as e:
+            logger.error(f"AutoAction error: {e}")
+            return
+        await self._react_to_card(
+            task, profile.id, decision.decision,
+            reasons=decision.reasons,
+            logged_decision=decision.decision.value,
+            informative=decision.informative,
+        )
+
+    async def _refine_decision(
+        self,
+        decision: object,
+        profile_id: int,
+        msg: object,
+        card_key: tuple[str, int, int],
+        friends: bool,
+    ) -> object:
+        """Шаги после текста: фото-вкус → «уже был матч» → сигарета/алкоголь.
+
+        Порядок важен: текстовые запреты главнее фото (photo_taste_applies),
+        фото-порок проверяем только у будущих лайков. Кентам фото-шаги не нужны.
+        """
+        if not friends:
+            decision = await self._apply_photo_taste(decision, card_key)
+        # С кем уже был взаимный лайк — второй раз не лайкаем.
+        if decision.decision == AIDecision.LIKE:
+            decision = await self._apply_already_matched(decision, profile_id)
+        if decision.decision == AIDecision.LIKE and not friends:
+            decision = await self._apply_photo_vice(
+                decision, msg, card_key=card_key,
+            )
+        return decision
+
+    async def _react_to_card(
+        self,
+        task: RawTask,
+        profile_id: int,
+        decision: AIDecision,
+        *,
+        reasons: list[str],
+        logged_decision: str,
+        informative: bool | None = None,
+    ) -> None:
+        """Одна реакция на карточку: проверка журнала → действие → запись."""
+        try:
+            if await self._db.has_reaction_for_message(
+                task.chat_id, task.message_id
+            ):
+                logger.info(
+                    f"AutoAction: карточка {task.message_id} уже в журнале"
+                )
+                return
+            kwargs: dict[str, object] = {
+                "message_id": task.message_id,
+                "reasons": reasons,
+                "card_text": task.text,
+            }
+            if informative is not None:
+                kwargs["informative"] = informative
+            action = await self._auto_engine.maybe_act(
+                decision, profile_id, **kwargs,
+            )
+            if action not in ("LIKE", "DISLIKE"):
+                return
+            try:
+                await self._db.record_auto_action(
+                    profile_id, action, logged_decision,
+                    task.chat_id, task.message_id,
+                )
+            except Exception as e:
+                logger.error(
+                    f"AutoAction: действие отправлено, но не записано: {e}"
+                )
+        except Exception as e:
+            logger.error(f"AutoAction error: {e}")
+
+    async def _on_match(self, task: RawTask) -> None:
+        """Взаимный лайк: журнал ответа (Stage 8.5) + привет девушке."""
+        match = self._parser.parse_match(task.text)
+        if match:
+            self._print_match(match)
+            # Дубликаты на карточку отбрасываются (INSERT OR IGNORE).
+            try:
+                await self._db.record_match_response(
+                    match.name,
+                    task.chat_id,
+                    task.message_id,
+                    telegram_username=match.telegram_username or "",
+                )
+            except Exception as e:
+                logger.error(f"record_match_response error: {e}")
+            await self._greet_match(task, task.msg, match)
+        if self._stats:
+            self._stats.record_match()
+
+    async def _on_unknown(self, task: RawTask) -> None:
+        """Незнакомое сообщение Leo: промо, меню, капча, карточка матча."""
+        msg, text = task.msg, task.text
+        # Штатные служебные тексты Leo (✨🔍 перед анкетой и т.п.) — в DEBUG,
+        # чтобы не топить настоящие ошибки в логе.
+        log_unknown = (
+            logger.debug if self._is_routine_leo_text(text) else logger.warning
+        )
+        log_unknown(
+            f"Unknown message format: message_id={task.message_id}, "
+            f"preview={text[:100]}"
+        )
+        if self._stats:
+            self._stats.record_unknown()
+        if not self._is_auto_receiver(msg, task.chat_id):
+            return
+        try:
+            texts = self._extract_button_texts(msg)
+            if self._is_match_card(msg):
+                # «Ты понравился N девушке, показать её?» — стоп, решает владелец.
+                await self._stop_on_match_card_if_needed()
+            elif any(VIEW_BUTTON_FRAGMENT in t for t in texts):
+                await self._press_view_button_if_needed()
+            elif (
+                len(texts) >= CAPTCHA_MIN_BUTTONS
+                and any(m in (text or "").lower() for m in CAPTCHA_MARKERS)
+            ):
+                # Капча/сделка/проверка — выученный ответ или на сайт.
+                await self._handle_captcha(msg)
+            elif self._is_unknown_keyboard(msg):
+                # Незнакомый вопрос с кнопками без маркеров — тоже капча.
+                await self._handle_captcha(msg, any_keyboard=True)
+            else:
+                # Промо без кнопки: «Смотреть анкеты» / «Пока без Premium» /
+                # меню «1 🚀» могут быть на соседнем сообщении — смотрим
+                # историю (нажатия идемпотентны, не зацикливаемся).
+                await self._continue_from_history()
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия кнопки ленты: {e}")
+
+    async def _on_service(self, task: RawTask) -> None:
+        """Служебное сообщение Leo: капча под видом SERVICE или продолжение ленты."""
+        if self._stats:
+            self._stats.record_service()
+        msg = task.msg
+        if not self._is_auto_receiver(msg, task.chat_id):
+            return
+        try:
+            # Капча под видом SERVICE (прод 2026-11-01: «Найди свой денежный
+            # мэтч ❤️» [Подробнее | скип] — бот молча встал).
+            if self._is_captcha_message(msg):
+                await self._handle_captcha(msg)
+            elif self._is_unknown_keyboard(msg):
+                await self._handle_captcha(msg, any_keyboard=True)
+            else:
+                await self._continue_from_history()
+        except Exception as e:
+            logger.error(f"AutoAction: ошибка нажатия кнопки ленты (SERVICE): {e}")
+
+    async def _continue_from_history(self) -> None:
+        """Одна выборка истории на все проверки: стоп на матче или дальше лента."""
+        history = await self._recent_history()
+        if not await self._stop_on_match_card_if_needed(history):
+            await self._continue_stream_if_needed(history)
 
     async def _handle_media_only(
         self, chat_id: int, message_id: int, account_session: str = '',

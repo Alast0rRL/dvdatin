@@ -57,3 +57,6 @@ media/
 # OS
 .DS_Store
 Thumbs.db
+
+# Правила режима «кенты» (live, не коммитим)
+config/preferences_friends.yaml

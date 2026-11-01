@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -14,6 +15,17 @@ from models.filter import FilterDecision, FilterReason, FilterResult
 if TYPE_CHECKING:
     from app.config import AppConfig
     from models.profile import Profile
+
+
+_NEARBY_RE = re.compile(r"📍\s*(\d+(?:[.,]\d+)?)\s*км")
+
+
+def nearby_km(city: str) -> float | None:
+    """Расстояние из «📍2 км» (Leo вместо города) или None."""
+    m = _NEARBY_RE.search(city or "")
+    if m is None:
+        return None
+    return float(m.group(1).replace(",", "."))
 
 
 class Rule(ABC):
@@ -60,6 +72,11 @@ class CityRule(Rule):
             return False, FilterReason.CITY_UNKNOWN
 
         if profile.normalized_city in allowed:
+            return True, FilterReason.CITY_OK
+
+        # Leo пишет расстояние вместо города («📍2 км») — человек рядом.
+        km = nearby_km(profile.normalized_city)
+        if km is not None and km <= config.filters.city.nearby_km:
             return True, FilterReason.CITY_OK
 
         return False, FilterReason.CITY_OUT_OF_RANGE

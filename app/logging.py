@@ -27,7 +27,7 @@ console = Console(force_terminal=True, file=sys.stderr)
 
 # Кольцевой буфер последних записей — источник данных для отладочной консоли Веба.
 # Читается из веб-потока, пишется из sinks loguru (тот же процесс, разные потоки).
-LOG_BUFFER: deque[dict[str, Any]] = deque(maxlen=500)
+LOG_BUFFER: deque[dict[str, Any]] = deque(maxlen=LOG_BUFFER_SIZE)
 _buffer_lock = threading.Lock()
 _buffer_sink_id: int | None = None
 
@@ -104,7 +104,7 @@ class _InterceptHandler(logging.Handler):
 
 def _install_stdlib_interception() -> None:
     """Мостит stdlib ``logging`` в Loguru на уровне WARNING (только проблемы)."""
-    logging.basicConfig(handlers=[_InterceptHandler()], level=logging.WARNING, force=True)
+    logging.basicConfig(handlers=[_InterceptHandler()], level=STDLIB_INTERCEPT_LEVEL, force=True)
 
 
 def setup_logging(config: AppConfig) -> None:

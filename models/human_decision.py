@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
@@ -64,22 +63,3 @@ class HumanDecisionResult(BaseModel):
     created_at: str = ""
 
     model_config = ConfigDict(use_enum_values=True)
-
-
-class HumanReview(BaseModel):
-    """Расширенная запись для UI: решение + присоединённые данные AI.
-
-    Собирается из human_decisions JOIN ai_decisions для отображения
-    согласия/статистики без обращения к Telegram.
-    """
-
-    human: HumanDecisionResult
-    ai_decision_id: int = 0
-    ai_decision: str = ""
-    combined_score: float = 0.0
-    confidence: float = 0.0
-    scoring_version: str = "v1"
-
-    def reasons_json(self) -> str:
-        """Сериализует причины в JSON (заглушка для симметрии с решениями)."""
-        return json.dumps([], ensure_ascii=False)

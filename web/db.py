@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -744,6 +743,10 @@ class SyncDB:
                 AND rm.telegram_message_id = pm.telegram_message_id
                 AND rm.is_outgoing = 0
                 AND rm.media_type = 'photo'
+          )
+          AND NOT EXISTS (  -- анкеты кентов (режим «кенты») не для модели вкуса
+              SELECT 1 FROM profiles pf
+              WHERE pf.id = pm.profile_id AND pf.audience = 'friends'
           )
     """
 

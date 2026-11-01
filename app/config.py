@@ -104,6 +104,9 @@ class CityFilterConfig(BaseModel):
     """
 
     allowed: list[str] = []
+    # Leo вместо города пишет расстояние («📍2 км») — это человек рядом.
+    # При непустом ``allowed`` такая анкета проходит, если ≤ ``nearby_km``.
+    nearby_km: int = 50
 
 
 class FiltersConfig(BaseModel):
@@ -471,6 +474,40 @@ class PhotoCheckConfig(BaseModel):
     threads: int = 4
 
 
+class FriendsConfig(BaseModel):
+    """Режим «кенты»: аккаунт ищет парней-друзей, а не девушек.
+
+    На аккаунте ``account_session``: свои фильтры (возраст/город) и правила
+    (``preferences_file``), встроенные «девичьи» признаки H/P и фото-модель
+    не работают; лайк — 💌 с ``like_message``; после матча бот никому не
+    пишет (только журнал + уведомление владельцу). Анкеты помечаются
+    ``profiles.audience = 'friends'`` и не идут в /rate и фото-модель.
+    """
+
+    enabled: bool = False
+    account_session: str = ""
+    preferences_file: str = "config/preferences_friends.yaml"
+    filters: FiltersConfig = FiltersConfig(
+        age=AgeFilterConfig(min=18, max=25),
+        city=CityFilterConfig(allowed=["Санкт-Петербург"]),
+    )
+    like_message: list[str] = ["Здарова! Го знакомиться 🤝"]
+
+    @field_validator("like_message", mode="before")
+    @classmethod
+    def _text_to_list(cls, v: object) -> object:
+        if isinstance(v, str):
+            return [v]
+        return v
+
+    def is_friends(self, session: str | None) -> bool:
+        """Аккаунт ``session`` — в режиме «кенты»."""
+        return bool(
+            self.enabled and self.account_session
+            and session == self.account_session
+        )
+
+
 class PhotoTasteConfig(BaseModel):
     """Модель вкуса владельца по фото (services/photo_taste.py) — ТЕНЕВОЙ режим.
 
@@ -595,6 +632,7 @@ class AppConfig(BaseModel):
     manual_review: ManualReviewConfig = ManualReviewConfig()
     photo_check: PhotoCheckConfig = PhotoCheckConfig()
     photo_taste: PhotoTasteConfig = PhotoTasteConfig()
+    friends: FriendsConfig = FriendsConfig()
     logging: LoggingConfig = LoggingConfig()
 
     def model_post_init(self, __context: object) -> None:

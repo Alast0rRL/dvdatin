@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from enum import StrEnum
 
 from pydantic import BaseModel
@@ -24,22 +23,6 @@ class FilterResult(StrEnum):
     FILTER_MATCH = "FILTER_MATCH"
     FILTER_NOT_MATCH = "FILTER_NOT_MATCH"
     UNKNOWN = "UNKNOWN"
-
-
-class RawMessage(BaseModel):
-    """Сырое Telegram-сообщение."""
-
-    telegram_message_id: int
-    chat_id: int
-    sender_id: int
-    sender_username: str = ""
-    sender_name: str = ""
-    message_date: datetime
-    text: str = ""
-    raw_entities: str = "[]"
-    reply_markup: str = "[]"
-    media_type: str = ""
-    reply_to_message_id: int | None = None
 
 
 class ParsedProfile(BaseModel):

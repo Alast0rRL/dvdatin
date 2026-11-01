@@ -29,7 +29,7 @@ from services.feature_extractor import FeatureExtractor
 from services.score_engine import ScoreEngine
 
 if TYPE_CHECKING:
-    from app.config import AppConfig, DecisionConfig
+    from app.config import AppConfig
     from database.database import Database
     from models.profile import Profile
     from services.filter_service import FilterService
@@ -57,15 +57,21 @@ class DecisionService:
         profile_service: ProfileService,
         filter_service: FilterService,
         preferences: PreferencesEngine | None = None,
+        builtin_features: bool = True,
     ) -> None:
+        """``builtin_features=False`` — режим «кенты»: встроенные признаки
+        H01–H12 / P01–P04 написаны про девушек («ищу друга», «есть парень»…)
+        и для парней-друзей не применяются; решают только ``preferences``,
+        фильтр и информативность.
+        """
         self._db = db
         self._config = config
         self._profile_service = profile_service
         self._filter_service = filter_service
-        self._decision_cfg: DecisionConfig = config.ai.decision
         self._prefs = preferences if preferences is not None else PreferencesEngine()
         self._extractor = FeatureExtractor()
         self._score_engine = ScoreEngine()
+        self._builtin_features = builtin_features
 
     async def evaluate(
         self,
@@ -121,11 +127,16 @@ class DecisionService:
             description=profile.description or "",
         )
 
+        hard_negatives = extraction.hard_negatives
+        positive_factors = extraction.positive_factors
+        if not self._builtin_features:
+            hard_negatives, positive_factors = [], []
+
         # 3. Score Engine (детерминированно): score + информативность.
         scoring = self._score_engine.compute(
             profile_id=profile.id,
-            hard_negatives=extraction.hard_negatives,
-            positive_factors=extraction.positive_factors,
+            hard_negatives=hard_negatives,
+            positive_factors=positive_factors,
             description=profile.description or "",
         )
 

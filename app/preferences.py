@@ -139,7 +139,9 @@ class PreferencesEngine:
         ]
 
 
-def load_preferences(path: Path | None = None) -> PreferencesEngine:
+def load_preferences(
+    path: Path | None = None, example: Path | None = None,
+) -> PreferencesEngine:
     """Загружает предпочтения.
 
     Приоритет: live-файл (config/preferences.yaml) → пример
@@ -147,9 +149,12 @@ def load_preferences(path: Path | None = None) -> PreferencesEngine:
 
     Args:
         path: Кастомный путь (для тестов). По умолчанию — PREFERENCES_PATH.
+        example: Свой пример-запасной (режим «кенты» не должен получить
+            правила для девушек). По умолчанию — PREFERENCES_EXAMPLE.
     """
     target = path or PREFERENCES_PATH
-    source = target if target.exists() else PREFERENCES_EXAMPLE
+    fallback = example or PREFERENCES_EXAMPLE
+    source = target if target.exists() else fallback
     if source.exists():
         try:
             with open(source, encoding="utf-8") as f:

@@ -53,7 +53,19 @@ class MatchDialogsMixin:
         if client is None or task.chat_id != self._dvinchik_chat_id:
             return
         session = task.account_session or self._session_for_client(client)
-        source = ""
+        if self._is_friends_session(session):
+            # Режим «кенты»: матч с парнем — бот ему не пишет (ни стикера, ни
+            # анкеты, ни сценария, без перенаправления). Журнал + владельцу.
+            await self._track_dialog(client, session, match)
+            who = (
+                f"@{match.telegram_username}" if match.telegram_username
+                else f"id {match.telegram_user_id}"
+            )
+            await self._auto_engine.notify_owner(
+                f"🤝 Взаимный лайк с кентом: {match.name} ({who}) на "
+                f"{session} — напиши сам"
+            )
+            return
         target = self.redirect_for(session)
         if target:
             target_client, _ = self._clients_for_session(target)
@@ -326,46 +338,45 @@ class MatchDialogsMixin:
 
     async def _run_match_intros_for(self, client: object, session: str) -> None:
         """Проход автопереписки по одному аккаунту."""
-        if True:
-            try:
-                results = await self._match_intro.process(
-                    client, session, self._dialog_mode(session),
-                )
-            except Exception as e:
-                logger.error(f"MatchIntro: проход {session}: {e}")
-                return
-            for row, status in results:
-                who = (
-                    f"@{row['username']}" if row.get("username")
-                    else f"id {row.get('user_id')}"
-                )
-                if status == NO_PROFILE:
-                    # Её карточку матча не нашли — чужую не шлём, пишет владелец.
-                    await self._auto_engine.notify_owner(
-                        f"💬 {row.get('name') or who} ({who}) ответила на привет "
-                        f"на {session or 'аккаунте'} — её анкету не нашёл, "
-                        "не слал. Напиши ей сам."
-                    )
-                    continue
-                if status == OTHER_ACCOUNT:
-                    # Аккаунт её карточки не вошёл — копию не сделать.
-                    await self._auto_engine.notify_owner(
-                        f"💬 {row.get('name') or who} ({who}) ответила на привет "
-                        f"на {session or 'аккаунте'} — её анкета в ленте другого "
-                        "аккаунта, он не подключён, анкету не слал. Отправь сам."
-                    )
-                    continue
-                if status != INTRO_SENT:
-                    continue
-                await self._match_script.start(
-                    session, int(row["user_id"]), row.get("sent_msg_id"),
-                )
-                pin = " и закрепил 📌" if row.get("pinned") else ""
+        try:
+            results = await self._match_intro.process(
+                client, session, self._dialog_mode(session),
+            )
+        except Exception as e:
+            logger.error(f"MatchIntro: проход {session}: {e}")
+            return
+        for row, status in results:
+            who = (
+                f"@{row['username']}" if row.get("username")
+                else f"id {row.get('user_id')}"
+            )
+            if status == NO_PROFILE:
+                # Её карточку матча не нашли — чужую не шлём, пишет владелец.
                 await self._auto_engine.notify_owner(
-                    f"💬 {row.get('name') or who} ({who}) ответила на привет — "
-                    f"отправил ей её анкету{pin} с {session or 'аккаунта'}"
+                    f"💬 {row.get('name') or who} ({who}) ответила на привет "
+                    f"на {session or 'аккаунте'} — её анкету не нашёл, "
+                    "не слал. Напиши ей сам."
                 )
-            await self._run_match_script_for(client, session)
+                continue
+            if status == OTHER_ACCOUNT:
+                # Аккаунт её карточки не вошёл — копию не сделать.
+                await self._auto_engine.notify_owner(
+                    f"💬 {row.get('name') or who} ({who}) ответила на привет "
+                    f"на {session or 'аккаунте'} — её анкета в ленте другого "
+                    "аккаунта, он не подключён, анкету не слал. Отправь сам."
+                )
+                continue
+            if status != INTRO_SENT:
+                continue
+            await self._match_script.start(
+                session, int(row["user_id"]), row.get("sent_msg_id"),
+            )
+            pin = " и закрепил 📌" if row.get("pinned") else ""
+            await self._auto_engine.notify_owner(
+                f"💬 {row.get('name') or who} ({who}) ответила на привет — "
+                f"отправил ей её анкету{pin} с {session or 'аккаунта'}"
+            )
+        await self._run_match_script_for(client, session)
 
     async def _run_match_script_for(self, client: object, session: str) -> None:
         """Проход сценария знакомства по аккаунту + уведомления владельцу."""
@@ -427,22 +438,21 @@ class MatchDialogsMixin:
 
     async def _retry_match_greetings_for(self, client: object, session: str) -> None:
         """Дозапись очереди приветствий одного аккаунта."""
-        if True:
-            try:
-                results = await self._match_greeter.retry_queued(
-                    client, session, self._dialog_mode(session),
+        try:
+            results = await self._match_greeter.retry_queued(
+                client, session, self._dialog_mode(session),
+            )
+        except Exception as e:
+            logger.error(f"MatchGreeting: дозапись очереди {session}: {e}")
+            return
+        for match, status in results:
+            await self._notify_greeting(
+                session, match, status, delayed=True,
+            )
+            if status == "SENT":
+                await self._enroll_match_intro(
+                    client, session, match, use_context=False,
                 )
-            except Exception as e:
-                logger.error(f"MatchGreeting: дозапись очереди {session}: {e}")
-                return
-            for match, status in results:
-                await self._notify_greeting(
-                    session, match, status, delayed=True,
-                )
-                if status == "SENT":
-                    await self._enroll_match_intro(
-                        client, session, match, use_context=False,
-                    )
 
 
 def script_notice(row: dict, step: str, kind: str, session: str) -> str:

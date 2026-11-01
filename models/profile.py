@@ -51,6 +51,8 @@ class Profile(BaseModel):
     last_seen_at: str = ""
 
     status: ProfileStatus = ProfileStatus.NEW
+    # '' — девушки, 'friends' — режим «кенты» (парни-друзья).
+    audience: str = ""
 
     message_count: int = 0
 

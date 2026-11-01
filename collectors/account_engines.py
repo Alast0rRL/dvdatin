@@ -305,6 +305,11 @@ class AccountEnginesMixin:
             notify_client=notify_client,
             db=self._db,
             account_session=session,
+            # Режим «кенты»: парню уходит свой текст 💌, не «Берем)».
+            like_texts=(
+                self._config.friends.like_message
+                if self._is_friends_session(session) else None
+            ),
         )
 
     def switch_auto_account(self, session: str) -> bool:

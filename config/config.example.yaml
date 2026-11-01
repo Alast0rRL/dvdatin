@@ -54,6 +54,9 @@ filters:
     # Пустой список = городской фильтр выключен (любой город проходит).
     # Чтобы ограничить: allowed: ["Санкт-Петербург", "Москва"] и т.д.
     allowed: []
+    # Leo вместо города пишет расстояние («📍2 км») — такая анкета проходит,
+    # если ≤ nearby_km (только при непустом allowed).
+    nearby_km: 50
 
 # Детерминированный scoring (Stage 8). Решение выносится ВСЕГДА, для каждого
 # профиля: пороги решают, LIKE/REVIEW/DISLIKE. Правила признаков — в preferences.
@@ -208,6 +211,18 @@ photo_taste:
   max_pending: 20
   backfill: true           # фоновый досчёт старых анкет (вердикт + отпечаток)
   backfill_pause_sec: 2.0
+
+# Режим «кенты»: аккаунт account_session ищет парней-друзей, а не девушек.
+# Свои фильтр и правила (пример — config/preferences_friends.example.yaml),
+# без фото-модели; после матча бот парню не пишет — только уведомление.
+friends:
+  enabled: false
+  account_session: ""
+  preferences_file: "config/preferences_friends.yaml"
+  filters:
+    age: {min: 18, max: 25}
+    city: {allowed: ["Санкт-Петербург"], nearby_km: 50}
+  like_message: ["Здарова! Го знакомиться 🤝"]
 
 logging:
   level: INFO

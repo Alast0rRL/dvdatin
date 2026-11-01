@@ -140,7 +140,6 @@ class ConsoleOutputMixin:
     def _print_profile_stored(self, profile: object, is_new: bool = True) -> None:
         """Красивый вывод сохранённого профиля (Stage 2 format)."""
         status_color = "green" if is_new else "cyan"
-        status_label = "NEW" if is_new else "SEEN"
         title = f"[bold {status_color}]PROFILE[/]"
 
         table = Table(show_header=False, border_style="dim", padding=(0, 1))
