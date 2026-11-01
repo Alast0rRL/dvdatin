@@ -749,12 +749,11 @@ class DvinchikCollector(
                                                         task.message_id,
                                                     ),
                                                 )
-                                                # Правило владельца: уже лайкнутую
-                                                # девушку второй раз не лайкаем.
+                                                # Правило владельца: с кем уже был
+                                                # взаимный лайк — второй раз не лайкаем.
                                                 if decision.decision == AIDecision.LIKE:
-                                                    decision = await self._apply_already_liked(
+                                                    decision = await self._apply_already_matched(
                                                         decision, profile.id,
-                                                        task.message_id,
                                                     )
                                                 if decision.decision == AIDecision.LIKE:
                                                     decision = await self._apply_photo_vice(

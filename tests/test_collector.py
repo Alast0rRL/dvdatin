@@ -61,7 +61,7 @@ def make_db_mock() -> Database:
     db.has_auto_action = AsyncMock(return_value=False)
     db.has_auto_action_for_message = AsyncMock(return_value=False)
     db.has_reaction_for_message = AsyncMock(return_value=False)
-    db.was_profile_liked = AsyncMock(return_value=False)
+    db.was_profile_matched = AsyncMock(return_value=False)
     db.record_auto_action = AsyncMock()
     db.get_captcha_answer = AsyncMock(return_value=None)
     db.record_pending_captcha = AsyncMock(return_value=True)
@@ -2465,13 +2465,14 @@ class TestCollectorAutoActions:
             1, "LIKE", "LIKE", 1234060895, 900
         )
 
-    def test_already_liked_profile_gets_dislike(self) -> None:
-        """Повторный показ уже лайкнутой анкеты → 👎, а не второй лайк.
+    def test_already_matched_profile_gets_dislike(self) -> None:
+        """Повторный показ девушки, с которой уже был матч → 👎.
 
-        Правило владельца 2026-11-01: «если уже была эта девушка — не лайкай».
+        Правило владельца 2026-11-01: совпали и общались — второй раз не
+        лайкаем; свой лайк без ответа не мешает лайкать дальше.
         """
         from models.decision import AIDecision
-        from services.decision_service import ALREADY_LIKED_REASON
+        from services.decision_service import ALREADY_MATCHED_REASON
 
         auto_client = make_tg_client()
         auto_client.is_connected.return_value = True
@@ -2479,10 +2480,10 @@ class TestCollectorAutoActions:
             self._make_config(), self._make_decision(AIDecision.LIKE),
             auto_client, AsyncMock(),
         )
-        collector._db.was_profile_liked = AsyncMock(return_value=True)
+        collector._db.was_profile_matched = AsyncMock(return_value=True)
         disliked = self._make_decision(AIDecision.DISLIKE)
-        disliked.reasons = [ALREADY_LIKED_REASON]
-        collector._decision_service.apply_already_liked = AsyncMock(
+        disliked.reasons = [ALREADY_MATCHED_REASON]
+        collector._decision_service.apply_already_matched = AsyncMock(
             return_value=disliked,
         )
         task = RawTask(
@@ -2497,9 +2498,7 @@ class TestCollectorAutoActions:
         sent = [c.args[1] for c in auto_client.send_message.call_args_list]
         assert MESSAGE_BUTTON_TEXT not in sent
         assert "👎" in sent
-        collector._db.was_profile_liked.assert_awaited_once_with(
-            1, exclude_message_id=900,
-        )
+        collector._db.was_profile_matched.assert_awaited_once_with(1)
 
     def test_informative_like_starts_message_chain_on_auto_account(self) -> None:
         """LIKE + informative + like_message → цепочка «Берем)» стартует.

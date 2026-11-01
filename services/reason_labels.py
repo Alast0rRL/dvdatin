@@ -30,7 +30,7 @@ SCORING_LABELS: dict[str, str] = {
     "NO_FEATURES_FOUND": "Мало информации в анкете",
     "INSUFFICIENT_DATA": "Недостаточно данных",
     "INFORMATIVE_CLEAN": "Анкета содержательная, стоп-признаков нет",
-    "ALREADY_LIKED": "Уже лайкали её раньше — второй раз не лайкаю",
+    "ALREADY_MATCHED": "С ней уже был взаимный лайк — второй раз не лайкаю",
 }
 
 NEGATIVE_LABELS: dict[str, str] = {

@@ -122,15 +122,15 @@ class TestMatchDialogDb:
         run(db.set_chat_profile_context(LEO, 43428, "dvai"))
         assert run(db.find_match_card("дэп", LEO, "dvai"))[1] == 0
 
-    def test_was_profile_liked(self, db: Database) -> None:
-        """Лайк на прошлом показе → «уже лайкали»; текущая карточка не в счёт."""
+    def test_was_profile_matched(self, db: Database) -> None:
+        """Свой лайк без ответа — не матч; уведомление Leo / личка — матч."""
         pid = run(_profile(db, "Роза", 1000, "dvai_2", []))
-        assert not run(db.was_profile_liked(pid, exclude_message_id=2000))
-        run(db.record_auto_action(pid, "DISLIKE", "DISLIKE", LEO, 900))
-        assert not run(db.was_profile_liked(pid, exclude_message_id=2000))
         run(db.record_auto_action(pid, "LIKE", "LIKE", LEO, 1000))
-        assert run(db.was_profile_liked(pid, exclude_message_id=2000))
-        assert not run(db.was_profile_liked(pid, exclude_message_id=1000))
+        assert not run(db.was_profile_matched(pid))
+        run(db.add_match_dialog("dvai_2", 5, name="Роза", profile_id=pid))
+        assert run(db.was_profile_matched(pid))
+        other = run(_profile(db, "Олеся", 1100, "dvai_2", []))
+        assert not run(db.was_profile_matched(other))
 
     def test_has_reaction_for_message_sees_dislike(self, db: Database) -> None:
         pid = run(_profile(db, "Роза", 1000, "dvai_2", []))

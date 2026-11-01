@@ -297,24 +297,23 @@ class PhotoStepsMixin:
             logger.error(f"PhotoTaste: не удалось записать решение: {e!r}")
             return decision
 
-    async def _apply_already_liked(
-        self, decision: object, profile_id: int, message_id: int,
+    async def _apply_already_matched(
+        self, decision: object, profile_id: int,
     ) -> object:
-        """LIKE → DISLIKE, если эту анкету уже лайкали (повторный показ).
+        """LIKE → DISLIKE, если с этой девушкой уже был взаимный лайк.
 
-        Шаг после модели фото и до проверки пороков (CLIP не нужен). Любая
-        ошибка БД — решение без изменений: лайк лучше лишний, чем лента встала.
+        Свой лайк без ответа не считается — её можно лайкать дальше. Шаг
+        после модели фото и до проверки пороков (CLIP не нужен). Ошибка БД —
+        решение без изменений.
         """
         if self._decision_service is None or self._db is None:
             return decision
         try:
-            if not await self._db.was_profile_liked(
-                int(profile_id), exclude_message_id=message_id,
-            ):
+            if not await self._db.was_profile_matched(int(profile_id)):
                 return decision
-            return await self._decision_service.apply_already_liked(decision)
+            return await self._decision_service.apply_already_matched(decision)
         except Exception as e:
-            logger.error(f"AlreadyLiked: проверка не удалась, оставляю прежнее: {e!r}")
+            logger.error(f"AlreadyMatched: проверка не удалась, оставляю прежнее: {e!r}")
             return decision
 
     async def _apply_photo_vice(

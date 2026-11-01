@@ -1364,24 +1364,19 @@ class Database:
         )
         return await cursor.fetchone() is not None
 
-    async def was_profile_liked(
-        self, profile_id: int, exclude_message_id: int | None = None,
-    ) -> bool:
-        """Лайкали ли эту анкету раньше (бот или владелец вручную).
+    async def was_profile_matched(self, profile_id: int) -> bool:
+        """Был ли с этой анкетой взаимный лайк (матч → переписка).
 
-        Бот — LIKE в ``auto_actions_log`` на ДРУГОЙ карточке (повторный показ);
-        владелец — ❤️ / сообщение в чате Leo (``sent_messages``). Правило
-        владельца (2026-11-01): уже лайкнутую девушку второй раз не лайкаем.
+        Правило владельца (2026-11-01): девушку, с которой уже совпали и
+        общались, второй раз не лайкаем. Свой лайк без ответа — не повод:
+        её можно лайкать дальше. Матч — ``match_responses`` (уведомление
+        Leo), ``dialog_contacts`` / ``match_dialogs`` (личка с ней).
         """
         cursor = await self._connection.execute(
-            "SELECT 1 FROM auto_actions_log WHERE profile_id = ? "
-            "AND action IN ('LIKE', 'MESSAGE') "
-            "AND COALESCE(telegram_message_id, -1) != COALESCE(?, -2) "
-            "UNION ALL "
-            "SELECT 1 FROM sent_messages WHERE profile_id = ? "
-            "AND action IN ('LIKE', 'MESSAGE') "
-            "AND telegram_message_id != COALESCE(?, -2) LIMIT 1",
-            (profile_id, exclude_message_id, profile_id, exclude_message_id),
+            "SELECT 1 FROM match_responses WHERE profile_id = ? "
+            "UNION ALL SELECT 1 FROM dialog_contacts WHERE profile_id = ? "
+            "UNION ALL SELECT 1 FROM match_dialogs WHERE profile_id = ? LIMIT 1",
+            (profile_id, profile_id, profile_id),
         )
         return await cursor.fetchone() is not None
 

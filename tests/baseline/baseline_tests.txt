@@ -303,7 +303,7 @@ tests/test_collector.py::TestOutgoingManualCapture::test_cyrillic_text_with_numb
 tests/test_collector.py::TestCallbackQueryCapture::test_callback_logs_data
 tests/test_collector.py::TestCallbackQueryCapture::test_callback_data_bytes_decoded
 tests/test_collector.py::TestCollectorAutoActions::test_like_decision_sends_composer_button_on_auto_account
-tests/test_collector.py::TestCollectorAutoActions::test_already_liked_profile_gets_dislike
+tests/test_collector.py::TestCollectorAutoActions::test_already_matched_profile_gets_dislike
 tests/test_collector.py::TestCollectorAutoActions::test_informative_like_starts_message_chain_on_auto_account
 tests/test_collector.py::TestCollectorAutoActions::test_non_informative_like_also_starts_message_chain
 tests/test_collector.py::TestCollectorAutoActions::test_dislike_deferred_while_composer_open
@@ -617,7 +617,7 @@ tests/test_match_intro.py::TestMatchDialogDb::test_card_ids_last_showing_of_acco
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_profile_by_context
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_returns_card_of_match
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_on_repeat_showing
-tests/test_match_intro.py::TestMatchDialogDb::test_was_profile_liked
+tests/test_match_intro.py::TestMatchDialogDb::test_was_profile_matched
 tests/test_match_intro.py::TestMatchDialogDb::test_has_reaction_for_message_sees_dislike
 tests/test_match_intro.py::TestMatchDialogDb::test_card_ids_by_anchor_not_last_showing
 tests/test_match_intro.py::TestMatchDialogDb::test_card_columns_saved

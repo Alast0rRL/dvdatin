@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 
 
 
-#: Причина «эту анкету уже лайкали» (``apply_already_liked``).
-ALREADY_LIKED_REASON: str = "ALREADY_LIKED"
+#: Причина «с ней уже был взаимный лайк» (``apply_already_matched``).
+ALREADY_MATCHED_REASON: str = "ALREADY_MATCHED"
 
 class DecisionService:
     """Сервис принятия детерминированных решений по профилям.
@@ -284,18 +284,18 @@ class DecisionService:
 
     # ── Фото: сигарета/алкоголь (правило владельца) ──────────────────
 
-    async def apply_already_liked(
+    async def apply_already_matched(
         self, result: AIDecisionResult,
     ) -> AIDecisionResult:
-        """LIKE → DISLIKE: эту анкету уже лайкали (повторный показ в Leo).
+        """LIKE → DISLIKE: с этой девушкой уже был взаимный лайк.
 
-        Правило владельца (2026-11-01): второй лайк той же девушке не нужен —
-        он тратит дневной лимит и шлёт ей «Берем)» повторно. Факт «уже
-        лайкнута» коллектор берёт из журнала (``Database.was_profile_liked``),
-        это явный признак, а не нехватка данных — инвариант
-        NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE не нарушается.
+        Правило владельца (2026-11-01): с кем уже совпали и общались — второй
+        раз не лайкаем (тратит лимит, снова «Берем)» и снова матч). Свой лайк
+        без ответа — не причина, её можно лайкать дальше. Факт матча
+        коллектор берёт из БД (``Database.was_profile_matched``) — это явный
+        признак, инвариант NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE цел.
         """
-        return await self.apply_photo_vice(result, ALREADY_LIKED_REASON)
+        return await self.apply_photo_vice(result, ALREADY_MATCHED_REASON)
 
     async def apply_photo_vice(
         self, result: AIDecisionResult, reason: str,
