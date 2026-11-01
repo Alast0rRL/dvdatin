@@ -9,7 +9,9 @@ from datetime import datetime
 from loguru import logger
 from telethon import events
 
-from collectors.match_intro import INTRO_SENT, NO_PROFILE, OTHER_ACCOUNT
+from collectors.match_intro import (
+    INTRO_SENT, NO_ACCESS, NO_PROFILE, OTHER_ACCOUNT,
+)
 from services.match_script_rules import (
     ASKS_BOT,
     DELETED,
@@ -44,6 +46,14 @@ class MatchDialogsMixin:
         target = self.redirect_for(session)
         if target:
             target_client, _ = self._clients_for_session(target)
+            if (
+                target_client is not None and not match.telegram_username
+                and match.telegram_user_id
+            ):
+                # Без @username с чужого аккаунта ей не написать (нет её
+                # access_hash): не пишем, владельцу — «напиши сам».
+                await self._note_no_access(client, session, target, match)
+                return
             if target_client is not None:
                 source, session, client = session, target, target_client
         scope = self._session_scope(session) if source else nullcontext()
@@ -68,6 +78,33 @@ class MatchDialogsMixin:
                 await self._enroll_match_intro(
                     client, session, match, source=source,
                 )
+
+    async def _note_no_access(
+        self, client: object, session: str, target: str, match: ParsedMatch,
+    ) -> None:
+        """Матч без @username при перенаправлении лички на ``target``.
+
+        Ссылка Leo даёт только id; написать ей может лишь аккаунт матча
+        (через своё сообщение Leo), с ``target`` Telegram её не найдёт (прод
+        2026-11-01, Софа: «Could not find the input entity» → окно ошибки).
+        Владелец решил (2026-11-02): только уведомлять. Бот не пишет; она — в
+        журнале переписок аккаунта матча со статусом NO_ACCESS на /dialogs.
+        """
+        user_id = int(match.telegram_user_id or 0)
+        logger.info(
+            f"MatchGreeting: у {match.name} (id {user_id}) нет @username — "
+            f"с {target} не написать, пишет владелец с {session}"
+        )
+        await self._track_dialog(client, session, match)
+        try:
+            await self._db.add_match_dialog(session, user_id, name=match.name or "")
+            await self._db.update_match_dialog(session, user_id, status=NO_ACCESS)
+        except Exception as e:
+            logger.error(f"MatchGreeting: не отметил {match.name}: {e}")
+        await self._auto_engine.notify_owner(
+            f"⚠️ Взаимный лайк на {session}: {match.name} (id {user_id}) — у неё "
+            f"нет @username, с {target} ей не написать. Напиши ей сам с {session}."
+        )
 
     async def _track_dialog(
         self, client: object, session: str, match: ParsedMatch, *,

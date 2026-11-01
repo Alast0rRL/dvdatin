@@ -383,6 +383,24 @@ class TestCollectorGreetsOnMatch:
         text = collector._engines["dvai"].notify_owner.await_args.args[0]
         assert "не смог" in text and "dvai_2" in text
 
+    def test_redirect_without_username_only_notifies(self) -> None:
+        """Прод 2026-11-01 (Софа): без @username с чужого аккаунта ей не
+        написать — не пишем и не роняем ERROR, статус NO_ACCESS на аккаунте
+        матча и «напиши сам» владельцу (решение владельца 2026-11-02)."""
+        collector, other, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "dvai"},
+        )
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
+        task = self._task(auto)
+        task.text = MATCH_ID
+        run(collector._process_message(task))
+        collector._match_greeter.greet.assert_not_called()
+        db = collector._db
+        assert db.add_match_dialog.await_args.args == ("dvai_2", 8690954703)
+        assert db.update_match_dialog.await_args.kwargs["status"] == "NO_ACCESS"
+        text = collector._auto_engine.notify_owner.await_args.args[0]
+        assert "нет @username" in text and "с dvai_2" in text
+
     def test_set_redirect_live(self) -> None:
         collector, _, _ = self._collector("SEMI_AUTO")
         assert collector.redirect_for("dvai_2") == ""
