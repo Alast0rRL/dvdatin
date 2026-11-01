@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 from rich.console import Console
+from telethon.errors import FloodWaitError
 from rich.panel import Panel
 from rich.table import Table
 
@@ -29,6 +30,12 @@ if TYPE_CHECKING:
 
     from app.config import AutoActionsConfig
     from database.database import Database
+
+#: Запас к сроку FloodWait уведомлений (сек).
+NOTIFY_FLOOD_EXTRA_SEC: float = 5.0
+#: Сколько служебных уведомлений копить на время FloodWait (старые выпадают).
+NOTIFY_BACKLOG_MAX: int = 20
+
 
 console = Console(force_terminal=True)
 
@@ -122,6 +129,12 @@ class AutoActionEngine:
         # при пересылке резолвятся в посторонние сообщения (прод-баг 2026-10-19).
         self._account_session = account_session or ""
         self._notify_user_id: int | None = None
+        # FloodWait на уведомлениях (Telegram: «A wait of N seconds is
+        # required»): до этого срока владельцу не пишем — пересылки анкет
+        # пропускаем, служебные тексты копим и шлём одним сообщением после.
+        # Прод 2026-11-01: ERROR «ошибка служебного уведомления» ×3 подряд.
+        self._notify_paused_until: float = 0.0
+        self._notify_backlog: list[str] = []
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
@@ -317,21 +330,13 @@ class AutoActionEngine:
         """Сообщает владельцу, что дневной лимит ❤️ исчерпан и лайки приостановлены."""
         if not self.enabled:
             return
-        target = await self._resolve_notify_target()
-        if target is None or self._client is None:
-            return
-        try:
-            until = time.strftime(
-                "%H:%M", time.localtime(self._likes_exhausted_until)
-            )
-            await self._client.send_message(
-                target,
-                "⚠️ Дневной лимит ❤️ в Дайвинчике исчерпан — лайки не отправляю "
-                f"до {until}. Дизлайки (👎) продолжаю слать.",
-            )
-            logger.info(f"AutoAction: уведомление о лимите ❤️ отправлено в chat={target}")
-        except Exception as e:
-            logger.error(f"AutoAction: ошибка уведомления о лимите ❤️: {e}")
+        until = time.strftime(
+            "%H:%M", time.localtime(self._likes_exhausted_until)
+        )
+        await self.notify_owner(
+            "⚠️ Дневной лимит ❤️ в Дайвинчике исчерпан — лайки не отправляю "
+            f"до {until}. Дизлайки (👎) продолжаю слать."
+        )
 
     def swap_client(
         self,
@@ -960,6 +965,8 @@ class AutoActionEngine:
             return
         if action == "DISLIKE" and not self._config.notify_dislikes:
             return
+        if self._notify_paused():
+            return  # FloodWait: пересылки анкет пропускаем, лента важнее
         if await self._has_prior_action(profile_id):
             # Реакция уже отправлена (лента движется), но владельца повторно
             # не дёргаем — он уже получил уведомление по этой анкете.
@@ -983,7 +990,8 @@ class AutoActionEngine:
                 f"AutoAction: уведомление отправлено в chat={target}"
             )
         except Exception as e:
-            logger.error(f"AutoAction: ошибка уведомления: {e}")
+            if not self._notify_flood(e, "пересылка анкеты"):
+                logger.error(f"AutoAction: ошибка уведомления: {e}")
 
     async def _has_prior_action(self, profile_id: int | None) -> bool:
         """Есть ли уже зафиксированное авто-действие по профилю.
@@ -1017,6 +1025,12 @@ class AutoActionEngine:
         """
         if self._client is None or message_id is None:
             return
+        if self._notify_paused():
+            self._queue_notice(
+                "⚠️ Была REVIEW-анкета — нужно твоё решение в Дайвинчике "
+                "(пересылка не ушла: пауза Telegram)."
+            )
+            return
         if await self._has_prior_action(profile_id):
             # Повторное появление REVIEW-анкеты уже не требует нового действия
             # владельца: уведомление по ней уже было отправлено ранее.
@@ -1048,7 +1062,46 @@ class AutoActionEngine:
                 f"AutoAction: уведомление «нужно действие» отправлено в chat={target}"
             )
         except Exception as e:
-            logger.error(f"AutoAction: ошибка уведомления «нужно действие»: {e}")
+            if not self._notify_flood(e, "REVIEW-анкета"):
+                logger.error(f"AutoAction: ошибка уведомления «нужно действие»: {e}")
+
+    def _notify_paused(self) -> bool:
+        """Уведомления на паузе после FloodWait?"""
+        return time.time() < self._notify_paused_until
+
+    def _notify_flood(self, error: BaseException, what: str) -> bool:
+        """FloodWait на уведомлении → пауза (WARNING, не ERROR). True — это он."""
+        if not isinstance(error, FloodWaitError):
+            return False
+        wait = float(getattr(error, "seconds", 0) or 0) + NOTIFY_FLOOD_EXTRA_SEC
+        self._notify_paused_until = max(
+            self._notify_paused_until, time.time() + wait,
+        )
+        logger.warning(
+            f"AutoAction: Telegram просит подождать {wait:.0f} с ({what}) — "
+            "уведомления владельцу на паузе"
+        )
+        return True
+
+    def _queue_notice(self, text: str) -> None:
+        """Служебный текст — в очередь до конца паузы (без дублей)."""
+        if text and text not in self._notify_backlog:
+            self._notify_backlog.append(text)
+            del self._notify_backlog[:-NOTIFY_BACKLOG_MAX]
+
+    async def _flush_notice_backlog(self, client: object, target: int) -> None:
+        """После паузы — накопленные служебные тексты одним сообщением."""
+        if not self._notify_backlog or self._notify_paused():
+            return
+        backlog, self._notify_backlog = self._notify_backlog, []
+        text = "⏳ Пока Telegram держал паузу:\n\n" + "\n\n— — —\n\n".join(backlog)
+        try:
+            await client.send_message(target, text[:4000])
+        except Exception as e:
+            if not self._notify_flood(e, "очередь уведомлений"):
+                logger.error(f"AutoAction: ошибка отправки очереди уведомлений: {e}")
+            self._notify_backlog = backlog + self._notify_backlog
+            del self._notify_backlog[:-NOTIFY_BACKLOG_MAX]
 
     async def notify_owner(self, text: str) -> bool:
         """Шлёт владельцу служебное сообщение (напр. о сбое автопотока).
@@ -1061,9 +1114,13 @@ class AutoActionEngine:
         client = self._client
         if client is None or not text:
             return False
+        if self._notify_paused():
+            self._queue_notice(text)
+            return False
         target = await self._resolve_notify_target()
         if target is None:
             return False
+        await self._flush_notice_backlog(client, target)
         try:
             await client.send_message(target, text)
             logger.info(
@@ -1071,7 +1128,10 @@ class AutoActionEngine:
             )
             return True
         except Exception as e:
-            logger.error(f"AutoAction: ошибка служебного уведомления: {e}")
+            if self._notify_flood(e, "служебное уведомление"):
+                self._queue_notice(text)
+            else:
+                logger.error(f"AutoAction: ошибка служебного уведомления: {e}")
             return False
 
     async def _resolve_notify_target(self) -> int | None:

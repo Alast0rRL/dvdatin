@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1062 total, no linter/formatter configured)
+# Run all tests (~1065 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -87,6 +87,7 @@ python -m pytest tests/test_ai.py -v
 - **Тесты пишут конфиг только во временные файлы**: `tests/conftest.py::_protect_real_config` роняет запись в настоящий `config/config.yaml`.
 - **Текст переписки и чужих сообщений не пишется в лог** (loguru / debug-консоль): только в БД. ControlBot логирует лишь имя команды. Тесты: `TestControlBotPrivacy`, `test_dialog_logger.py`.
 - **ControlBot — только входящие личные `/команды` от `control.allowed_user_ids`**. Бот рецензий (`ReviewBot`) удалён — не возвращать.
+- **FloodWait на уведомлениях — пауза, не ERROR**: до срока Telegram пересылки анкет пропускаем, служебные тексты копим и шлём одним сообщением. Тесты: `TestNotifyFloodWait`.
 - **Любой ERROR доходит до владельца** (`collectors/error_reporter.py`: `app_state.bot_error` + Telegram, ≤ 1 раз в 10 мин). Тест: `test_error_reporter.py`.
 
 ## Gotchas
@@ -118,7 +119,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-11-01): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (108), test_auto_action_audit (5), test_captcha_memory (11), test_collector (185), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (32), test_match_intro (39), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1062 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-01): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (111), test_auto_action_audit (5), test_captcha_memory (11), test_collector (185), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (32), test_match_intro (39), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1065 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

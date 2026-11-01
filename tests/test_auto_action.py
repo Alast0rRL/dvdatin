@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from telethon.errors import FloodWaitError
 
 from tests.mocks import make_tg_client
 
@@ -736,6 +738,61 @@ class TestAutoActionNotify:
         client.forward_messages.assert_not_called()
         # Основное действие отправлено (кнопка композера, без ❤️).
         assert client.send_message.call_count == 1
+
+
+class TestNotifyFloodWait:
+    """FloodWait на уведомлениях владельцу — пауза, а не «Ошибка бота».
+
+    Прод 2026-11-01: «ошибка служебного уведомления: A wait of 195 seconds
+    is required (caused by SendMessageRequest)» ×3 — бот продолжал слать.
+    """
+
+    @staticmethod
+    def _flood() -> FloodWaitError:
+        return FloodWaitError(request=None, capture=195)
+
+    def test_flood_pauses_and_queues_owner_notice(self) -> None:
+        client = make_client()
+        client.send_message = AsyncMock(side_effect=self._flood())
+        e = make_engine(client=client)
+        e._notify_chat_id = 555
+        loop = asyncio.get_event_loop()
+        with patch("collectors.auto_action.logger") as log:
+            assert loop.run_until_complete(e.notify_owner("первое")) is False
+            log.error.assert_not_called()
+            log.warning.assert_called()
+        assert e._notify_paused()
+        # Пока пауза — в Telegram не идём вовсе, текст копится.
+        client.send_message.reset_mock()
+        assert loop.run_until_complete(e.notify_owner("второе")) is False
+        client.send_message.assert_not_called()
+        assert e._notify_backlog == ["первое", "второе"]
+
+    def test_backlog_sent_once_after_pause(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        e._notify_chat_id = 555
+        e._notify_backlog = ["первое", "второе"]
+        e._notify_paused_until = time.time() - 1
+        assert asyncio.get_event_loop().run_until_complete(
+            e.notify_owner("третье")
+        ) is True
+        texts = [c.args[1] for c in client.send_message.await_args_list]
+        assert len(texts) == 2
+        assert "первое" in texts[0] and "второе" in texts[0]
+        assert texts[1] == "третье"
+        assert e._notify_backlog == []
+
+    def test_card_forward_skipped_while_paused(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        e._notify_chat_id = 555
+        e._notify_paused_until = time.time() + 100
+        asyncio.get_event_loop().run_until_complete(
+            e._notify("LIKE", profile_id=1, message_id=10)
+        )
+        client.forward_messages.assert_not_called()
+        client.send_message.assert_not_called()
 
 
 class TestComposerRecovery:
