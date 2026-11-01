@@ -643,9 +643,7 @@ tests/test_match_intro.py::TestMatchIntro::test_pin_disabled
 tests/test_match_intro.py::TestMatchIntro::test_pin_error_still_sent
 tests/test_match_intro.py::TestMatchIntro::test_forward_error_marks_error
 tests/test_match_intro.py::TestMatchIntro::test_flood_postpones
-tests/test_match_intro.py::TestMatchIntro::test_card_relayed_from_account_that_saw_it
-tests/test_match_intro.py::TestMatchIntro::test_relay_copies_not_found_is_error
-tests/test_match_intro.py::TestMatchIntro::test_match_card_beats_own_old_showing
+tests/test_match_intro.py::TestMatchIntro::test_card_on_other_account_not_relayed
 tests/test_match_intro.py::TestMatchIntro::test_match_card_missing_sends_nothing
 tests/test_match_intro.py::TestMatchIntro::test_own_card_sent_from_leo_chat
 tests/test_match_intro.py::TestMatchIntro::test_unknown_card_sends_nothing

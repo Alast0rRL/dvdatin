@@ -9,7 +9,7 @@ from datetime import datetime
 from loguru import logger
 from telethon import events
 
-from collectors.match_intro import INTRO_SENT, NO_PROFILE
+from collectors.match_intro import INTRO_SENT, NO_PROFILE, OTHER_ACCOUNT
 from services.match_script_rules import (
     ASKS_BOT,
     DELETED,
@@ -186,6 +186,14 @@ class MatchDialogsMixin:
                         f"💬 {row.get('name') or who} ({who}) ответила на привет "
                         f"на {session or 'аккаунте'} — её анкету не нашёл, "
                         "не слал. Напиши ей сам."
+                    )
+                    continue
+                if status == OTHER_ACCOUNT:
+                    # Между аккаунтами анкету не пересылаем — шлёт владелец.
+                    await self._auto_engine.notify_owner(
+                        f"💬 {row.get('name') or who} ({who}) ответила на привет "
+                        f"на {session or 'аккаунте'} — её анкета в ленте другого "
+                        "аккаунта, между аккаунтами не пересылаю. Отправь сам."
                     )
                     continue
                 if status != INTRO_SENT:

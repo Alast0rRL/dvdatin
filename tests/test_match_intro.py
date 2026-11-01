@@ -16,6 +16,7 @@ from collectors.match_intro import (
     ERROR,
     INTRO_SENT,
     NO_PROFILE,
+    OTHER_ACCOUNT,
     OWNER_CHAT,
     SCHEDULED,
     WAITING_REPLY,
@@ -310,83 +311,19 @@ class TestMatchIntro:
         kw = db.update_match_dialog.await_args.kwargs
         assert "status" not in kw and "due_at" in kw
 
-    @staticmethod
-    def _relay_setup(copies: list) -> tuple[MagicMock, AsyncMock, AsyncMock, MatchIntro]:
-        """Анкета есть только в чате Leo dvai; пишет девушке dvai_2."""
+    def test_card_on_other_account_not_relayed(self) -> None:
+        """Анкета в ленте другого аккаунта — между аккаунтами не пересылаем.
+
+        Просьба владельца 2026-11-01: «прекрати пересылку между аккаунтами,
+        оставляем только чат». Свой старый показ того же profile_id тоже не
+        шлём (там бывает другая девушка, прод 2026-10-30 @Miamikii).
+        """
         db = make_db()
-        db.get_profile_card_message_ids = AsyncMock(
-            side_effect=lambda pid, session, **kw: [11, 12] if session == "dvai" else []
-        )
-        src = make_client(sent=[
-            SimpleNamespace(id=501, message=""),
-            SimpleNamespace(id=502, message="Роза, 19 – люблю котиков"),
-        ])
-        src.get_me = AsyncMock(return_value=SimpleNamespace(id=1, username="src_acc"))
-        dst = make_client()
-        dst.get_me = AsyncMock(return_value=SimpleNamespace(id=2, username="dst_acc"))
-        now = datetime.now(timezone.utc)
-
-        def iter_messages(*args, **kwargs):
-            async def gen():
-                for m in copies:
-                    yield SimpleNamespace(date=now, out=False, **m)
-            return gen()
-
-        dst.iter_messages = MagicMock(side_effect=iter_messages)
-        intro = make_intro(db)
-        intro.clients = {"dvai": src, "dvai_2": dst}
-        return db, src, dst, intro
-
-    def test_card_relayed_from_account_that_saw_it(self) -> None:
-        """Перенаправление лички: анкету видел dvai → он шлёт её dvai_2, тот — ей."""
-        fwd = SimpleNamespace(from_id=LEO)
-        db, src, dst, intro = self._relay_setup([
-            {"id": 9, "message": "Роза, 19 – люблю котиков", "fwd_from": fwd},
-            {"id": 8, "message": "", "fwd_from": fwd},
-            {"id": 7, "message": "старая чужая", "fwd_from": fwd},
-        ])
-        status = run(intro.send_intro(dst, "dvai_2", due_row(card_session="dvai")))
-        assert status == INTRO_SENT
-        sargs = src.forward_messages.await_args
-        assert sargs.args[1] == [11, 12] and sargs.kwargs["from_peer"] == LEO
-        assert src.get_input_entity.await_args.args[0] == "dst_acc"
-        dargs = dst.forward_messages.await_args
-        assert dargs.args[1] == [8, 9]
-        # Пересылает из своего чата с dvai, а не из чата Leo.
-        assert dargs.kwargs["from_peer"] != LEO
-        looked_up = [c.args[0] for c in dst.get_input_entity.await_args_list]
-        assert "src_acc" in looked_up
-        assert db.update_match_dialog.await_args.kwargs["status"] == INTRO_SENT
-
-    def test_relay_copies_not_found_is_error(self) -> None:
-        db, src, dst, intro = self._relay_setup([])
-        status = run(intro.send_intro(dst, "dvai_2", due_row(card_session="dvai")))
-        assert status == ERROR
-        dst.forward_messages.assert_not_called()
-        assert "relay" in db.update_match_dialog.await_args.kwargs["error"]
-
-    def test_match_card_beats_own_old_showing(self) -> None:
-        """Прод 2026-10-30 (@Miamikii): матч на dvai, личка на dvai_2. На dvai_2
-        был старый показ того же profile_id — другой девушки. Шлём карточку
-        матча с dvai, а не «последний показ» на своём аккаунте."""
-        fwd = SimpleNamespace(from_id=LEO)
-        db, src, dst, intro = self._relay_setup([
-            {"id": 9, "message": "Роза, 19 – люблю котиков", "fwd_from": fwd},
-            {"id": 8, "message": "", "fwd_from": fwd},
-        ])
-        calls: list[tuple] = []
-
-        async def card_ids(pid, session, anchor=None):
-            calls.append((session, anchor))
-            if session == "dvai" and anchor == 746612:
-                return [11, 12]
-            return [34048, 34049]  # чужая «Роза» на dvai_2
-
-        db.get_profile_card_message_ids = AsyncMock(side_effect=card_ids)
+        client = make_client()
         row = due_row(card_session="dvai", card_message_id=746612)
-        assert run(intro.send_intro(dst, "dvai_2", row)) == INTRO_SENT
-        assert calls == [("dvai", 746612)]
-        assert src.forward_messages.await_args.args[1] == [11, 12]
+        assert run(make_intro(db).send_intro(client, "dvai_2", row)) == OTHER_ACCOUNT
+        client.forward_messages.assert_not_called()
+        assert db.update_match_dialog.await_args.kwargs["status"] == OTHER_ACCOUNT
 
     def test_match_card_missing_sends_nothing(self) -> None:
         """Карточка матча не нашлась — не шлём «похожую» анкету."""
@@ -399,12 +336,9 @@ class TestMatchIntro:
 
     def test_own_card_sent_from_leo_chat(self) -> None:
         db = make_db()
-        src = make_client()
         intro = make_intro(db)
-        intro.clients = {"dvai": src, "dvai_2": make_client()}
-        client = intro.clients["dvai_2"]
+        client = make_client()
         assert run(intro.send_intro(client, "dvai_2", due_row())) == INTRO_SENT
-        src.forward_messages.assert_not_called()
         assert client.forward_messages.await_args.kwargs["from_peer"] == LEO
 
     def test_unknown_card_sends_nothing(self) -> None:
@@ -413,7 +347,6 @@ class TestMatchIntro:
         db = make_db()  # «последний показ» нашёлся бы — [11, 12]
         intro = make_intro(db)
         client = make_client()
-        intro.clients = {"dvai": make_client(), "dvai_2": client}
         row = due_row(card_session="", card_message_id=0)
         assert run(intro.send_intro(client, "dvai_2", row)) == NO_PROFILE
         db.get_profile_card_message_ids.assert_not_called()

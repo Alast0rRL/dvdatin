@@ -183,9 +183,6 @@ class DvinchikCollector(
         self._match_intro = MatchIntro(
             config.auto_actions.match_intro, db, config.dvinchik.chat_id,
         )
-        # Клиенты аккаунтов: анкету, которую видел другой аккаунт (перенаправление
-        # лички), автопереписка пересылает через него.
-        self._match_intro.clients = dict(zip(self._client_sessions, self._clients))
         # После анкеты — сценарий знакомства по схеме владельца (AUTO).
         self._match_script = MatchScript(config.auto_actions.match_script, db)
         # Журнал переписок с девушками-матчами (данные для анализа общения).
