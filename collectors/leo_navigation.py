@@ -322,12 +322,12 @@ class LeoNavigationMixin:
         1. Если для этой капчи (сигнатура = нормализованный текст) уже
            выучен ответ владельца — отправляем его (идемпотентно: только
            если текст ещё не отправлялся после карточки капчи).
-        2. Если ответа нет — капча записывается в captcha_memory (pending,
-           answer IS NULL) и выводится на главном экране (блок «Капчи ждут
-           ответа»). Кнопку наугад
-           НЕ нажимаем: ждём ответа владельца. Исключение — включённый
-           fallback_press_last: тогда пробиваем капчу последней ОБЫЧНОЙ
-           кнопкой (старое поведение, чтобы не замирала лента).
+        2. Если ответа нет и включён fallback_press_last (по умолчанию,
+           владелец 2026-11-01: «он должен нажать правую (последнюю)
+           кнопку») — жмём последнюю ОБЫЧНУЮ кнопку и запоминаем её как
+           ответ (``learn_captcha_answer``): на сайте строка «🧩 Капча: бот
+           нажал …». При fallback_press_last=false капча записывается в
+           captcha_memory (pending) и ждёт ответа в блоке «Капчи ждут ответа».
         3. Если капча-память выключена (captcha.enabled=false) — полностью
            старое поведение: нажимаем последнюю обычную кнопку.
 
@@ -371,7 +371,12 @@ class LeoNavigationMixin:
                             card, answer, used_signature=signature
                         )
 
-                # 2) Неизвестная капча — выводим на сайт, наугад не нажимаем.
+                # 2) Неизвестная капча: жмём последнюю кнопку и запоминаем.
+                if cc.fallback_press_last:
+                    return await self._press_last_captcha_button(
+                        card, signature, text_full, buttons,
+                    )
+                # Без fallback — выводим на сайт, наугад не нажимаем.
                 if self._db is not None:
                     try:
                         await self._db.record_pending_captcha(
@@ -386,9 +391,7 @@ class LeoNavigationMixin:
                     f"владельца в блоке «Капчи ждут ответа» на главном экране"
                 )
                 await self._notify_unknown_captcha(card, text_full, buttons)
-                if not cc.fallback_press_last:
-                    return False
-                # fallback_press_last: проваливаемся в старое нажатие кнопки.
+                return False
 
             # 3) Обычная кнопка: последняя ОБЫЧНАЯ reply-кнопка (не спец-запрос).
             # Спец-кнопки (гео/телефон) текстом не нажимаются — нужен реальный
@@ -400,6 +403,41 @@ class LeoNavigationMixin:
         except Exception as e:
             logger.error(f"AutoAction: ошибка обработки капчи: {e}")
             return False
+
+    async def _press_last_captcha_button(
+        self, card: object, signature: str, text_full: str, buttons: list[str],
+    ) -> bool:
+        """Жмёт последнюю (правую) обычную кнопку неизвестной капчи.
+
+        Нажатая кнопка запоминается как ответ (в следующий раз — сразу
+        ею), на сайте над лентой — строка «🧩 Капча: бот нажал …».
+        """
+        plain = self._extract_plain_button_texts(card)
+        if not plain:
+            return False
+        answer = plain[-1]
+        sent = await self._send_captcha_text(card, answer)
+        if not sent:
+            return False
+        logger.warning(
+            f"AutoAction: неизвестная капча (msg={card.id}) — нажал последнюю "
+            f"кнопку «{answer}» и запомнил ответ"
+        )
+        if self._db is not None:
+            try:
+                await self._db.learn_captcha_answer(
+                    signature, text_full,
+                    json.dumps(buttons, ensure_ascii=False), answer,
+                )
+            except Exception as e:
+                logger.error(f"AutoAction: не запомнил ответ капчи: {e}")
+        try:
+            await self._auto_engine.notify_owner(
+                f"🧩 Капча Leo: нажал «{answer}»\n\n{text_full[:300]}"
+            )
+        except Exception as e:
+            logger.error(f"AutoAction: уведомление о капче: {e}")
+        return True
 
     async def _send_captcha_text(
         self, card: object, text: str, used_signature: str | None = None

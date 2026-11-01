@@ -159,6 +159,7 @@ def index() -> str:
     )
     signals = db.get_chat_signals(account_session, _leo_chat_id(config_path))
     pending = [_with_buttons(c) for c in db.get_pending_captchas(limit=20)]
+    recent_captchas = db.get_recent_answered_captchas()
 
     return render_template(
         "app.html",
@@ -168,6 +169,7 @@ def index() -> str:
         total_pages=data.get("total_pages", 1),
         signature=_chat_signature(signals),
         pending=pending,
+        recent_captchas=recent_captchas,
         modes=MODES,
         # Плашка режима — режим основного аккаунта (у каждого аккаунта свой).
         mode=next(
@@ -254,6 +256,7 @@ def feed() -> tuple:
                 "pending": render_template(
                     "partials/app_captchas.html",
                     pending=[_with_buttons(c) for c in db.get_pending_captchas(limit=20)],
+                    recent_captchas=db.get_recent_answered_captchas(),
                 ),
                 "banner": render_template(
                     "partials/app_stream_error.html",

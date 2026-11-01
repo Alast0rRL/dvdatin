@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -674,6 +674,21 @@ class SyncDB:
             LIMIT ?
             """,
             (int(limit),),
+        )
+
+    def get_recent_answered_captchas(
+        self, hours: int = 3, limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Капчи, на которые ответили за последние ``hours`` часов."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        return self._query(
+            """
+            SELECT * FROM captcha_memory
+            WHERE answer IS NOT NULL AND answered_at >= ?
+            ORDER BY answered_at DESC, id DESC
+            LIMIT ?
+            """,
+            (since, int(limit)),
         )
 
     def get_captcha(self, captcha_id: int) -> dict[str, Any] | None:

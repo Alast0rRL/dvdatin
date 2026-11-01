@@ -32,3 +32,13 @@
     {% endfor %}
 </div>
 {% endif %}
+{# ── Капчи, на которые бот недавно ответил сам (последняя кнопка) ── #}
+{% for c in recent_captchas or [] %}
+<div class="pending pending--done">
+    <div class="pending__head">
+        <span class="pending__title">🧩 Капча: бот нажал «{{ c.answer }}»</span>
+        <span class="pending__hint">{{ (c.answered_at or '')[11:16] }} UTC</span>
+    </div>
+    <div class="pending__text">{{ c.message_text }}</div>
+</div>
+{% endfor %}

@@ -2667,6 +2667,36 @@ class Database:
             logger.error(f"record_pending_captcha: {e}")
             return False
 
+    async def learn_captcha_answer(
+        self, signature: str, message_text: str, buttons_json: str, answer: str,
+    ) -> bool:
+        """Запоминает ответ, который бот сам нажал на неизвестную капчу.
+
+        Выученный ответ владельца не затирается (UPDATE только при
+        answer IS NULL). Запись видна на сайте строкой «бот нажал …».
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cursor = await self._connection.execute(
+                """INSERT INTO captcha_memory
+                       (signature, message_text, buttons_json, answer,
+                        answered_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(signature) DO UPDATE SET
+                       message_text = excluded.message_text,
+                       buttons_json = excluded.buttons_json,
+                       answer = excluded.answer,
+                       answered_at = excluded.answered_at,
+                       updated_at = excluded.updated_at
+                   WHERE answer IS NULL""",
+                (signature, message_text, buttons_json, answer.strip(), now, now, now),
+            )
+            await self._connection.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"learn_captcha_answer: {e}")
+            return False
+
     async def get_captcha_answer(self, signature: str) -> str | None:
         """Возвращает выученный ответ для капчи с указанной сигнатурой."""
         try:

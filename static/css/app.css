@@ -554,6 +554,7 @@ a.seg__btn {
     border: 1px solid var(--review-line);
     border-radius: 10px;
 }
+.pending--done { background: var(--bg-row); border-color: var(--line); }
 .pending__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
 .pending__title { color: var(--pending-fg); font-weight: 700; font-size: 13px; }
 .pending__hint { color: var(--muted); font-size: 11px; }

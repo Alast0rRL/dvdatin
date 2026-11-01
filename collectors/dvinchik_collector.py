@@ -957,10 +957,17 @@ class DvinchikCollector(
                     and getattr(msg, "client", None) is self._auto_engine.client
                 ):
                     try:
-                        # Одна выборка истории на все проверки (FloodWait).
-                        history = await self._recent_history()
-                        if not await self._stop_on_match_card_if_needed(history):
-                            await self._continue_stream_if_needed(history)
+                        # Капча под видом SERVICE (прод 2026-11-01: «Найди свой
+                        # денежный мэтч ❤️» [Подробнее | скип] — бот молча встал).
+                        if self._is_captcha_message(msg):
+                            await self._handle_captcha(msg)
+                        elif self._is_unknown_keyboard(msg):
+                            await self._handle_captcha(msg, any_keyboard=True)
+                        else:
+                            # Одна выборка истории на все проверки (FloodWait).
+                            history = await self._recent_history()
+                            if not await self._stop_on_match_card_if_needed(history):
+                                await self._continue_stream_if_needed(history)
                     except Exception as e:
                         logger.error(
                             f"AutoAction: ошибка нажатия кнопки ленты "

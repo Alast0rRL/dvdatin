@@ -3111,12 +3111,12 @@ class TestCollectorAutoActions:
         auto_client.send_message.assert_not_called()
 
     def test_start_stream_unknown_captcha_waits_for_owner(self) -> None:
-        """Неизвестная капча: кнопку НЕ жмём, капча записывается (на сайт)."""
+        """fallback_press_last=false: кнопку НЕ жмём, капча записывается (на сайт)."""
         auto_client = make_tg_client()
         other_client = AsyncMock()
-        collector = self._make_collector(
-            self._make_config(), None, auto_client, other_client
-        )
+        config = self._make_config()
+        config.auto_actions.captcha.fallback_press_last = False
+        collector = self._make_collector(config, None, auto_client, other_client)
         # Вопрос владельцу о капче — не нажатие кнопки, глушим.
         collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         # Капча/сделка: кнопки «Меню»/«Сообщение …»/«Готово»/«Возможно позже».
@@ -3154,12 +3154,13 @@ class TestCollectorAutoActions:
 
         Прод 2026-11-01: «…131 бомбоубежище… Отправить вам адреса?»
         [Получить список | Поделюсь с другом] — бот молча встал. Теперь:
-        кнопку не жмём, капча на сайте, владельцу — вопрос в Telegram.
+        при fallback_press_last=false кнопку не жмём, капча на сайте,
+        владельцу — вопрос в Telegram.
         """
         auto_client = make_tg_client()
-        collector = self._make_collector(
-            self._make_config(), None, auto_client, AsyncMock(),
-        )
+        config = self._make_config()
+        config.auto_actions.captcha.fallback_press_last = False
+        collector = self._make_collector(config, None, auto_client, AsyncMock())
         notify = AsyncMock(return_value=True)
         collector._auto_engine.notify_owner = notify
 
@@ -3620,11 +3621,14 @@ class TestCollectorAutoActions:
     def test_start_stream_unknown_captcha_fallback_presses_last_button(
         self,
     ) -> None:
-        """fallback_press_last=true: неизвестную капчу пробиваем последней кнопкой."""
+        """По умолчанию неизвестную капчу пробиваем последней кнопкой.
+
+        Владелец, 2026-11-01: «он должен нажать правую (последнюю) кнопку».
+        """
         auto_client = make_tg_client()
         other_client = AsyncMock()
         config = self._make_config()
-        config.auto_actions.captcha.fallback_press_last = True
+        assert config.auto_actions.captcha.fallback_press_last is True
         collector = self._make_collector(config, None, auto_client, other_client)
         last_button = "Возможно позже"
 
@@ -3647,8 +3651,49 @@ class TestCollectorAutoActions:
         auto_client.send_message.assert_called_once_with(
             1234060895, last_button
         )
-        # Капча всё равно попала на сайт (владелец может обучить ответ).
-        collector._db.record_pending_captcha.assert_awaited_once()
+        # Нажатая кнопка запомнена как ответ (видна на сайте), не pending.
+        collector._db.record_pending_captcha.assert_not_awaited()
+        collector._db.learn_captcha_answer.assert_awaited_once()
+        args = collector._db.learn_captcha_answer.await_args.args
+        assert args[0] == "бармалей, предлагаю тебе сделку"
+        assert args[3] == last_button
+
+    MONEY_MATCH_TEXT = "Найди свой денежный мэтч ❤️"
+
+    def test_service_captcha_presses_last_button(self) -> None:
+        """Капча, распознанная парсером как SERVICE, — тоже капча.
+
+        Прод 2026-11-01 (dvai_2 msg=44345): «Найди свой денежный мэтч ❤️»
+        [Подробнее | скип] — SERVICE, бот молча встал. Теперь жмём «скип».
+        """
+        from models.raw import MessageType
+
+        auto_client = make_tg_client()
+        auto_client.is_connected.return_value = True
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock(),
+        )
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
+        assert (
+            collector._parser.classify(self.MONEY_MATCH_TEXT, has_media=False)
+            == MessageType.SERVICE
+        )
+        msg = self._iter_msg(
+            auto_client, 44345, self.MONEY_MATCH_TEXT, buttons=["Подробнее", "скип"],
+        )
+        auto_client.iter_messages = MagicMock(
+            side_effect=lambda *a, **k: async_iter([msg])
+        )
+        task = RawTask(
+            chat_id=1234060895, message_id=44345, sender_id=1234060895,
+            sender_username="", sender_name="", text=self.MONEY_MATCH_TEXT,
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now", msg=msg, raw_id=3,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        auto_client.send_message.assert_called_once_with(1234060895, "скип")
+        collector._db.learn_captcha_answer.assert_awaited_once()
 
     def test_start_stream_captcha_memory_disabled_presses_last_button(
         self,
@@ -3735,9 +3780,9 @@ class TestCollectorAutoActions:
         какая-то кнопка уже отправлялась — для неё ответа владельца всё равно нет)."""
         auto_client = make_tg_client()
         other_client = AsyncMock()
-        collector = self._make_collector(
-            self._make_config(), None, auto_client, other_client
-        )
+        config = self._make_config()
+        config.auto_actions.captcha.fallback_press_last = False
+        collector = self._make_collector(config, None, auto_client, other_client)
         # Вопрос владельцу о капче — не нажатие кнопки, глушим.
         collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         last_button = "Возможно позже"
