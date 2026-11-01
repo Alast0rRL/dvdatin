@@ -46,3 +46,18 @@ def _protect_real_config(monkeypatch: pytest.MonkeyPatch) -> None:
             return _original(self, path, *args, **kwargs)
 
         monkeypatch.setattr(AppConfig, name, guarded)
+
+
+@pytest.fixture(autouse=True)
+def _telegram_notify_on(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Тесты уведомлений проверяют их содержимое — в тестах они включены.
+
+    В проде ``auto_actions.notify_telegram`` по умолчанию False (аккаунты не
+    пишут друг другу). Сам выключатель проверяет ``TestTelegramNotifySwitch``
+    (маркер ``real_notify_switch``).
+    """
+    if request.node.get_closest_marker("real_notify_switch"):
+        return
+    from collectors.auto_action import AutoActionEngine
+
+    monkeypatch.setattr(AutoActionEngine, "_telegram_notify_on", lambda self: True)

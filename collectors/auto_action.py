@@ -963,6 +963,8 @@ class AutoActionEngine:
         """
         if self._client is None or message_id is None:
             return
+        if not self._telegram_notify_on():
+            return
         if action == "DISLIKE" and not self._config.notify_dislikes:
             return
         if self._notify_paused():
@@ -1025,6 +1027,8 @@ class AutoActionEngine:
         """
         if self._client is None or message_id is None:
             return
+        if not self._telegram_notify_on():
+            return
         if self._notify_paused():
             self._queue_notice(
                 "⚠️ Была REVIEW-анкета — нужно твоё решение в Дайвинчике "
@@ -1068,6 +1072,13 @@ class AutoActionEngine:
     def _notify_paused(self) -> bool:
         """Уведомления на паузе после FloodWait?"""
         return time.time() < self._notify_paused_until
+
+    def _telegram_notify_on(self) -> bool:
+        """Писать ли владельцу в Telegram (``auto_actions.notify_telegram``).
+
+        Выключено — аккаунты не шлют друг другу ничего, вся информация на сайте.
+        """
+        return bool(getattr(self._config, "notify_telegram", False))
 
     def _notify_flood(self, error: BaseException, what: str) -> bool:
         """FloodWait на уведомлении → пауза (WARNING, не ERROR). True — это он."""
@@ -1113,6 +1124,8 @@ class AutoActionEngine:
         """
         client = self._client
         if client is None or not text:
+            return False
+        if not self._telegram_notify_on():
             return False
         if self._notify_paused():
             self._queue_notice(text)

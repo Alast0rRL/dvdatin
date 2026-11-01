@@ -740,6 +740,48 @@ class TestAutoActionNotify:
         assert client.send_message.call_count == 1
 
 
+@pytest.mark.real_notify_switch
+class TestTelegramNotifySwitch:
+    """Владелец, 2026-11-01: аккаунты не пересылают друг другу ничего.
+
+    ``auto_actions.notify_telegram`` по умолчанию False — ни пересылок
+    анкет, ни причин, ни служебных сообщений («Ошибка бота» тоже).
+    """
+
+    def test_default_sends_nothing_to_owner(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        e._notify_chat_id = 555
+        loop = asyncio.get_event_loop()
+        assert loop.run_until_complete(e.notify_owner("текст")) is False
+        loop.run_until_complete(e._notify("LIKE", profile_id=1, message_id=10))
+        loop.run_until_complete(
+            e._notify_needs_action(profile_id=1, message_id=10)
+        )
+        client.send_message.assert_not_called()
+        client.forward_messages.assert_not_called()
+
+    def test_reactions_still_go_to_leo(self) -> None:
+        """Выключенные уведомления не мешают 👎 в чат Leo."""
+        client = make_client()
+        e = make_engine(client=client)
+        e._notify_chat_id = 555
+        assert asyncio.get_event_loop().run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, profile_id=1, message_id=10)
+        ) == "DISLIKE"
+        assert [c.args[1] for c in client.send_message.await_args_list] == [DISLIKE_TEXT]
+        client.forward_messages.assert_not_called()
+
+    def test_switch_on_sends_again(self) -> None:
+        client = make_client()
+        e = make_engine(client=client)
+        e._config.notify_telegram = True
+        e._notify_chat_id = 555
+        assert asyncio.get_event_loop().run_until_complete(
+            e.notify_owner("текст")
+        ) is True
+
+
 class TestNotifyFloodWait:
     """FloodWait на уведомлениях владельцу — пауза, а не «Ошибка бота».
 

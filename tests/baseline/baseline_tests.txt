@@ -126,6 +126,9 @@ tests/test_auto_action.py::TestAutoActionNotify::test_notify_drops_stale_evidenc
 tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_goes_to_other_account
 tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_me_is_cached
 tests/test_auto_action.py::TestAutoActionNotify::test_auto_notify_skipped_without_notify_client
+tests/test_auto_action.py::TestTelegramNotifySwitch::test_default_sends_nothing_to_owner
+tests/test_auto_action.py::TestTelegramNotifySwitch::test_reactions_still_go_to_leo
+tests/test_auto_action.py::TestTelegramNotifySwitch::test_switch_on_sends_again
 tests/test_auto_action.py::TestNotifyFloodWait::test_flood_pauses_and_queues_owner_notice
 tests/test_auto_action.py::TestNotifyFloodWait::test_backlog_sent_once_after_pause
 tests/test_auto_action.py::TestNotifyFloodWait::test_card_forward_skipped_while_paused
