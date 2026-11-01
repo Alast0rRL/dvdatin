@@ -325,6 +325,13 @@ tests/test_collector.py::TestCollectorAutoActions::test_start_stream_city_check_
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_stale_city_check_ignored
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_premium_promo_without_decline_does_nothing
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_unknown_captcha_waits_for_owner
+tests/test_collector.py::TestCollectorAutoActions::test_unknown_keyboard_without_markers_is_captcha
+tests/test_collector.py::TestCollectorAutoActions::test_known_keyboards_are_not_unknown[buttons0]
+tests/test_collector.py::TestCollectorAutoActions::test_known_keyboards_are_not_unknown[buttons1]
+tests/test_collector.py::TestCollectorAutoActions::test_known_keyboards_are_not_unknown[buttons2]
+tests/test_collector.py::TestCollectorAutoActions::test_known_keyboards_are_not_unknown[buttons3]
+tests/test_collector.py::TestCollectorAutoActions::test_known_keyboards_are_not_unknown[buttons4]
+tests/test_collector.py::TestCollectorAutoActions::test_known_keyboards_are_not_unknown[buttons5]
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_match_card_stops_search[1-buttons0]
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_match_card_stops_search[2-buttons1]
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_match_card_stops_search[3-buttons2]

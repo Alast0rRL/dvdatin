@@ -924,6 +924,10 @@ class DvinchikCollector(
                         ):
                             # Капча/сделка/проверка — выученный ответ или вывод на сайт.
                             await self._handle_captcha(msg)
+                        elif self._is_unknown_keyboard(msg):
+                            # Незнакомый вопрос Leo с кнопками (без маркеров
+                            # капчи) — тоже капча: на сайт + владельцу.
+                            await self._handle_captcha(msg, any_keyboard=True)
                         else:
                             # Рекламное/промо-сообщение без кнопки на самом себе:
                             # «🚀 Смотреть анкеты» может прийти на ОТДЕЛЬНОМ сообщении

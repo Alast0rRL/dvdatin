@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1057 total, no linter/formatter configured)
+# Run all tests (~1064 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -57,7 +57,7 @@ python -m pytest tests/test_ai.py -v
 - **Лимит ❤️ исчерпан** → LIKE не шлётся (`"LIKE_LIMIT"`), `👎` уходит; лимит хранится на аккаунт (`likes_exhausted_until:<session>`); «Скроллинг» не включается до сброса. Тесты: `TestAutoActionLikeLimit`, `test_mode_blocked_while_like_limit_exhausted`.
 - **Карточка взаимного лайка / «Кому-то понравилась…» / «Кто-то тобой заинтересовался…»** → стоп скроллинга своего аккаунта, кнопок не жмём; стоп в хендлере до очереди. Тесты: `test_match_card_stops_search_in_handler`, `test_match_notice_without_buttons_stops_search`, `test_interested_notice_stops_search`.
 - **Сами жмём только**: «Смотреть анкеты», «Пока без Premium», «1 🚀» в меню, «Нет» на «живешь в Питере?», выученный ответ капчи; «Показать» — только по «Продолжить» владельца. Тест: `test_start_stream_main_menu_never_presses_other_buttons`.
-- **Неизвестную капчу наугад не жмём** — она ждёт ответа на сайте (кроме `captcha.fallback_press_last`). Тест: `test_start_stream_unknown_captcha_waits_for_owner`.
+- **Неизвестную капчу наугад не жмём** — она ждёт ответа на сайте (кроме `captcha.fallback_press_last`), владельцу — вопрос в Telegram (раз на сообщение). Капча — и вопрос без маркеров с незнакомыми кнопками (`_is_unknown_keyboard`: ≥ 2 кнопок, ни одной известной Leo-кнопки). Тесты: `test_start_stream_unknown_captcha_waits_for_owner`, `test_unknown_keyboard_without_markers_is_captcha`, `test_known_keyboards_are_not_unknown`.
 - **Идемпотентность — по карточке и виду действия** (`chat_id` + `telegram_message_id` + `action`), не по профилю; уведомление владельцу — только на первое действие профиля. Тесты: `test_same_profile_id_allows_same_action_twice`, `test_first_action_notifies`.
 - **Одна реакция на карточку**: перед реакцией — `has_reaction_for_message` (LIKE **или** DISLIKE), отложенная реакция тоже проверяет журнал — второй 👎 ушёл бы на следующую анкету. Тесты: `test_deferred_reaction_skipped_when_card_already_logged`, `test_direct_action_clears_deferred_copy`.
 - **С кем был матч — не лайкаем снова**: LIKE на повторном показе → DISLIKE `ALREADY_MATCHED` (`was_profile_matched`: `match_responses` / `dialog_contacts` / `match_dialogs`); свой лайк без ответа повторный лайк НЕ блокирует. Тесты: `test_already_matched_profile_gets_dislike`, `test_was_profile_matched`.
@@ -118,7 +118,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-11-01): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (108), test_auto_action_audit (5), test_captcha_memory (11), test_collector (178), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (32), test_match_intro (41), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1057 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-01): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (108), test_auto_action_audit (5), test_captcha_memory (11), test_collector (185), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (32), test_match_intro (41), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1064 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

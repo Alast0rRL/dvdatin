@@ -196,6 +196,11 @@ CAPTCHA_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Ключ app_state: id капчи, о которой владелец уже уведомлён
+#: (``<префикс>:<session>``) — спрашиваем один раз на сообщение.
+CAPTCHA_NOTIFIED_STATE_PREFIX: str = "captcha_notified"
+
+
 def captcha_signature(text: str) -> str:
     """Нормализует текст капчи в сигнатуру для сопоставления (Stage 7.6).
 

@@ -17,7 +17,9 @@ from collectors.leo_markers import (
     CITY_CHECK_ANSWER,
     CAPTCHA_MIN_BUTTONS,
     CAPTCHA_MARKERS,
+    CAPTCHA_NOTIFIED_STATE_PREFIX,
     captcha_signature,
+    is_manual_message_excluded,
 )
 from models.raw import MessageType
 
@@ -308,7 +310,9 @@ class LeoNavigationMixin:
             or AutoActionEngine.is_composer_prompt(stripped)
         )
 
-    async def _handle_captcha(self, msg: object | None = None) -> bool:
+    async def _handle_captcha(
+        self, msg: object | None = None, *, any_keyboard: bool = False,
+    ) -> bool:
         """Разруливает капчу/проверку Leo (Stage 7.6 «память капч»).
 
         Капча = текст с одним из CAPTCHA_MARKERS и >= CAPTCHA_MIN_BUTTONS
@@ -329,6 +333,8 @@ class LeoNavigationMixin:
 
         ``msg`` — конкретное сообщение капчи из live-обработки (уже есть);
         если None — сканируем последние сообщения чата (start_auto_stream).
+        ``any_keyboard`` — капчей считается и сообщение без маркеров, но с
+        незнакомой клавиатурой (``_is_unknown_keyboard``).
         Возвращает True, если на капчу отправлен текст.
         """
         client = self._auto_engine.client
@@ -336,7 +342,11 @@ class LeoNavigationMixin:
             return False
         try:
             if msg is not None:
-                card = msg if self._is_captcha_message(msg) else None
+                card = (
+                    msg if self._is_captcha_message(msg)
+                    or (any_keyboard and self._is_unknown_keyboard(msg))
+                    else None
+                )
             else:
                 card = await self._find_captcha_message()
             if card is None:
@@ -375,6 +385,7 @@ class LeoNavigationMixin:
                     f"AutoAction: неизвестная капча (msg={card.id}) — жду ответа "
                     f"владельца в блоке «Капчи ждут ответа» на главном экране"
                 )
+                await self._notify_unknown_captcha(card, text_full, buttons)
                 if not cc.fallback_press_last:
                     return False
                 # fallback_press_last: проваливаемся в старое нажатие кнопки.
@@ -433,6 +444,56 @@ class LeoNavigationMixin:
             logger.error(f"AutoAction: ошибка проверки уже отправленного ответа: {e}")
         return False
 
+    async def _notify_unknown_captcha(
+        self, card: object, text: str, buttons: list[str],
+    ) -> None:
+        """Один раз на сообщение капчи спрашивает владельца в Telegram.
+
+        Раньше неизвестная капча была видна только на сайте: лента стояла
+        молча (прод 2026-11-01, «131 бомбоубежище…» на обоих аккаунтах).
+        """
+        session = self._current_session()
+        key = f"{CAPTCHA_NOTIFIED_STATE_PREFIX}:{session}"
+        card_id = str(getattr(card, "id", ""))
+        try:
+            if self._db is not None:
+                if await self._db.get_state(key) == card_id:
+                    return
+                await self._db.set_state(key, card_id)
+        except Exception as e:
+            logger.error(f"AutoAction: метка уведомления о капче: {e}")
+        variants = " | ".join(buttons) if buttons else "—"
+        await self._auto_engine.notify_owner(
+            f"🧩 Leo ждёт ответа на {session or 'аккаунте'} — лента стоит:\n\n"
+            f"{text[:500]}\n\nКнопки: {variants}\n\nВыбери ответ на сайте в "
+            "блоке «Капчи ждут ответа» (бот запомнит его) или нажми сам в Leo."
+        )
+
+    def _is_unknown_keyboard(self, msg: object) -> bool:
+        """Незнакомое сообщение Leo с кнопками — ждёт ответа, ленту держит.
+
+        ≥ ``CAPTCHA_MIN_BUTTONS`` кнопок, и ни одна не из известных
+        (реакции, меню, Premium, «Да/Нет», «Вернуться назад», «Показать»…,
+        ``is_manual_message_excluded``). Прод 2026-11-01: «Сохрани… 131
+        бомбоубежище… Отправить вам адреса?» [Получить список | Поделюсь с
+        другом] — маркеров капчи нет, бот молча встал. Карточка «Ты
+        понравился…» и вопрос о городе сюда не относятся.
+        """
+        if getattr(msg, "out", False):
+            return False
+        buttons = self._extract_button_texts(msg)
+        if len(buttons) < CAPTCHA_MIN_BUTTONS:
+            return False
+        if any(is_manual_message_excluded(b.strip()) for b in buttons):
+            return False
+        # Цифровые кнопки — главное меню Leo («2», «3», «4»), не вопрос.
+        if any(b.strip().isdigit() for b in buttons):
+            return False
+        low = (getattr(msg, "text", None) or "").lower()
+        if any(f in low for f in CITY_CHECK_FRAGMENTS):
+            return False
+        return not self._is_match_card(msg)
+
     def _is_captcha_message(self, msg: object) -> bool:
         """Является ли сообщение капчей/сделкой/проверкой Leo.
 
@@ -450,9 +511,15 @@ class LeoNavigationMixin:
         if client is None:
             return None
         try:
+            newest = True
             async for msg in client.iter_messages(self._dvinchik_chat_id, limit=15):
                 if self._is_captcha_message(msg):
                     return msg
+                # Незнакомая клавиатура — только если это последнее сообщение
+                # (старые давно разобраны).
+                if newest and self._is_unknown_keyboard(msg):
+                    return msg
+                newest = False
         except Exception as e:
             logger.error(f"AutoAction: ошибка поиска капчи: {e}")
         return None

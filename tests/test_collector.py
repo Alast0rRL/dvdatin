@@ -3117,6 +3117,8 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        # Вопрос владельцу о капче — не нажатие кнопки, глушим.
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         # Капча/сделка: кнопки «Меню»/«Сообщение …»/«Готово»/«Возможно позже».
         last_button = "Возможно позже"
 
@@ -3141,6 +3143,59 @@ class TestCollectorAutoActions:
         collector._db.record_pending_captcha.assert_awaited_once()
         sig = collector._db.record_pending_captcha.call_args[0][0]
         assert sig == "бармалей, предлагаю тебе сделку"
+
+    SHELTER_TEXT = (
+        "Сохрани, эта информация лишней не будет\n\n131 бомбоубежище города "
+        "Санкт-Петербург, на карте с адресами…\n\nОтправить вам адреса?"
+    )
+
+    def test_unknown_keyboard_without_markers_is_captcha(self) -> None:
+        """Вопрос Leo без маркеров капчи, но с незнакомыми кнопками — капча.
+
+        Прод 2026-11-01: «…131 бомбоубежище… Отправить вам адреса?»
+        [Получить список | Поделюсь с другом] — бот молча встал. Теперь:
+        кнопку не жмём, капча на сайте, владельцу — вопрос в Telegram.
+        """
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock(),
+        )
+        notify = AsyncMock(return_value=True)
+        collector._auto_engine.notify_owner = notify
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 43712, self.SHELTER_TEXT,
+                buttons=["Получить список", "Поделюсь с другом"],
+            )
+            yield self._iter_msg(auto_client, 43711, "👎", out=True)
+
+        auto_client.iter_messages = iter_messages
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector.start_auto_stream()
+        )
+        assert ok is False
+        auto_client.send_message.assert_not_called()
+        collector._db.record_pending_captcha.assert_awaited_once()
+        notify.assert_awaited_once()
+        assert "Получить список" in notify.await_args.args[0]
+
+    @pytest.mark.parametrize("buttons", [
+        ["1 🚀", "2", "3", "4"],
+        ["2", "3", "4"],
+        ["⭐️Активировать", "Пока без Premium"],
+        ["❤️", "💌 📹 🎤", "👎", "💤"],
+        ["Да", "Нет"],
+        ["Получить список"],
+    ])
+    def test_known_keyboards_are_not_unknown(self, buttons: list[str]) -> None:
+        """Меню, Premium, реакции, «Да/Нет», одна кнопка — не капча."""
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock(),
+        )
+        msg = self._iter_msg(auto_client, 1, "Что-то от Leo", buttons=buttons)
+        assert collector._is_unknown_keyboard(msg) is False
 
     def _run_stream_with_match_stop(self, collector, auto_client):
         """start_auto_stream с заглушками persist_mode/notify_owner.
@@ -3581,6 +3636,8 @@ class TestCollectorAutoActions:
             yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
             yield self._iter_msg(auto_client, 708, "Margo, 18, Санкт-Петербург")
 
+        # Вопрос владельцу о капче — не нажатие кнопки, глушим.
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         auto_client.iter_messages = iter_messages
 
         ok = asyncio.get_event_loop().run_until_complete(
@@ -3659,6 +3716,8 @@ class TestCollectorAutoActions:
             yield m
             yield self._iter_msg(auto_client, 709, "\U0001F44E", out=True)
 
+        # Вопрос владельцу о капче — не нажатие кнопки, глушим.
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         auto_client.iter_messages = iter_messages
 
         ok = asyncio.get_event_loop().run_until_complete(
@@ -3679,6 +3738,8 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        # Вопрос владельцу о капче — не нажатие кнопки, глушим.
+        collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         last_button = "Возможно позже"
 
         async def iter_messages(*args, **kwargs):
