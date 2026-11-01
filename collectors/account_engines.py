@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterator
 
 from loguru import logger
 
 from app.config import AccountControls
 from collectors.auto_action import AutoActionEngine
-from collectors.leo_markers import _CURRENT_SESSION
+from collectors.leo_markers import _CURRENT_SESSION, STREAM_ERROR_STATE_KEY
 from core.types import Mode
 
 if TYPE_CHECKING:
@@ -156,6 +157,43 @@ class AccountEnginesMixin:
         except Exception as e:
             logger.error(f"Не удалось сохранить режим в config.yaml: {e}")
         return new
+
+    async def emergency_stop(self, source: str = "") -> None:
+        """Экстренный стоп: «Скроллинг» и «Авто» выкл на ВСЕХ аккаунтах.
+
+        Владелец написал «стой» в чат Leo (``source`` — с какого аккаунта).
+        Снимает незакрытые цепочки «Берем)» и отложенные реакции, ставит
+        баннер на сайте. Включить обратно — переключателями в шапке сайта.
+        """
+        sessions = list(dict.fromkeys([*self._client_sessions, *self._engines]))
+        for session in sessions:
+            engine = self._engines.get(session)
+            if engine is not None:
+                engine.abort_like_chains(self._dvinchik_chat_id)
+                engine._deferred = None
+            self.set_controls(session, scroll=False, auto=False)
+        logger.warning(
+            f"Экстренный стоп («стой» с {source or 'аккаунта'}): скроллинг и "
+            f"авто выключены на всех аккаунтах ({', '.join(s or '—' for s in sessions)})"
+        )
+        if self._db is None:
+            return
+        try:
+            await self._db.set_state(
+                STREAM_ERROR_STATE_KEY,
+                json.dumps(
+                    {
+                        "kind": "emergency_stop",
+                        "session": "",
+                        "message": "Экстренный стоп: всё выключено",
+                        "reason": f"ты написал «стой» с {source or 'аккаунта'}",
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Экстренный стоп: не записал баннер: {e}")
 
     def redirect_for(self, session: str | None) -> str:
         """Куда перенаправлена личка аккаунта ('' — пишем с него самого).

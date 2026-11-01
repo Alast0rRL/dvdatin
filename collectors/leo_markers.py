@@ -196,6 +196,17 @@ CAPTCHA_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Экстренный стоп: владелец пишет это в чат Leo с любого аккаунта →
+#: «Скроллинг» и «Авто» выключаются на ВСЕХ аккаунтах (владелец, 2026-11-01).
+EMERGENCY_STOP_WORDS: frozenset[str] = frozenset({"стой"})
+
+
+def is_emergency_stop(text: str) -> bool:
+    """«стой» (регистр и знаки «!.,?» по краям не важны)?"""
+    word = (text or "").strip().strip("!.,?…").strip().lower()
+    return word in EMERGENCY_STOP_WORDS
+
+
 #: Ключ app_state: id капчи, о которой владелец уже уведомлён
 #: (``<префикс>:<session>``) — спрашиваем один раз на сообщение.
 CAPTCHA_NOTIFIED_STATE_PREFIX: str = "captcha_notified"

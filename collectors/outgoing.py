@@ -10,7 +10,11 @@ from rich.panel import Panel
 from rich.table import Table
 from telethon import events
 
-from collectors.leo_markers import console, is_manual_message_excluded
+from collectors.leo_markers import (
+    console,
+    is_emergency_stop,
+    is_manual_message_excluded,
+)
 
 
 class OutgoingMixin:
@@ -78,6 +82,14 @@ class OutgoingMixin:
             return
         if raw_id is None:
             return
+
+        # Экстренный стоп: «стой» в чат Leo — сразу после RAW-save, до всего
+        # остального (владелец, 2026-11-01).
+        if is_emergency_stop(text):
+            try:
+                await self.emergency_stop(account_session)
+            except Exception as e:
+                logger.error(f"Экстренный стоп не выполнен: {e}")
 
         # Помечаем обработанным — pipeline пропускается.
         try:

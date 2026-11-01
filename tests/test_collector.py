@@ -4141,6 +4141,45 @@ class TestCollectorSwitchAccount:
         }
         return AppConfig(**data)
 
+    def test_emergency_stop_turns_everything_off(self, tmp_path) -> None:
+        """«стой» в чат Leo с любого аккаунта — скроллинг и «Авто» выкл везде.
+
+        Владелец, 2026-11-01: экстренный стоп.
+        """
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("auto_actions:\n  account_session: dvai_2\n", encoding="utf-8")
+        collector = self._make_collector()
+        collector._config_path = cfg_path
+        collector.set_controls("dvai", scroll=True, auto=True)
+        collector.set_controls("dvai_2", scroll=True, auto=True)
+        dvai_2 = collector.auto_engine("dvai_2")
+        dvai_2._pending_chains[100] = {"chat_id": 1234060895, "stage": "AWAIT_PROMPT"}
+
+        event = make_event(text="Стой!", msg_id=900, sender_id=1)
+        event.client = collector._clients[0]  # пишет с dvai
+        event.message.client = collector._clients[0]
+        asyncio.get_event_loop().run_until_complete(
+            collector._handle_outgoing_message(event)
+        )
+        # RAW-first: сообщение сохранено.
+        collector._db.save_raw_message.assert_awaited_once()
+        for session in ("dvai", "dvai_2"):
+            assert collector.controls_for(session) == AccountControls()
+            assert collector.auto_engine(session).enabled is False
+        assert dvai_2._pending_chains == {}
+        banner = [
+            c for c in collector._db.set_state.await_args_list
+            if c.args[0] == "stream_error"
+        ]
+        assert banner and "emergency_stop" in banner[-1].args[1]
+
+    @pytest.mark.parametrize("text", ["стойка", "стой там", "❤️", "👎"])
+    def test_other_text_is_not_emergency_stop(self, text: str) -> None:
+        from collectors.leo_markers import is_emergency_stop
+
+        assert is_emergency_stop(text) is False
+        assert is_emergency_stop(" СТОЙ. ") is True
+
     def test_each_account_has_own_engine_and_mode(self, tmp_path) -> None:
         """Переключатели у каждого аккаунта свои; второй аккаунт не трогается."""
         cfg_path = tmp_path / "config.yaml"

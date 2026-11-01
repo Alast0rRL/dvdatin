@@ -2,7 +2,8 @@
    Пишется коллектором в app_state.stream_error, сюда попадает через
    web/db.SyncDB.get_stream_error(). Обновляется polling'ом (chat.feed).
    kind == "match_stop" — остановка на карточке «Ты понравился…»: режим уже
-   OBSERVE, кнопка «Продолжить» (POST /chat/resume) возвращает режим и ленту. #}
+   OBSERVE, кнопка «Продолжить» (POST /chat/resume) возвращает режим и ленту.
+   kind == "emergency_stop" — владелец написал «стой» в чат Leo: всё выключено. #}
 {% if stream_error %}
 <div class="stream-error" role="alert">
     <div class="stream-error__title">
@@ -20,6 +21,10 @@
         {% if stream_error.session %}<input type="hidden" name="account_session" value="{{ stream_error.session }}">{% endif %}
         <button type="submit" class="btn btn--sm btn--primary" id="resume-search">▶ Продолжить</button>
     </form>
+    {% elif stream_error.kind == 'emergency_stop' %}
+    <div class="stream-error__hint">
+        Скроллинг и «Авто» выключены на всех аккаунтах. Включи нужное переключателями в шапке.
+    </div>
     {% else %}
     <div class="stream-error__hint">
         Проверь чат с Leo — возможно, нужно нажать кнопку или ответить вручную.
