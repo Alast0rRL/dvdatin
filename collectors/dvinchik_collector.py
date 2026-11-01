@@ -749,6 +749,13 @@ class DvinchikCollector(
                                                         task.message_id,
                                                     ),
                                                 )
+                                                # Правило владельца: уже лайкнутую
+                                                # девушку второй раз не лайкаем.
+                                                if decision.decision == AIDecision.LIKE:
+                                                    decision = await self._apply_already_liked(
+                                                        decision, profile.id,
+                                                        task.message_id,
+                                                    )
                                                 if decision.decision == AIDecision.LIKE:
                                                     decision = await self._apply_photo_vice(
                                                         decision, msg,
@@ -758,7 +765,7 @@ class DvinchikCollector(
                                                             task.message_id,
                                                         ),
                                                     )
-                                                if await self._db.has_auto_action_for_message(
+                                                if await self._db.has_reaction_for_message(
                                                     chat_id, task.message_id
                                                 ):
                                                     logger.info(
@@ -802,7 +809,7 @@ class DvinchikCollector(
                                     # но Leo всё равно ждёт реакцию на показанную
                                     # анкету. Чтобы лента не замирала — 👎.
                                     try:
-                                        if await self._db.has_auto_action_for_message(
+                                        if await self._db.has_reaction_for_message(
                                             chat_id, task.message_id
                                         ):
                                             logger.info(

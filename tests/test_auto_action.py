@@ -432,6 +432,39 @@ class TestAutoActionStaleCard:
         client.send_message.assert_not_called()
 
 
+    def test_deferred_reaction_skipped_when_card_already_logged(self) -> None:
+        """Карточку уже разобрали — отложенный 👎 не уходит второй раз.
+
+        Прод 2026-11-01: UNIQUE в ``_flush_deferred`` — второй 👎 на ту же
+        карточку попадал на следующую анкету.
+        """
+        client = make_client()
+        db = MagicMock()
+        db.has_reaction_for_message = AsyncMock(return_value=True)
+        db.record_auto_action = AsyncMock()
+        e = make_engine(client=client, db=db)
+        e._pending_chains[100] = {"stage": "AWAIT_PROMPT", "opened_at": time.time()}
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(e.maybe_act(AIDecision.DISLIKE, message_id=200))
+        e._pending_chains.clear()
+        loop.run_until_complete(e._flush_deferred())
+        client.send_message.assert_not_called()
+        db.record_auto_action.assert_not_called()
+
+    def test_direct_action_clears_deferred_copy(self) -> None:
+        """Карточку разобрали напрямую — её отложенная копия снимается."""
+        client = make_client()
+        e = make_engine(client=client)
+        e._pending_chains[100] = {"stage": "AWAIT_PROMPT", "opened_at": time.time()}
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(e.maybe_act(AIDecision.DISLIKE, message_id=200))
+        e._pending_chains.clear()
+        assert loop.run_until_complete(
+            e.maybe_act(AIDecision.DISLIKE, message_id=200)
+        ) == "DISLIKE"
+        assert e._deferred is None
+
+
 class TestAutoActionRuntimeMode:
     """Динамическое переключение режима на лету (ControlBot)."""
 

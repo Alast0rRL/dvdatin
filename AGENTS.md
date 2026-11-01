@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1048 total, no linter/formatter configured)
+# Run all tests (~1057 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -55,13 +55,17 @@ python -m pytest tests/test_ai.py -v
 - **Реакция только в свою карточку**: `note_card` — в хендлере сразу после RAW-save; устаревшая карточка → `"STALE"`, ничего не шлём и не пишем. `interval_sec` держать малым (2 с). Тесты: `test_reaction_skipped_for_stale_card`, `test_stale_skip_beats_composer_defer`.
 - **REVIEW — бот сам не действует**: уведомляет владельца и ждёт ручного решения (`manual_review`). Тест: `test_review_notifies_owner_when_message_id_given`.
 - **Лимит ❤️ исчерпан** → LIKE не шлётся (`"LIKE_LIMIT"`), `👎` уходит; лимит хранится на аккаунт (`likes_exhausted_until:<session>`); «Скроллинг» не включается до сброса. Тесты: `TestAutoActionLikeLimit`, `test_mode_blocked_while_like_limit_exhausted`.
-- **Карточка взаимного лайка / «Кому-то понравилась…»** → стоп скроллинга своего аккаунта, кнопок не жмём; стоп в хендлере до очереди. Тесты: `test_match_card_stops_search_in_handler`, `test_match_notice_without_buttons_stops_search`.
+- **Карточка взаимного лайка / «Кому-то понравилась…» / «Кто-то тобой заинтересовался…»** → стоп скроллинга своего аккаунта, кнопок не жмём; стоп в хендлере до очереди. Тесты: `test_match_card_stops_search_in_handler`, `test_match_notice_without_buttons_stops_search`, `test_interested_notice_stops_search`.
 - **Сами жмём только**: «Смотреть анкеты», «Пока без Premium», «1 🚀» в меню, «Нет» на «живешь в Питере?», выученный ответ капчи; «Показать» — только по «Продолжить» владельца. Тест: `test_start_stream_main_menu_never_presses_other_buttons`.
 - **Неизвестную капчу наугад не жмём** — она ждёт ответа на сайте (кроме `captcha.fallback_press_last`). Тест: `test_start_stream_unknown_captcha_waits_for_owner`.
 - **Идемпотентность — по карточке и виду действия** (`chat_id` + `telegram_message_id` + `action`), не по профилю; уведомление владельцу — только на первое действие профиля. Тесты: `test_same_profile_id_allows_same_action_twice`, `test_first_action_notifies`.
+- **Одна реакция на карточку**: перед реакцией — `has_reaction_for_message` (LIKE **или** DISLIKE), отложенная реакция тоже проверяет журнал — второй 👎 ушёл бы на следующую анкету. Тесты: `test_deferred_reaction_skipped_when_card_already_logged`, `test_direct_action_clears_deferred_copy`.
+- **Уже лайкнутую не лайкаем**: LIKE на повторном показе → DISLIKE `ALREADY_LIKED` (`was_profile_liked`: LIKE/MESSAGE бота на другой карточке или ❤️/сообщение владельца). Тесты: `test_already_liked_profile_gets_dislike`, `test_was_profile_liked`.
 - **Пересылка владельцу — только id своего аккаунта** (`_profile_message_ids`), иначе Telethon перешлёт чужие сообщения. Тест: `test_filters_ids_from_other_account`.
 - **Проверка истории — одна выборка** (`_recent_history`) на все проверки кнопок; сбой чтения → `[]`, поток не падает. Тесты: `test_start_stream_reads_history_once_for_buttons`, `test_history_read_error_does_not_stop_stream`.
 - **Перенаправление лички** (`auto_actions.account_redirects`, стрелка в шапке): матч на аккаунте → привет/журнал/автопереписка с аккаунта-цели, только если цель — другой вошедший аккаунт; анкета ищется в ленте аккаунта матча; её анкету девушке аккаунт матча пересылает пишущему, тот — ей (`MatchIntro._relay_card`). Тесты: `test_redirected_account_greets_from_target`, `test_redirect_to_unknown_account_greets_from_own`, `test_card_relayed_from_account_that_saw_it`.
+- **Карточка → профиль — по `profile_messages`** (каждый показ), не по `profiles.source_message_id` (первый показ): матч обычно на повторе. Тест: `test_find_match_card_on_repeat_showing`.
+- **Девушка без @username** (`tg://user?id=`) — привет через `InputPeerUserFromMessage` (сообщение Leo своего аккаунта). Тест: `test_unknown_user_id_resolved_via_leo_message`.
 - **Девушке — её карточка матча, не «последний показ профиля»**: при матче запоминаются `card_session` (аккаунт матча) + `card_message_id` (карточка перед уведомлением), пересылается только она; не нашлась или неизвестна — `NO_PROFILE` + уведомление владельцу, поиска «по имени / последнему показу» нет. Один `profile_id` склеивает разных девушек с тем же «имя, возраст». Тесты: `test_match_card_beats_own_old_showing`, `test_match_card_missing_sends_nothing`, `test_unknown_card_sends_nothing`, `test_run_notifies_owner_when_card_missing`, `test_redirected_match_card_from_match_account`.
 - **Владелец пишет сам — бот молчит**: перед отправкой анкеты проверка её чата; наше исходящее новее привета → `OWNER_CHAT`, анкету не шлём. Тест: `test_owner_chatting_cancels_intro`.
 - **Автопереписка — только то, что попросил владелец** (стикер-привет, её анкета + закреп, сценарий `match_script` по его схеме). Новых шагов и фраз не добавлять без явной команды; концы веток и ответы не по сценарию — передача владельцу. Тест: `test_her_story_goes_to_owner`.
@@ -114,7 +118,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-10-30): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (106), test_auto_action_audit (5), test_captcha_memory (11), test_collector (176), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (30), test_match_intro (38), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1048 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-01): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (108), test_auto_action_audit (5), test_captcha_memory (11), test_collector (178), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_manual_review (13), test_match_greeter (32), test_match_intro (41), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1057 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

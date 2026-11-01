@@ -108,6 +108,36 @@ class TestMatchDialogDb:
             "Роза", LEO, "dvai_2", use_context=False,
         ))[1] == 0
 
+    def test_find_match_card_on_repeat_showing(self, db: Database) -> None:
+        """Матч на ПОВТОРНОМ показе анкеты — карточка тоже находится.
+
+        Прод 2026-11-01 («анкета дэп не найдена»): поиск шёл по
+        profiles.source_message_id (первый показ), повтор не находился.
+        """
+        pid = run(_profile(db, "дэп", 1000, "dvai_2", []))
+        run(db.link_profile_message(pid, 43428, LEO, NOW, account_session="dvai_2"))
+        run(db.set_chat_profile_context(LEO, 43428, "dvai_2"))
+        assert run(db.find_match_card("дэп", LEO, "dvai_2")) == (pid, 43428)
+        # Тот же id на другом аккаунте — не её карточка.
+        run(db.set_chat_profile_context(LEO, 43428, "dvai"))
+        assert run(db.find_match_card("дэп", LEO, "dvai"))[1] == 0
+
+    def test_was_profile_liked(self, db: Database) -> None:
+        """Лайк на прошлом показе → «уже лайкали»; текущая карточка не в счёт."""
+        pid = run(_profile(db, "Роза", 1000, "dvai_2", []))
+        assert not run(db.was_profile_liked(pid, exclude_message_id=2000))
+        run(db.record_auto_action(pid, "DISLIKE", "DISLIKE", LEO, 900))
+        assert not run(db.was_profile_liked(pid, exclude_message_id=2000))
+        run(db.record_auto_action(pid, "LIKE", "LIKE", LEO, 1000))
+        assert run(db.was_profile_liked(pid, exclude_message_id=2000))
+        assert not run(db.was_profile_liked(pid, exclude_message_id=1000))
+
+    def test_has_reaction_for_message_sees_dislike(self, db: Database) -> None:
+        pid = run(_profile(db, "Роза", 1000, "dvai_2", []))
+        assert not run(db.has_reaction_for_message(LEO, 1000))
+        run(db.record_auto_action(pid, "DISLIKE", "DISLIKE", LEO, 1000))
+        assert run(db.has_reaction_for_message(LEO, 1000))
+
     def test_card_ids_by_anchor_not_last_showing(self, db: Database) -> None:
         """Под одним profile_id — две разные «Роза, 19»: берём карточку матча."""
         pid = run(_profile(db, "Роза", 1000, "dvai", [1001]))

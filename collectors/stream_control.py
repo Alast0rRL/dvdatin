@@ -322,16 +322,19 @@ class StreamControlMixin:
 
         Текст содержит MATCH_CARD_FRAGMENT и либо «показать» в самом тексте,
         либо кнопку показа (обе клавиатуры Leo: «1. Показать.» / «1 👍»).
+        Уведомление без кнопок (``MATCH_NOTICE_FRAGMENTS``: «Кому-то
+        понравилась…», «Кто-то тобой заинтересовался!») — стоп и без «понравил».
         """
         low = (getattr(msg, "text", "") or "").lower()
-        if MATCH_CARD_FRAGMENT not in low:
+        notice = any(f in low for f in MATCH_NOTICE_FRAGMENTS)
+        if MATCH_CARD_FRAGMENT not in low and not notice:
             return False
         if (self._current_session(), getattr(msg, "id", None)) in self._match_ack:
             # Владелец нажал «Продолжить» на этой карточке — больше не стоп.
             return False
         if MATCH_SHOW_FRAGMENT in low:
             return True
-        if any(f in low for f in MATCH_NOTICE_FRAGMENTS):
+        if notice:
             return True
         return any(
             self._is_match_show_button(t) for t in self._extract_button_texts(msg)

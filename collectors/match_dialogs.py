@@ -51,8 +51,14 @@ class MatchDialogsMixin:
             # Реестр переписок — ДО привета: стикер бота сразу ляжет в журнал.
             await self._track_dialog(client, session, match, source=source)
             try:
+                # Своё сообщение Leo — ключ к девушке без @username; с чужого
+                # аккаунта (перенаправление) оно не годится.
+                via = (
+                    (task.chat_id, task.message_id) if not source else None
+                )
                 status = await self._match_greeter.greet(
                     client, session, match, self._dialog_mode(session),
+                    source=via,
                 )
             except Exception as e:
                 logger.error(f"MatchGreeting error: {e}")

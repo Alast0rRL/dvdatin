@@ -1346,6 +1346,45 @@ class Database:
         )
         return await cursor.fetchone() is not None
 
+    async def has_reaction_for_message(
+        self, chat_id: int, telegram_message_id: int,
+    ) -> bool:
+        """На карточку уже ушла реакция (LIKE или DISLIKE)?
+
+        Проверка «карточка уже в журнале» перед реакцией: прежняя проверка
+        только LIKE пропускала уже 👎-нутую карточку, и повторная обработка
+        (отложенная реакция, сверка истории) слала второй 👎 — он уходил на
+        СЛЕДУЮЩУЮ анкету (прод 2026-11-01: UNIQUE в ``_flush_deferred``).
+        """
+        cursor = await self._connection.execute(
+            "SELECT 1 FROM auto_actions_log "
+            "WHERE chat_id = ? AND telegram_message_id = ? "
+            "AND action IN ('LIKE', 'DISLIKE') LIMIT 1",
+            (chat_id, telegram_message_id),
+        )
+        return await cursor.fetchone() is not None
+
+    async def was_profile_liked(
+        self, profile_id: int, exclude_message_id: int | None = None,
+    ) -> bool:
+        """Лайкали ли эту анкету раньше (бот или владелец вручную).
+
+        Бот — LIKE в ``auto_actions_log`` на ДРУГОЙ карточке (повторный показ);
+        владелец — ❤️ / сообщение в чате Leo (``sent_messages``). Правило
+        владельца (2026-11-01): уже лайкнутую девушку второй раз не лайкаем.
+        """
+        cursor = await self._connection.execute(
+            "SELECT 1 FROM auto_actions_log WHERE profile_id = ? "
+            "AND action IN ('LIKE', 'MESSAGE') "
+            "AND COALESCE(telegram_message_id, -1) != COALESCE(?, -2) "
+            "UNION ALL "
+            "SELECT 1 FROM sent_messages WHERE profile_id = ? "
+            "AND action IN ('LIKE', 'MESSAGE') "
+            "AND telegram_message_id != COALESCE(?, -2) LIMIT 1",
+            (profile_id, exclude_message_id, profile_id, exclude_message_id),
+        )
+        return await cursor.fetchone() is not None
+
     async def record_auto_action(
         self,
         profile_id: int,
@@ -1478,24 +1517,34 @@ class Database:
         profile_message_id: int,
         account_session: str | None = None,
     ) -> int | None:
-        """Находит профиль по telegram_message_id его карточки (chat_context)."""
+        """Находит профиль по telegram_message_id его карточки (chat_context).
+
+        Ищем по ``profile_messages`` — там КАЖДЫЙ показ анкеты. По
+        ``profiles.source_message_id`` (только первый показ) повторный показ
+        не находился: матч почти всегда случается на повторе, и девушке не
+        уходила её анкета (прод 2026-11-01: «анкета дэп не найдена»).
+        """
         try:
-            sql = (
-                "SELECT id FROM profiles "
-                "WHERE source_message_id = ? ORDER BY id DESC LIMIT 1"
-            )
             params: list[object] = [profile_message_id]
+            sql = (
+                "SELECT profile_id FROM profile_messages "
+                "WHERE telegram_message_id = ?"
+            )
             if account_session:
-                sql = (
-                    "SELECT p.id FROM profiles p "
-                    "JOIN profile_messages pm ON pm.profile_id = p.id "
-                    "WHERE p.source_message_id = ? "
-                    "AND (pm.account_session = ? OR pm.account_session = '') "
-                    "ORDER BY p.id DESC LIMIT 1"
-                )
+                sql += " AND account_session IN (?, '')"
                 params.append(account_session)
+            sql += " ORDER BY (account_session = '') ASC, profile_id DESC LIMIT 1"
             cursor = await self._connection.execute(sql, tuple(params))
             row = await cursor.fetchone()
+            if row is None and not account_session:
+                # Без аккаунта — старые БД без profile_messages-строк. С
+                # аккаунтом нельзя: у аккаунтов свои пространства id в чате Leo.
+                cursor = await self._connection.execute(
+                    "SELECT id FROM profiles "
+                    "WHERE source_message_id = ? ORDER BY id DESC LIMIT 1",
+                    (profile_message_id,),
+                )
+                row = await cursor.fetchone()
         except Exception as e:
             logger.warning(f"resolve_profile_by_message: {e}")
             return None

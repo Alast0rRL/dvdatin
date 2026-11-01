@@ -136,6 +136,42 @@ class TestMatchGreeter:
         assert run(greeter.greet(client, "dvai_2", self.match, "AUTO")) == "ERROR"
         assert "USER_PRIVACY" in db.set_state.await_args.args[1]
 
+    def test_unknown_user_id_resolved_via_leo_message(self) -> None:
+        """tg://user?id=… без access_hash → пишем «через сообщение Leo».
+
+        Прод 2026-11-01 (Лера, 1391890562): «Could not find the input
+        entity for PeerUser» — привет не ушёл.
+        """
+        from telethon.tl.types import InputPeerUserFromMessage
+
+        db = make_db()
+        client = make_client()
+
+        async def get_input_entity(target):
+            if target == 1391890562:
+                raise ValueError("Could not find the input entity for PeerUser")
+            return "leo_peer"
+
+        client.get_input_entity = AsyncMock(side_effect=get_input_entity)
+        greeter = MatchGreeter(MatchGreetingConfig(), db)
+        match = ParsedMatch(name="Лера", telegram_user_id=1391890562)
+        status = run(greeter.greet(
+            client, "dvai_2", match, "AUTO", source=(LEO, 43500),
+        ))
+        assert status == "SENT"
+        peer = client.send_file.await_args.args[0]
+        assert isinstance(peer, InputPeerUserFromMessage)
+        assert peer.user_id == 1391890562 and peer.msg_id == 43500
+
+    def test_unknown_user_id_without_source_is_error(self) -> None:
+        """Без сообщения Leo (перенаправление) — по-прежнему ERROR."""
+        db = make_db()
+        client = make_client()
+        client.get_input_entity = AsyncMock(side_effect=ValueError("no entity"))
+        greeter = MatchGreeter(MatchGreetingConfig(), db)
+        match = ParsedMatch(name="Лера", telegram_user_id=1391890562)
+        assert run(greeter.greet(client, "dvai_2", match, "AUTO")) == "ERROR"
+
     def test_missing_sticker_set_does_not_mark_girl(self) -> None:
         db = make_db()
         client = make_client()

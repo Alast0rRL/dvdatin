@@ -399,7 +399,7 @@ class AutoActionEngine:
         разводит: LIKE — всегда цепочка «Берем)», голый ❤️ удалён (§30).
 
         Идемпотентность по ``telegram_message_id`` обеспечивается на уровне
-        collector'а (``has_auto_action_for_message`` в БД), а не движка.
+        collector'а (``has_reaction_for_message`` в БД), а не движка.
         """
         if not self.enabled:
             return "GATE"
@@ -476,6 +476,15 @@ class AutoActionEngine:
                 chat_id=self._chat_id,
             )
             return "DEFERRED"
+
+        # Эту карточку разбираем сейчас — её отложенная копия больше не нужна.
+        if (
+            policy != ActionPolicy.NO_ACTION
+            and self._deferred is not None
+            and message_id is not None
+            and self._deferred.get("message_id") == message_id
+        ):
+            self._deferred = None
 
         if policy == ActionPolicy.DISLIKE_ONLY:
             await self._send_locked(DISLIKE_TEXT)
@@ -731,6 +740,19 @@ class AutoActionEngine:
         if self._has_open_composer():
             return
         self._deferred = None
+        mid = payload.get("message_id")
+        if mid is not None and self._db is not None:
+            try:
+                if await self._db.has_reaction_for_message(self._chat_id, mid):
+                    # Карточку уже разобрал другой проход — второй 👎/«💌»
+                    # ушёл бы на следующую анкету.
+                    logger.info(
+                        f"AutoAction: отложенная реакция по карточке {mid} "
+                        "не нужна — карточка уже в журнале"
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"AutoAction: не проверил журнал карточки {mid}: {e}")
         logger.info(
             "AutoAction: композер закрыт — отправляю отложенную реакцию "
             f"по карточке {payload.get('message_id')}"

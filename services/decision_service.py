@@ -36,6 +36,10 @@ if TYPE_CHECKING:
     from services.profile_service import ProfileService
 
 
+
+#: Причина «эту анкету уже лайкали» (``apply_already_liked``).
+ALREADY_LIKED_REASON: str = "ALREADY_LIKED"
+
 class DecisionService:
     """Сервис принятия детерминированных решений по профилям.
 
@@ -279,6 +283,19 @@ class DecisionService:
         return AIDecision.REVIEW, score, reasons
 
     # ── Фото: сигарета/алкоголь (правило владельца) ──────────────────
+
+    async def apply_already_liked(
+        self, result: AIDecisionResult,
+    ) -> AIDecisionResult:
+        """LIKE → DISLIKE: эту анкету уже лайкали (повторный показ в Leo).
+
+        Правило владельца (2026-11-01): второй лайк той же девушке не нужен —
+        он тратит дневной лимит и шлёт ей «Берем)» повторно. Факт «уже
+        лайкнута» коллектор берёт из журнала (``Database.was_profile_liked``),
+        это явный признак, а не нехватка данных — инвариант
+        NO_HARD_NEGATIVE_MUST_NOT_BECOME_DISLIKE не нарушается.
+        """
+        return await self.apply_photo_vice(result, ALREADY_LIKED_REASON)
 
     async def apply_photo_vice(
         self, result: AIDecisionResult, reason: str,

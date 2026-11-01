@@ -60,6 +60,8 @@ def make_db_mock() -> Database:
     db.save_raw_message = AsyncMock(return_value=1)
     db.has_auto_action = AsyncMock(return_value=False)
     db.has_auto_action_for_message = AsyncMock(return_value=False)
+    db.has_reaction_for_message = AsyncMock(return_value=False)
+    db.was_profile_liked = AsyncMock(return_value=False)
     db.record_auto_action = AsyncMock()
     db.get_captcha_answer = AsyncMock(return_value=None)
     db.record_pending_captcha = AsyncMock(return_value=True)
@@ -346,6 +348,34 @@ class TestCollectorActiveCard:
 
         assert collector.mode is Mode.OBSERVE
         assert engine.is_stale_card(1234060895, 744850) is True
+        client.send_message.assert_not_called()
+
+    def test_interested_notice_stops_search(self) -> None:
+        """«Кто-то тобой заинтересовался! Заканчивай с вопросом выше…» — стоп.
+
+        Прод 2026-11-01 (dvai_2 msg=42510): текст без «понравил», бот его не
+        узнал, нажал «1 🚀», и матч с Катей случился без владельца.
+        """
+        collector, client, engine = self._collector()
+        engine.note_card(1234060895, 42508)
+        engine.notify_owner = AsyncMock(return_value=True)
+        event = make_event(
+            text=(
+                "Кто-то тобой заинтересовался! Заканчивай с вопросом выше "
+                "и посмотрим кто это"
+            ),
+            msg_id=42510,
+            sender_id=1234060895,
+        )
+        event.message.out = False
+        event.client = client
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        assert collector.mode is Mode.OBSERVE
+        assert engine.is_stale_card(1234060895, 42508) is True
         client.send_message.assert_not_called()
 
     def test_resume_passes_notice_without_buttons(self) -> None:
@@ -2435,6 +2465,42 @@ class TestCollectorAutoActions:
             1, "LIKE", "LIKE", 1234060895, 900
         )
 
+    def test_already_liked_profile_gets_dislike(self) -> None:
+        """Повторный показ уже лайкнутой анкеты → 👎, а не второй лайк.
+
+        Правило владельца 2026-11-01: «если уже была эта девушка — не лайкай».
+        """
+        from models.decision import AIDecision
+        from services.decision_service import ALREADY_LIKED_REASON
+
+        auto_client = make_tg_client()
+        auto_client.is_connected.return_value = True
+        collector = self._make_collector(
+            self._make_config(), self._make_decision(AIDecision.LIKE),
+            auto_client, AsyncMock(),
+        )
+        collector._db.was_profile_liked = AsyncMock(return_value=True)
+        disliked = self._make_decision(AIDecision.DISLIKE)
+        disliked.reasons = [ALREADY_LIKED_REASON]
+        collector._decision_service.apply_already_liked = AsyncMock(
+            return_value=disliked,
+        )
+        task = RawTask(
+            chat_id=1234060895, message_id=900, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=1,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._process_message(task))
+
+        sent = [c.args[1] for c in auto_client.send_message.call_args_list]
+        assert MESSAGE_BUTTON_TEXT not in sent
+        assert "👎" in sent
+        collector._db.was_profile_liked.assert_awaited_once_with(
+            1, exclude_message_id=900,
+        )
+
     def test_informative_like_starts_message_chain_on_auto_account(self) -> None:
         """LIKE + informative + like_message → цепочка «Берем)» стартует.
 
@@ -2554,7 +2620,7 @@ class TestCollectorAutoActions:
             self._make_config(), self._make_decision(AIDecision.DISLIKE),
             auto_client, other_client,
         )
-        collector._db.has_auto_action_for_message = AsyncMock(
+        collector._db.has_reaction_for_message = AsyncMock(
             side_effect=[False, True]
         )
         task = RawTask(

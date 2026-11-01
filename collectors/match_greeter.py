@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from telethon.errors import FloodWaitError, PeerFloodError
 from telethon.tl.functions.messages import GetStickerSetRequest
-from telethon.tl.types import InputStickerSetShortName
+from telethon.tl.types import InputPeerUserFromMessage, InputStickerSetShortName
 
 from models.raw import ParsedMatch
 
@@ -91,6 +91,8 @@ class MatchGreeter:
         account_session: str,
         match: ParsedMatch,
         mode: str,
+        *,
+        source: tuple[int, int] | None = None,
     ) -> str:
         """Пишет девушке. Статус: SENT / DISABLED / NO_TARGET / ALREADY /
         HAS_CHAT / NO_STICKER / PAUSED / SPAM_BLOCK / ERROR.
@@ -98,6 +100,10 @@ class MatchGreeter:
         PAUSED — аккаунт на паузе после спам-блока, девушка в очереди.
         SPAM_BLOCK — блок пойман сейчас (пауза поставлена, девушка в очереди);
         по нему коллектор один раз уведомляет владельца.
+
+        ``source`` — (chat_id, id) сообщения Leo «Начинай общаться», где она
+        упомянута: без @username у сессии нет её access_hash, и Telegram
+        пускает к ней только «через это сообщение» (``_resolve_peer``).
         """
         if not self.allowed_in(mode):
             return "DISABLED"
@@ -126,7 +132,7 @@ class MatchGreeter:
         if sticker is None:
             return "NO_STICKER"
         try:
-            peer = await client.get_input_entity(target)
+            peer = await self._resolve_peer(client, target, source)
             if await self._we_already_wrote(client, peer):
                 await self._mark(key, "HAS_CHAT", match)
                 logger.info(
@@ -158,6 +164,26 @@ class MatchGreeter:
         logger.info(f"MatchGreeting: отправил стикер {match.name} ({target}) 🔥")
         await self._report_sent(account_session, peer, sent)
         return "SENT"
+
+    @staticmethod
+    async def _resolve_peer(
+        client: Any, target: str | int, source: tuple[int, int] | None,
+    ) -> Any:
+        """Её InputPeer: из кэша сессии, иначе — через сообщение Leo.
+
+        Ссылка ``tg://user?id=…`` даёт только id; без access_hash Telethon
+        падает «Could not find the input entity» (прод 2026-11-01, Лера).
+        ``InputPeerUserFromMessage`` — штатный способ Telegram написать
+        пользователю, увиденному в сообщении чата.
+        """
+        try:
+            return await client.get_input_entity(target)
+        except ValueError:
+            if not isinstance(target, int) or source is None:
+                raise
+        chat_id, msg_id = source
+        chat = await client.get_input_entity(chat_id)
+        return InputPeerUserFromMessage(peer=chat, msg_id=msg_id, user_id=target)
 
     async def _report_sent(
         self, account_session: str, peer: Any, sent: Any,
