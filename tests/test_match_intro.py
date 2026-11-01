@@ -312,18 +312,75 @@ class TestMatchIntro:
         assert "status" not in kw and "due_at" in kw
 
     def test_card_on_other_account_not_relayed(self) -> None:
-        """Анкета в ленте другого аккаунта — между аккаунтами не пересылаем.
+        """Анкета в ленте другого аккаунта, а его клиента нет — не шлём.
 
-        Просьба владельца 2026-11-01: «прекрати пересылку между аккаунтами,
-        оставляем только чат». Свой старый показ того же profile_id тоже не
-        шлём (там бывает другая девушка, прод 2026-10-30 @Miamikii).
+        Свой старый показ того же profile_id тоже не шлём (там бывает другая
+        девушка, прод 2026-10-30 @Miamikii).
         """
         db = make_db()
         client = make_client()
         row = due_row(card_session="dvai", card_message_id=746612)
         assert run(make_intro(db).send_intro(client, "dvai_2", row)) == OTHER_ACCOUNT
         client.forward_messages.assert_not_called()
+        client.send_file.assert_not_called()
         assert db.update_match_dialog.await_args.kwargs["status"] == OTHER_ACCOUNT
+
+    @staticmethod
+    def _source_client(*msgs: object) -> MagicMock:
+        src = MagicMock()
+        src.get_messages = AsyncMock(return_value=list(msgs))
+        src.download_media = AsyncMock(side_effect=lambda m, file=None: b"img%d" % m.id)
+        return src
+
+    def test_card_on_other_account_sent_as_copy(self) -> None:
+        """Прод 2026-11-02 (@PzKpfwLin14): матч на dvai, личка на dvai_2 —
+        dvai качает её карточку, dvai_2 шлёт копию альбомом с подписью.
+        Аккаунты друг другу ничего не пишут, пересылки нет."""
+        db = make_db()
+        db.get_profile_card_message_ids = AsyncMock(return_value=[11, 12])
+        ent = [MagicMock()]
+        src = self._source_client(
+            SimpleNamespace(id=12, message="", entities=None, media=object(), video=None),
+            SimpleNamespace(id=11, message="Роза, 19", entities=ent, media=object(), video=None),
+        )
+        client = make_client()
+        client.send_file = AsyncMock(return_value=[
+            SimpleNamespace(id=5, text="Роза, 19"), SimpleNamespace(id=6, text=""),
+        ])
+        intro = make_intro(db)
+        intro.client_for = lambda s: src if s == "dvai" else None
+        row = due_row(card_session="dvai", card_message_id=12)
+        assert run(intro.send_intro(client, "dvai_2", row)) == INTRO_SENT
+        src.get_messages.assert_awaited_once_with(LEO, ids=[11, 12])
+        client.forward_messages.assert_not_called()
+        src.send_file.assert_not_called()
+        args, kw = client.send_file.await_args
+        files = args[1]
+        assert [f.getvalue() for f in files] == [b"img11", b"img12"]
+        assert kw["caption"] == ["Роза, 19", ""]
+        assert kw["formatting_entities"] == [ent, []]
+        assert row["sent_msg_id"] == 6
+        client.pin_message.assert_awaited_once()
+        assert client.pin_message.await_args.args[1].id == 5
+
+    def test_copy_single_photo_and_flood(self) -> None:
+        """Одно фото — одиночный файл; спам-блок на копии — повтор позже."""
+        db = make_db()
+        db.get_profile_card_message_ids = AsyncMock(return_value=[11])
+        src = self._source_client(
+            SimpleNamespace(id=11, message="Роза", entities=None, media=object(), video=None),
+        )
+        client = make_client()
+        client.send_file = AsyncMock(return_value=SimpleNamespace(id=5, text="Роза"))
+        intro = make_intro(db)
+        intro.client_for = lambda s: src
+        row = due_row(card_session="dvai", card_message_id=11)
+        assert run(intro.send_intro(client, "dvai_2", row)) == INTRO_SENT
+        args, kw = client.send_file.await_args
+        assert args[1].getvalue() == b"img11" and kw["caption"] == "Роза"
+        client.send_file = AsyncMock(side_effect=FloodWaitError(request=None, capture=60))
+        assert run(intro.send_intro(client, "dvai_2", due_row(
+            card_session="dvai", card_message_id=11))) == "FLOOD"
 
     def test_match_card_missing_sends_nothing(self) -> None:
         """Карточка матча не нашлась — не шлём «похожую» анкету."""

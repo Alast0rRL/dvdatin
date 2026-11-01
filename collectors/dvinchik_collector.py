@@ -183,6 +183,10 @@ class DvinchikCollector(
         self._match_intro = MatchIntro(
             config.auto_actions.match_intro, db, config.dvinchik.chat_id,
         )
+        # Личка перенаправлена — копию анкеты качаем клиентом аккаунта карточки.
+        self._match_intro.client_for = (
+            lambda session: self._clients_for_session(session)[0]
+        )
         # После анкеты — сценарий знакомства по схеме владельца (AUTO).
         self._match_script = MatchScript(config.auto_actions.match_script, db)
         # Журнал переписок с девушками-матчами (данные для анализа общения).

@@ -10,9 +10,11 @@
 3. В срок (``process``, из фонового цикла коллектора раз в минуту) — пересылка
    её же анкеты из чата Leo (фото + подпись, только id этого аккаунта) и
    закреп у обоих (``pm_oneside=False``) → INTRO_SENT.
-   Анкету видел только ДРУГОЙ аккаунт (перенаправление лички) — между
-   аккаунтами её НЕ пересылаем (просьба владельца 2026-11-01: «оставляем только
-   чат»), статус OTHER_ACCOUNT — владелец шлёт её сам.
+   Анкету видел только ДРУГОЙ аккаунт (перенаправление лички) — аккаунты
+   друг другу ничего не пишут (владелец, 2026-11-01), но аккаунт карточки
+   скачивает её фото и текст, а аккаунт лички шлёт ей КОПИЮ новым сообщением
+   (владелец, 2026-11-02: @PzKpfwLin14 осталась без анкеты). Аккаунт карточки
+   не вошёл — статус OTHER_ACCOUNT, анкету шлёт владелец.
    Пересылается та карточка, что шла перед уведомлением о матче
    (``card_session`` + ``card_message_id``), а не «последний показ профиля»:
    под одним profile_id бывают разные девушки с тем же «имя, возраст».
@@ -30,6 +32,7 @@
 
 from __future__ import annotations
 
+import io
 from datetime import datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -50,8 +53,8 @@ INTRO_SENT: str = "INTRO_SENT"
 NO_PROFILE: str = "NO_PROFILE"
 #: Владелец сам написал ей после привета — анкету не шлём (переписку ведёт он).
 OWNER_CHAT: str = "OWNER_CHAT"
-#: Её карточка — в ленте другого аккаунта (перенаправление лички): между
-#: аккаунтами не пересылаем, анкету шлёт владелец.
+#: Её карточка — в ленте другого аккаунта (перенаправление лички), а клиента
+#: этого аккаунта нет — копию не сделать, анкету шлёт владелец.
 OTHER_ACCOUNT: str = "OTHER_ACCOUNT"
 ERROR: str = "ERROR"
 
@@ -96,6 +99,9 @@ class MatchIntro:
         # Колбэк «бот отправил девушке» (session, user_id, сообщения) —
         # журнал переписок (DialogLogger.log_sent). Ошибки не важны.
         self.on_sent: Callable[[str, int, Any], Awaitable[Any]] | None = None
+        # Клиент аккаунта по имени сессии — скачать карточку из ЕГО чата Leo,
+        # когда личка перенаправлена на другой аккаунт (копия анкеты).
+        self.client_for: Callable[[str], Any] | None = None
 
     def allowed_in(self, mode: str) -> bool:
         return bool(self._config.enabled) and mode in self._config.modes
@@ -242,18 +248,24 @@ class MatchIntro:
             )
             await self._update(account_session, user_id, status=NO_PROFILE)
             return NO_PROFILE
+        src_client = None
         if source != account_session:
-            # Анкета в ленте другого аккаунта: пересылку между аккаунтами
-            # владелец отключил (2026-11-01) — личка остаётся, анкету шлёт он.
-            logger.info(
-                f"MatchIntro: анкета {name} — на {source}, между аккаунтами "
-                "не пересылаю"
-            )
-            await self._update(account_session, user_id, status=OTHER_ACCOUNT)
-            return OTHER_ACCOUNT
+            # Анкета в ленте другого аккаунта: аккаунты друг другу не пишут,
+            # поэтому не пересылка, а копия (фото + текст) с аккаунта лички.
+            src_client = self.client_for(source) if self.client_for else None
+            if src_client is None:
+                logger.info(
+                    f"MatchIntro: анкета {name} — на {source}, его клиента "
+                    "нет — не шлю"
+                )
+                await self._update(account_session, user_id, status=OTHER_ACCOUNT)
+                return OTHER_ACCOUNT
         try:
-            from_peer: Any = self._leo_chat_id
-            sent = await client.forward_messages(peer, ids, from_peer=from_peer)
+            if src_client is not None:
+                sent = await self._send_copy(client, peer, src_client, ids)
+            else:
+                from_peer: Any = self._leo_chat_id
+                sent = await client.forward_messages(peer, ids, from_peer=from_peer)
         except Exception as e:
             pause = flood_pause_sec(e)
             if pause is not None:
@@ -310,6 +322,51 @@ class MatchIntro:
             f"{' и закрепил 📌' if pinned else ''}"
         )
         return INTRO_SENT
+
+    async def _send_copy(
+        self, client: Any, peer: Any, src_client: Any, ids: list[int],
+    ) -> Any:
+        """Копия карточки из чата Leo аккаунта ``src_client``: фото/видео
+        скачиваются в память, ``client`` шлёт их ей одним альбомом с текстом
+        анкеты (как у Leo — подпись на первом файле)."""
+        msgs = await src_client.get_messages(self._leo_chat_id, ids=ids)
+        if not isinstance(msgs, list):
+            msgs = [msgs]
+        caption = ""
+        entities: list | None = None
+        files: list[io.BytesIO] = []
+        for m in sorted(
+            (m for m in msgs if m is not None), key=lambda m: m.id,
+        ):
+            text = getattr(m, "message", "") or ""
+            if text.strip() and not caption:
+                caption = text
+                entities = list(getattr(m, "entities", None) or [])
+            if getattr(m, "media", None) is None:
+                continue
+            data = await src_client.download_media(m, file=bytes)
+            if not data:
+                continue
+            buf = io.BytesIO(data)
+            buf.name = "video.mp4" if getattr(m, "video", None) else "photo.jpg"
+            files.append(buf)
+        if not files and not caption:
+            raise ValueError("карточка пуста — нечего копировать")
+        if not files:
+            return await client.send_message(
+                peer, caption, formatting_entities=entities or None,
+                parse_mode=None, link_preview=False,
+            )
+        if len(files) == 1:
+            return await client.send_file(
+                peer, files[0], caption=caption,
+                formatting_entities=entities or None, parse_mode=None,
+            )
+        captions = [caption] + [""] * (len(files) - 1)
+        kwargs: dict[str, Any] = {"caption": captions, "parse_mode": None}
+        if entities:
+            kwargs["formatting_entities"] = [entities] + [[]] * (len(files) - 1)
+        return await client.send_file(peer, files, **kwargs)
 
     @staticmethod
     async def _owner_wrote(client: Any, peer: Any, row: dict) -> bool:

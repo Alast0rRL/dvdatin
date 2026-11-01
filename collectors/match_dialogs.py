@@ -189,11 +189,11 @@ class MatchDialogsMixin:
                     )
                     continue
                 if status == OTHER_ACCOUNT:
-                    # Между аккаунтами анкету не пересылаем — шлёт владелец.
+                    # Аккаунт её карточки не вошёл — копию не сделать.
                     await self._auto_engine.notify_owner(
                         f"💬 {row.get('name') or who} ({who}) ответила на привет "
                         f"на {session or 'аккаунте'} — её анкета в ленте другого "
-                        "аккаунта, между аккаунтами не пересылаю. Отправь сам."
+                        "аккаунта, он не подключён, анкету не слал. Отправь сам."
                     )
                     continue
                 if status != INTRO_SENT:
