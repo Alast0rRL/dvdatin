@@ -15,6 +15,7 @@ from collectors.dvinchik_collector import DvinchikCollector
 from collectors.match_intro import (
     ERROR,
     INTRO_SENT,
+    MAIN_CHAT,
     NO_PROFILE,
     OTHER_ACCOUNT,
     OWNER_CHAT,
@@ -518,6 +519,30 @@ class TestCollectorIntro:
         run(collector._handle_private_message(event))
         args = collector._match_intro.note_reply.await_args.args
         assert args[:3] == ("dvai_2", 77, "AUTO")
+
+    def test_she_writes_to_match_account_silences_redirect(self) -> None:
+        """Владелец 2026-11-02: личка перенаправлена на dvai, она пишет на
+        dvai_2 (аккаунт матча) — бот с dvai не шлёт анкету и не ведёт сценарий."""
+        collector, other, auto = self._collector()
+        rows = {
+            ("dvai", 77): {"status": WAITING_REPLY, "name": "Роза"},
+            ("dvai", 78): {"status": INTRO_SENT, "script_step": "after_pin"},
+            ("dvai", 79): {"status": INTRO_SENT, "script_step": "handoff"},
+        }
+        collector._db.get_match_dialog = AsyncMock(
+            side_effect=lambda s, u: rows.get((s, u))
+        )
+        collector._db.update_match_dialog = AsyncMock()
+        for uid in (77, 78, 79):
+            event = MagicMock(chat_id=uid, sender_id=uid, client=auto)
+            event.message.date = datetime(2026, 10, 29, tzinfo=timezone.utc)
+            run(collector._handle_private_message(event))
+        calls = collector._db.update_match_dialog.await_args_list
+        assert [c.args for c in calls] == [("dvai", 77), ("dvai", 78)]
+        assert calls[0].kwargs == {"status": MAIN_CHAT}
+        assert calls[1].kwargs["script_step"] == "owner"
+        text = collector._auto_engine.notify_owner.await_args.args[0]
+        assert "на dvai_2" in text and "с dvai" in text
 
     def test_leo_chat_is_not_a_reply(self) -> None:
         collector, _, auto = self._collector()

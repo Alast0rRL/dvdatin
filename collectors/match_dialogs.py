@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 from datetime import datetime
 
@@ -10,12 +11,15 @@ from loguru import logger
 from telethon import events
 
 from collectors.match_intro import (
-    INTRO_SENT, NO_ACCESS, NO_PROFILE, OTHER_ACCOUNT,
+    INTRO_SENT, MAIN_CHAT, NO_ACCESS, NO_PROFILE, OTHER_ACCOUNT, SCHEDULED,
+    WAITING_REPLY,
 )
 from services.match_script_rules import (
+    ACTIVE_STEPS,
     ASKS_BOT,
     DELETED,
     HANDOFF,
+    OWNER,
     STOPPED,
 )
 from collectors.raw_worker import RawTask
@@ -24,6 +28,13 @@ from models.raw import ParsedMatch
 
 class MatchDialogsMixin:
     """Привет матчу, автопереписка и журнал лички (миксин DvinchikCollector)."""
+
+    #: Личка перенаправлена — привет с аккаунта-цели не сразу: сначала даём
+    #: ей написать на аккаунт матча (владелец 2026-11-02: «она пишет мне, а ей
+    #: уже пишет бот со 2 акка»). 0 — без паузы (тесты).
+    REDIRECT_GREET_DELAY_SEC: float = 120.0
+    #: Сколько сообщений её чата на аккаунте матча смотреть перед приветом.
+    MAIN_CHAT_CHECK_LIMIT: int = 5
 
     async def _greet_match(
         self, task: RawTask, msg: object | None, match: ParsedMatch,
@@ -55,7 +66,74 @@ class MatchDialogsMixin:
                 await self._note_no_access(client, session, target, match)
                 return
             if target_client is not None:
-                source, session, client = session, target, target_client
+                delay = float(self.REDIRECT_GREET_DELAY_SEC)
+                if delay > 0:
+                    # Не держим очередь сообщений: привет — отдельной задачей.
+                    t = asyncio.get_running_loop().create_task(
+                        self._greet_redirected(
+                            task, client, session, target, target_client,
+                            match, delay,
+                        )
+                    )
+                    pending = getattr(self, "_redirect_greet_tasks", None)
+                    if pending is None:
+                        pending = self._redirect_greet_tasks = set()
+                    pending.add(t)
+                    t.add_done_callback(pending.discard)
+                    return
+                await self._greet_redirected(
+                    task, client, session, target, target_client, match, 0.0,
+                )
+                return
+        await self._greet_from(task, client, session, match, source="")
+
+    async def _greet_redirected(
+        self, task: RawTask, own_client: object, own: str, target: str,
+        target_client: object, match: ParsedMatch, delay: float,
+    ) -> None:
+        """Привет с аккаунта-цели — только если она не пишет на аккаунт матча.
+
+        Через ``delay`` секунд смотрим её чат на аккаунте матча: есть там
+        сообщения (она написала сама или пишет владелец) — бот молчит с обоих
+        аккаунтов, девушка — в журнале аккаунта матча.
+        """
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if await self._has_main_chat(own_client, match):
+                logger.info(
+                    f"MatchGreeting: {match.name} уже пишет на {own} — с "
+                    f"{target} не пишу"
+                )
+                with self._session_scope(own):
+                    await self._track_dialog(own_client, own, match)
+                return
+            await self._greet_from(
+                task, target_client, target, match, source=own,
+            )
+        except Exception as e:
+            logger.error(f"MatchGreeting: привет {match.name} с {target}: {e}")
+
+    async def _has_main_chat(self, client: object, match: ParsedMatch) -> bool:
+        """Есть ли сообщения в её чате на аккаунте матча (сбой чтения — нет)."""
+        who = match.telegram_username or match.telegram_user_id
+        if not who:
+            return False
+        try:
+            async for _ in client.iter_messages(
+                who, limit=self.MAIN_CHAT_CHECK_LIMIT,
+            ):
+                return True
+        except Exception as e:
+            logger.warning(f"MatchGreeting: не прочитал чат {match.name}: {e}")
+        return False
+
+    async def _greet_from(
+        self, task: RawTask, client: object, session: str, match: ParsedMatch,
+        *, source: str,
+    ) -> None:
+        """Стикер-привет с аккаунта ``session`` (``source`` — аккаунт матча
+        при перенаправлении)."""
         scope = self._session_scope(session) if source else nullcontext()
         with scope:
             # Реестр переписок — ДО привета: стикер бота сразу ляжет в журнал.
@@ -193,8 +271,52 @@ class MatchDialogsMixin:
                 session, sender_id, text if isinstance(text, str) else "",
                 mode, at=at,
             )
+            await self._silence_other_accounts(session, sender_id)
         except Exception as e:
             logger.error(f"MatchIntro: ошибка обработки ответа: {e}")
+
+    async def _silence_other_accounts(self, session: str, user_id: int) -> None:
+        """Она написала на ``session`` — бот на других аккаунтах с ней молчит.
+
+        Владелец 2026-11-02: матч на основе, личка перенаправлена на второй
+        аккаунт, она пишет на основу — бот со второго больше не пишет: анкета
+        не уходит (MAIN_CHAT), сценарий — шаг OWNER.
+        """
+        if not user_id or self._db is None:
+            return
+        for other in self._client_sessions:
+            if other == session:
+                continue
+            try:
+                row = await self._db.get_match_dialog(other, int(user_id))
+            except Exception as e:
+                logger.error(f"MatchIntro: не прочитал переписку: {e}")
+                continue
+            if not isinstance(row, dict):
+                continue
+            status = row.get("status")
+            if status in (WAITING_REPLY, SCHEDULED):
+                fields: dict[str, object] = {"status": MAIN_CHAT}
+            elif status == INTRO_SENT and row.get("script_step") in ACTIVE_STEPS:
+                fields = {
+                    "script_step": OWNER, "script_pending": "",
+                    "script_due_at": "",
+                }
+            else:
+                continue
+            try:
+                await self._db.update_match_dialog(other, int(user_id), **fields)
+            except Exception as e:
+                logger.error(f"MatchIntro: не отметил переписку: {e}")
+                continue
+            name = row.get("name") or user_id
+            logger.info(
+                f"MatchIntro: {name} пишет на {session} — бот с {other} молчит"
+            )
+            await self._auto_engine.notify_owner(
+                f"💬 {name} написала тебе на {session} — бот с {other} ей "
+                "больше не пишет"
+            )
 
     async def run_match_intros(self) -> None:
         """Отправка созревших анкет девушкам (раз в цикл сверки истории)."""

@@ -13,6 +13,7 @@ from collectors.match_greeter import MatchGreeter
 from collectors.raw_worker import RawTask
 from core.types import Mode
 from models.raw import MessageType, ParsedMatch
+from tests.mocks import async_iter
 from tests.test_collector import make_config, make_db_mock
 
 LEO = 1234060895
@@ -309,6 +310,10 @@ class TestCollectorGreetsOnMatch:
         collector = DvinchikCollector([other, auto], make_db_mock(), AppConfig(**data))
         collector._match_greeter.greet = AsyncMock(return_value="SENT")
         collector._auto_engine.notify_owner = AsyncMock(return_value=True)
+        # Привет при перенаправлении — без паузы; её чат на аккаунте матча пуст.
+        collector.REDIRECT_GREET_DELAY_SEC = 0
+        for c in (other, auto):
+            c.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter([]))
         return collector, other, auto
 
     @staticmethod
@@ -400,6 +405,35 @@ class TestCollectorGreetsOnMatch:
         assert db.update_match_dialog.await_args.kwargs["status"] == "NO_ACCESS"
         text = collector._auto_engine.notify_owner.await_args.args[0]
         assert "нет @username" in text and "с dvai_2" in text
+
+    def test_redirect_skipped_when_she_writes_to_match_account(self) -> None:
+        """Владелец 2026-11-02: матч на основе, она пишет туда сама — со
+        второго аккаунта бот ей не пишет."""
+        collector, other, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "dvai"},
+        )
+        auto.iter_messages = MagicMock(
+            side_effect=lambda *a, **k: async_iter([SimpleNamespace(out=False)])
+        )
+        run(collector._process_message(self._task(auto)))
+        collector._match_greeter.greet.assert_not_called()
+        assert auto.iter_messages.call_args.args[0] == "Hisochkaaa"
+
+    def test_redirect_greeting_waits_in_background(self) -> None:
+        """С паузой привет — отдельной задачей, очередь сообщений не ждёт."""
+        collector, other, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "dvai"},
+        )
+        collector.REDIRECT_GREET_DELAY_SEC = 0.01
+
+        async def go() -> None:
+            await collector._process_message(self._task(auto))
+            collector._match_greeter.greet.assert_not_called()
+            await asyncio.sleep(0.05)
+
+        run(go())
+        args = collector._match_greeter.greet.await_args.args
+        assert args[0] is other and args[1] == "dvai"
 
     def test_set_redirect_live(self) -> None:
         collector, _, _ = self._collector("SEMI_AUTO")
