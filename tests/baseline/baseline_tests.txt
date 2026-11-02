@@ -691,6 +691,7 @@ tests/test_match_intro.py::TestMatchIntro::test_owner_text_right_after_greeting_
 tests/test_match_intro.py::TestMatchIntro::test_owner_sticker_later_counts
 tests/test_match_intro.py::TestMatchIntro::test_missed_reply_found_in_history
 tests/test_match_intro.py::TestWakeUpAfterSticker::test_silent_day_sends_wake_up
+tests/test_match_intro.py::TestWakeUpAfterSticker::test_old_silent_match_not_woken
 tests/test_match_intro.py::TestWakeUpAfterSticker::test_not_a_day_yet
 tests/test_match_intro.py::TestWakeUpAfterSticker::test_waits_for_evening
 tests/test_match_intro.py::TestWakeUpAfterSticker::test_only_in_auto
