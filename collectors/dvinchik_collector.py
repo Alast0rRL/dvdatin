@@ -190,6 +190,8 @@ class DvinchikCollector(
         # Автопереписка (AUTO): её ответ на привет → её анкета + закреп.
         self._match_intro = MatchIntro(
             config.auto_actions.match_intro, db, config.dvinchik.chat_id,
+            # Сроки и текст «АЛООО ПРОСЫПАЕМСЯ» после стикера — из сценария.
+            script_config=config.auto_actions.match_script,
         )
         # Личка перенаправлена — копию анкеты качаем клиентом аккаунта карточки.
         self._match_intro.client_for = (

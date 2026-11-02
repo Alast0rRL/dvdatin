@@ -1,17 +1,24 @@
 """Сценарий знакомства после анкеты с закрепом (режим AUTO).
 
-Схема владельца (2026-10-29), шаги и переходы — ``services/match_script_rules``:
+Схема владельца (канвас «Знакомство для бота», 2026-11-02), шаги и переходы —
+``services/match_script_rules``:
 
     анкета + закреп (MatchIntro) → AFTER_PIN
       «что это / зачем»                   → «Пусть лежит здесь»   → WAIT_MORE
       «много с кем общаешься, не путать?» → «Это так-то удобно»   → WAIT_MORE
-      молчит ``silence_min`` (3 ч) или ответила не про анкету
+      молчит ``silence_min`` (24 ч) или ответила не про анкету
                                           → «Рассказывайте, дамочка» → TELL_ME
+    WAIT_MORE
+      «много с кем общаешься?» → «Это так-то удобно»; любой другой ответ →
+      HANDOFF; молчит ``silence_min`` → «Рассказывайте, дамочка»
     TELL_ME
       «я не дамочка» → «А кто? Парнишка?»                 → HANDOFF
-      «о чём? / что?» → «О себе конечно» | «А о чём обычно…» → HANDOFF
+      «о чём? / что?» → «О себе конечно»                  → HANDOFF
       что-то другое (рассказывает о себе)                 → HANDOFF
-      молчит ``give_up_hours`` (сутки)                    → STOPPED
+      молчит ``give_up_hours`` (24 ч) → в ближайшие ``wake_up_hour`` (22:00)
+      «АЛООО ПРОСЫПАЕМСЯ»                                 → WAKE_UP
+    WAKE_UP
+      любой ответ → HANDOFF; молчит ещё ``give_up_hours`` → STOPPED
 
 Везде: «не пиши» / «есть парень» / прямое оскорбление → чат удаляется
 (DELETED); «ты бот?» → HANDOFF (бот не врёт, отвечает владелец); владелец
@@ -46,9 +53,11 @@ from services.match_script_rules import (
     STOP_KINDS,
     TELL_ME,
     WAIT_MORE,
+    WAKE_UP,
     classify,
     decide,
     decide_silence,
+    in_hour_window,
     priority,
     strongest,
 )
@@ -210,11 +219,14 @@ class MatchScript:
             silence = pending == SILENCE
         else:
             started = _parse_dt(row.get("script_at"))
-            if step == TELL_ME:
+            if step in (TELL_ME, WAKE_UP):
                 limit = timedelta(hours=float(self._config.give_up_hours))
             else:
                 limit = timedelta(minutes=float(self._config.silence_min))
             if started is None or now - started < limit:
+                return None
+            if step == TELL_ME and not self._wake_window(now):
+                # «АЛООО ПРОСЫПАЕМСЯ» — только вечером (ближайшие 22:00).
                 return None
             silence = True
         if silence and step in (AFTER_PIN, WAIT_MORE) and self._quiet(now):
@@ -344,6 +356,13 @@ class MatchScript:
         low = float(raw[0])
         high = float(raw[1]) if len(raw) > 1 else low
         return min(low, high), max(low, high)
+
+    def _wake_window(self, now: datetime) -> bool:
+        """Вечернее окно для «АЛООО ПРОСЫПАЕМСЯ» (местное время)."""
+        return in_hour_window(
+            now, self._config.wake_up_hour, self._config.wake_up_window_hours,
+            self._config.utc_offset_hours,
+        )
 
     def _quiet(self, now: datetime) -> bool:
         """Ночь по местному времени — таймер молчания не пишет."""

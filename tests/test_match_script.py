@@ -45,6 +45,8 @@ def db(tmp_path):
 
 def make_script(db: object, **cfg: object) -> MatchScript:
     cfg.setdefault("quiet_hours", [0, 0])
+    # «АЛООО» — в любое время (окно на сутки), кроме тестов самого окна.
+    cfg.setdefault("wake_up_window_hours", 24)
     cfg.setdefault("reply_delay_sec", [0, 0])
     return MatchScript(MatchScriptConfig(**cfg), db)
 
@@ -126,8 +128,10 @@ class TestDecide:
         (R.AFTER_PIN, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
         (R.AFTER_PIN, R.OTHER, ("tell_me", R.TELL_ME)),
         (R.WAIT_MORE, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
-        (R.WAIT_MORE, R.OTHER, ("tell_me", R.TELL_ME)),
+        (R.WAIT_MORE, R.OTHER, (None, R.HANDOFF)),
         (R.WAIT_MORE, R.ASKS_WHAT, (None, R.HANDOFF)),
+        (R.WAKE_UP, R.OTHER, (None, R.HANDOFF)),
+        (R.WAKE_UP, R.GO_AWAY, (None, R.DELETED)),
         (R.TELL_ME, R.NOT_DAMOCHKA, ("who_then", R.HANDOFF)),
         (R.TELL_ME, R.ABOUT_WHAT, ("about_what", R.HANDOFF)),
         (R.TELL_ME, R.OTHER, (None, R.HANDOFF)),
@@ -141,7 +145,17 @@ class TestDecide:
     def test_silence(self) -> None:
         assert R.decide_silence(R.AFTER_PIN) == ("tell_me", R.TELL_ME)
         assert R.decide_silence(R.WAIT_MORE) == ("tell_me", R.TELL_ME)
-        assert R.decide_silence(R.TELL_ME) == (None, R.STOPPED)
+        assert R.decide_silence(R.TELL_ME) == ("wake_up", R.WAKE_UP)
+        assert R.decide_silence(R.WAKE_UP) == (None, R.STOPPED)
+
+    def test_hour_window(self) -> None:
+        at = datetime(2026, 11, 2, 19, 30, tzinfo=timezone.utc)  # 22:30 МСК
+        assert R.in_hour_window(at, 22, 2, 3)
+        assert not R.in_hour_window(at - timedelta(hours=1), 22, 2, 3)
+        assert not R.in_hour_window(at + timedelta(hours=2), 22, 2, 3)
+        assert R.in_hour_window(at, 23, 2, 3) is False
+        assert R.in_hour_window(at + timedelta(hours=1), 23, 2, 3)
+        assert not R.in_hour_window(at, 22, 0, 3)
 
 
 class TestScriptDb:
@@ -214,21 +228,22 @@ class TestMatchScript:
         client.send_message.assert_not_called()
         assert row(db)["script_pending"] == R.ASKS_WHAT
 
-    def test_silence_3h_tell_me(self, db: Database) -> None:
-        step_to(db, R.AFTER_PIN, script_at=ago(hours=3, minutes=1))
+    def test_silence_day_tell_me(self, db: Database) -> None:
+        """Схема владельца 2026-11-02: молчит сутки после анкеты."""
+        step_to(db, R.AFTER_PIN, script_at=ago(hours=24, minutes=1))
         client = make_client()
         run(make_script(db).process(client, S, "AUTO"))
         assert sent_text(client) == "Рассказывайте, дамочка"
         assert row(db)["script_step"] == R.TELL_ME
 
     def test_silence_not_yet(self, db: Database) -> None:
-        step_to(db, R.AFTER_PIN, script_at=ago(hours=2, minutes=50))
+        step_to(db, R.AFTER_PIN, script_at=ago(hours=23, minutes=50))
         client = make_client()
         assert run(make_script(db).process(client, S, "AUTO")) == []
         client.send_message.assert_not_called()
 
     def test_quiet_hours_hold_nudge(self, db: Database) -> None:
-        step_to(db, R.AFTER_PIN, script_at=ago(hours=4))
+        step_to(db, R.AFTER_PIN, script_at=ago(hours=25))
         hour = datetime.now(timezone.utc).hour
         script = make_script(
             db, quiet_hours=[hour, (hour + 1) % 24], utc_offset_hours=0,
@@ -298,13 +313,41 @@ class TestMatchScript:
 
     def test_missed_reply_found_on_silence(self, db: Database) -> None:
         """Ответила, пока бот лежал: по таймеру — ответ на её вопрос."""
-        step_to(db, R.AFTER_PIN, script_at=ago(hours=4))
+        step_to(db, R.AFTER_PIN, script_at=ago(hours=25))
         client = make_client([her(101, "зачем это"), mine(100)])
         run(make_script(db).process(client, S, "AUTO"))
         assert sent_text(client) == "Пусть лежит здесь"
 
-    def test_give_up_after_day(self, db: Database) -> None:
+    def test_wake_up_after_tell_me_silence(self, db: Database) -> None:
+        """Молчит сутки после «Рассказывайте» → «АЛООО ПРОСЫПАЕМСЯ»."""
         step_to(db, R.TELL_ME, script_at=ago(hours=25))
+        client = make_client()
+        results = run(make_script(db).process(client, S, "AUTO"))
+        assert sent_text(client) == "АЛООО ПРОСЫПАЕМСЯ"
+        assert row(db)["script_step"] == R.WAKE_UP
+        assert results[0][1:] == (R.WAKE_UP, SILENCE)
+
+    def test_wake_up_waits_for_evening(self, db: Database) -> None:
+        """«АЛООО» — только в вечернее окно (ближайшие 22:00)."""
+        step_to(db, R.TELL_ME, script_at=ago(hours=25))
+        hour = (datetime.now(timezone.utc).hour + 2) % 24
+        script = make_script(
+            db, wake_up_hour=hour, wake_up_window_hours=1, utc_offset_hours=0,
+        )
+        client = make_client()
+        assert run(script.process(client, S, "AUTO")) == []
+        client.send_message.assert_not_called()
+        assert row(db)["script_step"] == R.TELL_ME
+
+    def test_reply_to_wake_up_goes_to_owner(self, db: Database) -> None:
+        step_to(db, R.WAKE_UP)
+        client, results = reply(db, make_script(db), "ой, привет")
+        client.send_message.assert_not_called()
+        assert row(db)["script_step"] == R.HANDOFF
+        assert results[0][1] == R.HANDOFF
+
+    def test_give_up_after_wake_up(self, db: Database) -> None:
+        step_to(db, R.WAKE_UP, script_at=ago(hours=25))
         client = make_client()
         results = run(make_script(db).process(client, S, "AUTO"))
         client.send_message.assert_not_called()

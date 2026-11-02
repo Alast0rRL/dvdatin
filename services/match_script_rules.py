@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 
 #: Виды её ответа.
 GO_AWAY: str = "go_away"          # «не пиши», «есть парень» → удалить чат
@@ -24,6 +25,7 @@ OTHER: str = "other"
 AFTER_PIN: str = "after_pin"      # анкета закреплена, ждём её
 WAIT_MORE: str = "wait_more"      # ответили «Пусть лежит здесь» / «удобно»
 TELL_ME: str = "tell_me"          # написали «Рассказывайте, дамочка»
+WAKE_UP: str = "wake_up"          # молчала — написали «АЛООО ПРОСЫПАЕМСЯ»
 #: Конечные шаги.
 HANDOFF: str = "handoff"          # дальше пишет владелец
 OWNER: str = "owner"              # владелец сам вмешался
@@ -31,7 +33,7 @@ STOPPED: str = "stopped"          # молчит — бот больше не п
 DELETED: str = "deleted"          # грубость / «не пиши» — чат удалён
 ERROR: str = "error"
 
-ACTIVE_STEPS: tuple[str, ...] = (AFTER_PIN, WAIT_MORE, TELL_ME)
+ACTIVE_STEPS: tuple[str, ...] = (AFTER_PIN, WAIT_MORE, TELL_ME, WAKE_UP)
 #: Виды, после которых чат удаляется.
 STOP_KINDS: frozenset[str] = frozenset({GO_AWAY, RUDE})
 
@@ -122,12 +124,12 @@ def strongest(kinds: list[str]) -> str:
 def decide(step: str, kind: str) -> tuple[str | None, str]:
     """(ключ фразы из ``MatchScriptTexts`` или None, следующий шаг).
 
-    Схема владельца (2026-10-29):
+    Схема владельца (канвас «Знакомство для бота», 2026-11-02):
     анкета → «что это/зачем» → «Пусть лежит здесь»; «много с кем общаешься,
-    чтобы не перепутать?» → «Это так-то удобно»; молчит или не спрашивает →
+    чтобы не перепутать?» → «Это так-то удобно»; пишет о другом →
     «Рассказывайте, дамочка» → «я не дамочка» → «А кто? Парнишка?»;
-    «о чём?/что?» → «О себе конечно» / «А о чём обычно рассказывают…».
-    Концы веток и ответы не по сценарию — владельцу.
+    «о чём?/что?» → «О себе конечно». После «Пусть лежит здесь» / «удобно»
+    и на концах веток любой её ответ — владельцу.
     """
     if kind in STOP_KINDS:
         return None, DELETED
@@ -142,9 +144,7 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
     if step == WAIT_MORE:
         if kind == ASKS_TOO_MANY:
             return "convenient", WAIT_MORE
-        if kind in (ASKS_WHAT, ABOUT_WHAT):
-            return None, HANDOFF
-        return "tell_me", TELL_ME
+        return None, HANDOFF
     if step == TELL_ME:
         if kind == NOT_DAMOCHKA:
             return "who_then", HANDOFF
@@ -155,7 +155,34 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
 
 
 def decide_silence(step: str) -> tuple[str | None, str]:
-    """Она молчит дольше срока: что делать на шаге."""
+    """Она молчит дольше срока: что делать на шаге.
+
+    После анкеты / «Пусть лежит здесь» — «Рассказывайте, дамочка»; после
+    «Рассказывайте» — «АЛООО ПРОСЫПАЕМСЯ» (в вечернее окно, см.
+    ``in_hour_window``); после него — бот больше не пишет.
+    """
     if step in (AFTER_PIN, WAIT_MORE):
         return "tell_me", TELL_ME
+    if step == TELL_ME:
+        return "wake_up", WAKE_UP
     return None, STOPPED
+
+
+def in_hour_window(
+    now: datetime, start_hour: int, width_hours: int, utc_offset_hours: float,
+) -> bool:
+    """Местное время ``now`` (UTC + смещение) в окне [start, start+width) часов.
+
+    «АЛООО ПРОСЫПАЕМСЯ» уходит в ближайшие 22:00 после суток тишины: окно
+    22:00–24:00; бот лежал в это время — ждёт следующего вечера.
+    """
+    width = int(width_hours)
+    if width <= 0:
+        return False
+    if width >= 24:
+        return True
+    local = now + timedelta(hours=float(utc_offset_hours))
+    start = int(start_hour) % 24
+    end = (start + width) % 24
+    h = local.hour
+    return start <= h < end if start < end else (h >= start or h < end)

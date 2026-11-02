@@ -11,8 +11,8 @@ from loguru import logger
 from telethon import events
 
 from collectors.match_intro import (
-    INTRO_SENT, MAIN_CHAT, NO_ACCESS, NO_PROFILE, OTHER_ACCOUNT, SCHEDULED,
-    WAITING_REPLY,
+    INTRO_SENT, MAIN_CHAT, NO_ACCESS, NO_PROFILE, NO_REPLY, OTHER_ACCOUNT,
+    SCHEDULED, WAITING_REPLY, WAKE_UP_SENT,
 )
 from services.match_script_rules import (
     ACTIVE_STEPS,
@@ -21,6 +21,7 @@ from services.match_script_rules import (
     HANDOFF,
     OWNER,
     STOPPED,
+    WAKE_UP,
 )
 from collectors.raw_worker import RawTask
 from models.raw import ParsedMatch
@@ -358,6 +359,20 @@ class MatchDialogsMixin:
                     "не слал. Напиши ей сам."
                 )
                 continue
+            if status == WAKE_UP_SENT:
+                await self._auto_engine.notify_owner(
+                    f"⏰ {row.get('name') or who} ({who}) молчит сутки после "
+                    f"стикера — написал «АЛООО ПРОСЫПАЕМСЯ» с "
+                    f"{session or 'аккаунта'}"
+                )
+                continue
+            if status == NO_REPLY:
+                await self._auto_engine.notify_owner(
+                    f"🔕 {row.get('name') or who} ({who}) молчит и после "
+                    f"«АЛООО ПРОСЫПАЕМСЯ» — бот больше не пишет "
+                    f"({session or 'аккаунт'})"
+                )
+                continue
             if status == OTHER_ACCOUNT:
                 # Аккаунт её карточки не вошёл — копию не сделать.
                 await self._auto_engine.notify_owner(
@@ -465,9 +480,14 @@ def script_notice(row: dict, step: str, kind: str, session: str) -> str:
     acct = session or "аккаунта"
     if step == DELETED:
         return f"🗑 {name} попросила не писать или грубит — чат удалён на {acct}"
+    if step == WAKE_UP:
+        return (
+            f"⏰ {name} молчит сутки после «Рассказывайте» — написал «АЛООО "
+            f"ПРОСЫПАЕМСЯ» ({acct})"
+        )
     if step == STOPPED:
         return (
-            f"🔕 {name} молчит сутки после «Рассказывайте» — бот больше не "
+            f"🔕 {name} молчит и после «АЛООО ПРОСЫПАЕМСЯ» — бот больше не "
             f"пишет ({acct})"
         )
     if step != HANDOFF:

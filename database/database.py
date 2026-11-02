@@ -246,13 +246,16 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- status SCHEDULED + due_at (через delay_min); в срок бот пересылает ей её же
 -- анкету из чата Leo и закрепляет у обоих → INTRO_SENT. Ключ — аккаунт +
 -- user_id девушки (у каждого аккаунта своя переписка).
--- status: WAITING_REPLY | SCHEDULED | INTRO_SENT | NO_PROFILE | OWNER_CHAT | ERROR
+-- status: WAITING_REPLY | SCHEDULED | INTRO_SENT | NO_PROFILE | OWNER_CHAT |
+--   NO_REPLY (молчит после «АЛООО») | ERROR
 -- script_*: сценарий знакомства после анкеты (collectors/match_script.py):
 -- шаг, время последнего сообщения бота, отложенный ответ (вид + срок), id
 -- последнего сообщения бота (новее исходящее = пишет владелец), варианты фраз.
 -- card_session / card_message_id: ЕЁ карточка в чате Leo (аккаунт матча + id
 -- сообщения перед уведомлением о матче). Одна запись profiles может склеить
 -- разных девушек с тем же «имя, возраст» — пересылаем именно эту карточку.
+-- wake_at / wake_msg_id: молчала сутки после стикера — бот написал «АЛООО
+-- ПРОСЫПАЕМСЯ» (когда и id); молчит ещё сутки → NO_REPLY.
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -274,6 +277,8 @@ CREATE TABLE IF NOT EXISTS match_dialogs (
     script_variant TEXT NOT NULL DEFAULT '',
     card_session TEXT NOT NULL DEFAULT '',
     card_message_id INTEGER NOT NULL DEFAULT 0,
+    wake_at TEXT NOT NULL DEFAULT '',
+    wake_msg_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -488,6 +493,8 @@ class Database:
         # Её карточка в чате Leo (аккаунт + id сообщения) на момент матча.
         "card_session": "TEXT NOT NULL DEFAULT ''",
         "card_message_id": "INTEGER NOT NULL DEFAULT 0",
+        "wake_at": "TEXT NOT NULL DEFAULT ''",
+        "wake_msg_id": "INTEGER NOT NULL DEFAULT 0",
     }
 
     async def _ensure_match_dialogs_script_columns(self) -> None:
@@ -1926,6 +1933,7 @@ class Database:
         "sent_at", "pinned", "error",
         "script_step", "script_at", "script_due_at", "script_pending",
         "script_msg_id", "script_variant", "card_session", "card_message_id",
+        "wake_at", "wake_msg_id",
     })
 
     async def add_match_dialog(

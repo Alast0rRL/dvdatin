@@ -10,21 +10,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from telethon.errors import FloodWaitError
 
-from app.config import AppConfig, MatchIntroConfig
+from app.config import AppConfig, MatchIntroConfig, MatchScriptConfig
 from collectors.dvinchik_collector import DvinchikCollector
 from collectors.match_intro import (
     ERROR,
     INTRO_SENT,
     MAIN_CHAT,
     NO_PROFILE,
+    NO_REPLY,
     OTHER_ACCOUNT,
     OWNER_CHAT,
     SCHEDULED,
     WAITING_REPLY,
+    WAKE_UP_SENT,
     MatchIntro,
 )
 from database.database import Database
 from models.raw import ParsedMatch
+from tests.mocks import async_iter
 from tests.test_collector import make_config, make_db_mock
 from tests.test_match_greeter import LEO
 from tests.test_match_greeter import TestCollectorGreetsOnMatch as _Greeting
@@ -517,6 +520,137 @@ class TestMatchIntro:
         kw = db.update_match_dialog.await_args.kwargs
         assert kw["status"] == SCHEDULED
         assert kw["replied_at"] == reply_at.isoformat()
+
+
+def _ago(hours: float) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+class TestWakeUpAfterSticker:
+    """Схема владельца 2026-11-02: молчит сутки после стикера → «АЛООО
+    ПРОСЫПАЕМСЯ» в ближайшие 22:00; молчит ещё сутки → бот больше не пишет."""
+
+    S = "dvai_2"
+    UID = 77
+
+    @staticmethod
+    def _intro(db: object, **script: object) -> MatchIntro:
+        script.setdefault("wake_up_window_hours", 24)
+        return MatchIntro(
+            MatchIntroConfig(), db, LEO, script_config=MatchScriptConfig(**script),
+        )
+
+    def _waiting(self, db: Database, greeted: datetime, **fields: object) -> None:
+        run(db.add_match_dialog(
+            self.S, self.UID, username="rosa", name="Роза",
+            greeted_at=greeted.isoformat(),
+        ))
+        if fields:
+            run(db.update_match_dialog(self.S, self.UID, **fields))
+
+    @staticmethod
+    def _client(*history: SimpleNamespace) -> AsyncMock:
+        client = make_client()
+        client.send_message = AsyncMock(return_value=SimpleNamespace(id=500))
+        client.iter_messages = MagicMock(
+            side_effect=lambda *a, **k: async_iter(list(history)),
+        )
+        return client
+
+    def _row(self, db: Database) -> dict:
+        return run(db.get_match_dialog(self.S, self.UID))
+
+    def test_silent_day_sends_wake_up(self, db: Database) -> None:
+        self._waiting(db, _ago(25))
+        client = self._client()
+        results = run(self._intro(db).process(client, self.S, "AUTO"))
+        client.send_message.assert_awaited_once()
+        assert client.send_message.await_args.args[1] == "АЛООО ПРОСЫПАЕМСЯ"
+        row = self._row(db)
+        assert row["status"] == WAITING_REPLY
+        assert row["wake_at"] and row["wake_msg_id"] == 500
+        assert [st for _, st in results] == [WAKE_UP_SENT]
+
+    def test_not_a_day_yet(self, db: Database) -> None:
+        self._waiting(db, _ago(23))
+        client = self._client()
+        assert run(self._intro(db).process(client, self.S, "AUTO")) == []
+        client.send_message.assert_not_called()
+
+    def test_waits_for_evening(self, db: Database) -> None:
+        self._waiting(db, _ago(25))
+        hour = (datetime.now(timezone.utc).hour + 2) % 24
+        intro = self._intro(
+            db, wake_up_hour=hour, wake_up_window_hours=1, utc_offset_hours=0,
+        )
+        client = self._client()
+        run(intro.process(client, self.S, "AUTO"))
+        client.send_message.assert_not_called()
+
+    def test_only_in_auto(self, db: Database) -> None:
+        self._waiting(db, _ago(25))
+        client = self._client()
+        run(self._intro(db).process(client, self.S, "SEMI_AUTO"))
+        client.send_message.assert_not_called()
+
+    def test_without_script_config_no_wake_up(self, db: Database) -> None:
+        self._waiting(db, _ago(25))
+        client = self._client()
+        run(make_intro(db).process(client, self.S, "AUTO"))
+        client.send_message.assert_not_called()
+
+    def test_silent_after_wake_up_stops(self, db: Database) -> None:
+        self._waiting(db, _ago(50), wake_at=_ago(25).isoformat(), wake_msg_id=500)
+        client = self._client(SimpleNamespace(id=500, out=True, date=_ago(25)))
+        results = run(self._intro(db).process(client, self.S, "AUTO"))
+        client.send_message.assert_not_called()
+        assert self._row(db)["status"] == NO_REPLY
+        assert [st for _, st in results] == [NO_REPLY]
+
+    def test_missed_reply_schedules_intro_instead(self, db: Database) -> None:
+        self._waiting(db, _ago(25))
+        reply_at = _ago(0.1)
+        client = self._client(SimpleNamespace(id=9, out=False, date=reply_at))
+        run(self._intro(db).process(client, self.S, "AUTO"))
+        client.send_message.assert_not_called()
+        row = self._row(db)
+        assert row["status"] == SCHEDULED
+        assert row["replied_at"] == reply_at.isoformat()
+
+    def test_owner_chatting_no_wake_up(self, db: Database) -> None:
+        self._waiting(db, _ago(25))
+        client = self._client(SimpleNamespace(id=9, out=True, date=_ago(3)))
+        run(self._intro(db).process(client, self.S, "AUTO"))
+        client.send_message.assert_not_called()
+        assert self._row(db)["status"] == OWNER_CHAT
+
+    def test_wake_up_message_is_not_owner(self) -> None:
+        """Ответила на «АЛООО» — анкета уходит: «АЛООО» бота — не владелец."""
+        db = make_db()
+        client = make_client()
+        client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter([
+            SimpleNamespace(id=501, out=False, date=datetime.fromisoformat(
+                "2026-10-30T19:10:00+00:00")),
+            SimpleNamespace(id=500, out=True, date=datetime.fromisoformat(
+                "2026-10-30T19:00:00+00:00")),
+        ]))
+        status = run(make_intro(db).send_intro(
+            client, "dvai_2", due_row(wake_msg_id=500),
+        ))
+        assert status == INTRO_SENT
+
+    def test_she_wrote_first_counts_as_reply(self, db: Database) -> None:
+        """Написала до стикера — анкета по плану, срок — от привета."""
+        greeted = _ago(0.1)
+        self._waiting(db, greeted)
+        client = self._client(
+            SimpleNamespace(id=2, out=True, date=greeted),
+            SimpleNamespace(id=1, out=False, date=greeted - timedelta(hours=2)),
+        )
+        run(self._intro(db).process(client, self.S, "AUTO"))
+        row = self._row(db)
+        assert row["status"] == SCHEDULED
+        assert row["replied_at"] == greeted.isoformat()
 
 
 class TestCollectorIntro:

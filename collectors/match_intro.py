@@ -19,6 +19,15 @@
    (``card_session`` + ``card_message_id``), а не «последний показ профиля»:
    под одним profile_id бывают разные девушки с тем же «имя, возраст».
 
+Она молчит ``match_script.give_up_hours`` (24 ч) после стикера → в ближайшие
+``wake_up_hour`` (22:00) «АЛООО ПРОСЫПАЕМСЯ» (``wake_at`` / ``wake_msg_id``,
+статус остаётся WAITING_REPLY — её ответ планирует анкету как обычно); молчит
+ещё 24 ч → NO_REPLY, бот больше не пишет (схема владельца 2026-11-02).
+
+Она написала первой (до стикера) — это тоже ответ: сверка истории берёт её
+сообщения не старше ``EARLY_REPLY_SEC`` до привета, срок анкеты считается от
+привета.
+
 Правила:
 - только в режимах ``match_intro.modes`` (по умолчанию AUTO); вне их ответы не
   планируются, а запланированное ждёт;
@@ -41,9 +50,10 @@ from loguru import logger
 
 from collectors.match_greeter import flood_pause_sec
 from models.raw import ParsedMatch
+from services.match_script_rules import in_hour_window
 
 if TYPE_CHECKING:
-    from app.config import MatchIntroConfig
+    from app.config import MatchIntroConfig, MatchScriptConfig
     from database.database import Database
 
 #: Статусы переписки (match_dialogs.status).
@@ -61,6 +71,10 @@ OTHER_ACCOUNT: str = "OTHER_ACCOUNT"
 NO_ACCESS: str = "NO_ACCESS"
 #: Она написала на аккаунт матча, а личка перенаправлена сюда — бот молчит.
 MAIN_CHAT: str = "MAIN_CHAT"
+#: Молчит сутки и после «АЛООО ПРОСЫПАЕМСЯ» — бот больше не пишет.
+NO_REPLY: str = "NO_REPLY"
+#: Результат прохода: бот отправил «АЛООО ПРОСЫПАЕМСЯ» (статус не меняется).
+WAKE_UP_SENT: str = "WAKE_UP_SENT"
 ERROR: str = "ERROR"
 
 #: Сверка ответов по истории — не чаще, чем раз в столько секунд.
@@ -75,6 +89,9 @@ OWNER_CHECK_HISTORY: int = 50
 #: Стикер-привет бота: его дата в Telegram может быть чуть позже
 #: ``greeted_at`` (часы сервера). Исходящий стикер в этом окне — бот, не владелец.
 GREETING_STICKER_SKEW_SEC: float = 60.0
+#: Она написала первой: её сообщение не старше стольких секунд до привета —
+#: тоже ответ (матч мог висеть, пока владелец не нажал «показать»).
+EARLY_REPLY_SEC: float = 24 * 3600.0
 
 
 
@@ -98,8 +115,11 @@ class MatchIntro:
 
     def __init__(
         self, config: MatchIntroConfig, db: Database | None, leo_chat_id: int,
+        script_config: MatchScriptConfig | None = None,
     ) -> None:
         self._config = config
+        # Сроки и текст «АЛООО ПРОСЫПАЕМСЯ» — из сценария; None — без него.
+        self._script = script_config
         self._db = db
         self._leo_chat_id = leo_chat_id
         # Когда последний раз сверяли ответы по истории (на аккаунт).
@@ -204,13 +224,15 @@ class MatchIntro:
         if self._db is None or not self.allowed_in(mode):
             return []
         await self._check_replies(client, account_session, mode)
+        results: list[tuple[dict, str]] = await self._wake_silent(
+            client, account_session, mode,
+        )
         try:
             rows = await self._db.list_match_dialogs(account_session, SCHEDULED)
         except Exception as e:
             logger.error(f"MatchIntro: не прочитал очередь: {e}")
-            return []
+            return results
         now = _now()
-        results: list[tuple[dict, str]] = []
         for row in rows:
             due = _parse_dt(row.get("due_at"))
             if due is None or due > now:
@@ -392,7 +414,11 @@ class MatchIntro:
         if greeted is None:
             return False
         skew = timedelta(seconds=GREETING_STICKER_SKEW_SEC)
+        # «АЛООО ПРОСЫПАЕМСЯ» бота — тоже не владелец.
+        wake_id = int(row.get("wake_msg_id") or 0)
         async for msg in client.iter_messages(peer, limit=OWNER_CHECK_HISTORY):
+            if wake_id and getattr(msg, "id", None) == wake_id:
+                continue
             date = getattr(msg, "date", None)
             if not isinstance(date, datetime):
                 continue
@@ -482,23 +508,9 @@ class MatchIntro:
         ]
         for row in fresh[-REPLY_CHECK_BATCH:]:
             user_id = int(row["user_id"])
-            greeted = _parse_dt(row.get("greeted_at"))
             try:
                 peer = await client.get_input_entity(row.get("username") or user_id)
-                first: datetime | None = None
-                async for msg in client.iter_messages(
-                    peer, limit=REPLY_CHECK_HISTORY,
-                ):
-                    if getattr(msg, "out", False):
-                        continue
-                    date = getattr(msg, "date", None)
-                    if not isinstance(date, datetime):
-                        continue
-                    if date.tzinfo is None:
-                        date = date.replace(tzinfo=timezone.utc)
-                    if greeted is not None and date < greeted:
-                        continue
-                    first = date if first is None else min(first, date)
+                first = await self._first_reply(client, peer, row)
             except Exception as e:
                 pause = flood_pause_sec(e)
                 logger.error(f"MatchIntro: сверка ответа {user_id}: {e}")
@@ -507,6 +519,118 @@ class MatchIntro:
                 continue
             if first is not None:
                 await self.note_reply(account_session, user_id, mode, at=first)
+
+    @staticmethod
+    async def _first_reply(
+        client: Any, peer: Any, row: dict,
+    ) -> datetime | None:
+        """Когда она впервые написала (её входящее в чате) или None.
+
+        Написала первой, до стикера (не раньше ``EARLY_REPLY_SEC``), — тоже
+        ответ, срок считается от привета.
+        """
+        greeted = _parse_dt(row.get("greeted_at"))
+        early = (
+            greeted - timedelta(seconds=EARLY_REPLY_SEC)
+            if greeted is not None else None
+        )
+        first: datetime | None = None
+        async for msg in client.iter_messages(peer, limit=REPLY_CHECK_HISTORY):
+            if getattr(msg, "out", False):
+                continue
+            date = getattr(msg, "date", None)
+            if not isinstance(date, datetime):
+                continue
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            if early is not None and date < early:
+                continue
+            first = date if first is None else min(first, date)
+        if first is not None and greeted is not None and first < greeted:
+            first = greeted
+        return first
+
+    async def _wake_silent(
+        self, client: Any, account_session: str, mode: str,
+    ) -> list[tuple[dict, str]]:
+        """Молчит после стикера: сутки → «АЛООО ПРОСЫПАЕМСЯ» вечером, ещё
+        сутки → NO_REPLY. [(строка, WAKE_UP_SENT | NO_REPLY | OWNER_CHAT)].
+
+        Перед действием — её чат: ответила (событие пропущено) → анкета по
+        плану; пишет владелец → OWNER_CHAT, бот молчит.
+        """
+        cfg = self._script
+        if cfg is None or not cfg.enabled or mode not in cfg.modes:
+            return []
+        texts = [t for t in (cfg.texts.wake_up or []) if t]
+        if not texts:
+            return []
+        try:
+            rows = await self._db.list_match_dialogs(
+                account_session, WAITING_REPLY, limit=200,
+            )
+        except Exception as e:
+            logger.error(f"MatchIntro: не прочитал ожидающих: {e}")
+            return []
+        now = _now()
+        limit = timedelta(hours=float(cfg.give_up_hours))
+        evening = in_hour_window(
+            now, cfg.wake_up_hour, cfg.wake_up_window_hours,
+            cfg.utc_offset_hours,
+        )
+        results: list[tuple[dict, str]] = []
+        for row in rows:
+            woke = _parse_dt(row.get("wake_at"))
+            greeted = _parse_dt(row.get("greeted_at"))
+            if woke is not None:
+                if now - woke < limit:
+                    continue
+            elif greeted is None or now - greeted < limit or not evening:
+                continue
+            user_id = int(row["user_id"])
+            name = row.get("name") or str(user_id)
+            try:
+                peer = await client.get_input_entity(row.get("username") or user_id)
+                first = await self._first_reply(client, peer, row)
+                if first is not None:
+                    await self.note_reply(account_session, user_id, mode, at=first)
+                    continue
+                if await self._owner_wrote(client, peer, row):
+                    logger.info(
+                        f"MatchIntro: с {name} переписывается владелец — "
+                        "бот молчит"
+                    )
+                    await self._update(account_session, user_id, status=OWNER_CHAT)
+                    results.append((row, OWNER_CHAT))
+                    continue
+                if woke is not None:
+                    logger.info(
+                        f"MatchIntro: {name} молчит и после «АЛООО» — бот "
+                        "больше не пишет"
+                    )
+                    await self._update(account_session, user_id, status=NO_REPLY)
+                    results.append((row, NO_REPLY))
+                    continue
+                sent = await client.send_message(peer, texts[0])
+            except Exception as e:
+                pause = flood_pause_sec(e)
+                logger.error(f"MatchIntro: «АЛООО» {name}: {e}")
+                if pause is not None:
+                    return results
+                continue
+            if self.on_sent is not None:
+                try:
+                    await self.on_sent(account_session, user_id, sent)
+                except Exception as e:
+                    logger.error(f"MatchIntro: журнал переписки: {e}")
+            sent_id = getattr(sent, "id", None)
+            await self._update(
+                account_session, user_id, wake_at=_now().isoformat(),
+                wake_msg_id=sent_id if isinstance(sent_id, int) else 0,
+            )
+            logger.info(f"MatchIntro: {name} молчит сутки — написал «АЛООО»")
+            results.append((row, WAKE_UP_SENT))
+        return results
 
     async def _update(
         self, account_session: str, user_id: int, **fields: object,
