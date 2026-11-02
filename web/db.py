@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from collectors.dvinchik_parser import MATCH_RE
+
 
 class SyncDB:
     """Синхронная обёртка над SQLite для Flask.
@@ -350,6 +352,17 @@ class SyncDB:
             [r["telegram_message_id"]]
             if media_type == "photo" and item["profile_id"] is not None
             else []
+        )
+        # Служебное сообщение Leo (меню «1. Смотреть анкеты…», реклама,
+        # уведомления): без анкеты, без фото и без ссылки на девушку. В ленте
+        # сворачивается в одну строку — раньше меню занимали полэкрана.
+        # Матч (ссылка на человека, MATCH_RE) остаётся развёрнутым.
+        item["service"] = bool(
+            not outgoing
+            and item["profile_id"] is None
+            and not media_type
+            and item["text"]
+            and not MATCH_RE.search(item["text"])
         )
         return item
 

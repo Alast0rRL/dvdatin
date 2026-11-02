@@ -263,35 +263,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 [data-theme="light"] .theme-toggle__sun { display: none; }
 [data-theme="light"] .theme-toggle__moon { display: block; }
 
-.mode-pill {
-    flex: 0 0 auto;
-    margin-right: 4px;
-    padding: 4px 11px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: var(--bg-soft);
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 600;
-}
-.mode-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-}
-/* Точка статуса: серая — бот только наблюдает, зелёная с пульсом — работает. */
-.mode-pill::before {
-    content: "";
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--faint);
-}
-.mode-pill--on { color: var(--text); }
-.mode-pill--on::before { background: var(--like); animation: pulse 2s ease-out infinite; }
-.mode-pill--semi_auto { color: var(--accent); border-color: var(--accent-line); }
-.mode-pill--auto { color: var(--like-fg); border-color: var(--like-line); }
-
 /* ── Первый экран: статус + цифры + пульт ───────────────────────── */
 .hero {
     width: 100%;
@@ -393,6 +364,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .account-form__session { font-weight: 700; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-form__phone { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-row.is-main .account-form__phone { color: var(--accent); }
+/* Состояние аккаунта: серая точка — наблюдение, зелёная с пульсом — работает. */
+.acct-state { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.acct-state::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+.acct-state.is-on { color: var(--like-fg); }
+.acct-state.is-on::before { background: var(--like); animation: pulse 2s ease-out infinite; }
 
 /* Переключатель «трек + бегунок»: включён — трек залит, бегунок справа. */
 .mode-switch {
@@ -548,6 +531,88 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .row--out .row__body { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .row--out .row__name { color: var(--muted); font-size: 13px; font-weight: 600; }
 .row--captcha { border-color: var(--review-line); }
+/* Служебное сообщение Leo (меню, реклама): одна приглушённая строка,
+   остальное раскрывается по клику (<details>). */
+.row--service { padding-top: 9px; padding-bottom: 9px; background: var(--bg-row-out); }
+.row--service .row__text { color: var(--muted); font-size: 13px; }
+.fold { min-width: 0; }
+.fold__head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+    cursor: pointer;
+    list-style: none;
+    color: var(--muted);
+    font-size: 13px;
+}
+.fold__head::-webkit-details-marker { display: none; }
+.fold__first { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fold__more {
+    flex: 0 0 auto;
+    padding: 1px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--faint);
+    font-size: 11px;
+    transition: color .15s ease, border-color .15s ease;
+}
+.fold__head:hover .fold__more { color: var(--accent); border-color: var(--accent-line); }
+.fold[open] .fold__more { display: none; }
+.fold[open] .fold__first { white-space: normal; }
+.fold > .row__text { margin-top: 4px; }
+
+/* Просмотр фото поверх ленты (<dialog>, app.js openLightbox):
+   ← → листают альбом, Esc / клик по фону закрывают. */
+.lightbox {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    margin: 0;
+    padding: 16px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+}
+.lightbox::backdrop { background: var(--backdrop); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.lightbox[open] {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr) 56px;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+    justify-items: center;
+}
+.lightbox__bar {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+.lightbox__count { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.lightbox__img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 14px;
+    box-shadow: 0 20px 60px var(--shadow-soft);
+    animation: lift .25s cubic-bezier(.2, .7, .2, 1);
+}
+.lightbox__nav {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--bg-soft);
+    color: var(--text);
+    font-size: 22px;
+    cursor: pointer;
+    transition: border-color .15s ease, transform .15s ease;
+}
+.lightbox__nav:hover { border-color: var(--accent-line); transform: scale(1.06); }
+.lightbox__nav:disabled { visibility: hidden; }
 
 .row__time {
     color: var(--fainter);
@@ -1262,6 +1327,9 @@ a.seg__btn {
     .account-form__name { max-width: none; width: 100%; }
     .app { padding: 16px 12px 56px; }
     .row { grid-template-columns: 38px minmax(0, 1fr); gap: 10px; padding: 12px; }
+    .lightbox { padding: 12px 6px; }
+    .lightbox[open] { grid-template-columns: 38px minmax(0, 1fr) 38px; gap: 6px; }
+    .lightbox__nav { width: 36px; height: 36px; font-size: 18px; }
     .thumbs__item { border-radius: 12px; }
     .search { max-width: none; }
     .drawer { border-left: 0; }

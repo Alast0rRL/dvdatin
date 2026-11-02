@@ -1002,10 +1002,12 @@ class TestAccountSettings:
         assert re.search(r'name="scroll" value="off"\s+class="[^"]*--scroll is-active', row2)
         assert re.search(r'name="auto" value="on"\s+class="[^"]*--auto "', row2)
         assert 'name="account_session" value="dvai"' in row1
-        # Основной аккаунт подсвечен, плашка — его состояние.
+        # Основной аккаунт подсвечен; состояние — в каждой карточке, не в шапке.
         assert re.search(r'class="acct-row is-main"\s+data-account="dvai_2"', data)
         assert not re.search(r'class="acct-row is-main"\s+data-account="dvai"', data)
-        assert re.search(r'id="mode-pill"[^>]*>\s*скроллинг\s*<', data)
+        assert 'mode-pill' not in data
+        assert re.search(r'class="acct-state is-on">\s*авто\s*<', row1)
+        assert re.search(r'class="acct-state is-on">\s*скроллинг\s*<', row2)
 
     @staticmethod
     def _fake_collector(calls: list):
@@ -2836,3 +2838,34 @@ class TestRedesign:
         блок «бот нажал» — контейнер капч заменяется целиком."""
         js = client.get("/static/js/app.js").get_data(as_text=True)
         assert "captchas.innerHTML = first.pending" in js
+
+    def test_leo_menu_collapsed_match_kept(self, client) -> None:
+        """Служебное сообщение Leo (меню) сворачивается в одну строку,
+        уведомление о матче со ссылкой на девушку — остаётся целиком."""
+        db = client.application.config["SYNC_DB"]
+        base = {"chat_id": 1, "ts": "2026-11-02T10:00:00", "media_type": "",
+                "is_outgoing": 0, "account_session": ""}
+        item = db._feed_item({**base, "id": 1, "telegram_message_id": 10,
+                              "text": "1. Смотреть анкеты.\n2. Моя анкета.\n3. Я больше не хочу никого искать."})
+        assert item["service"] is True
+        match = db._feed_item({**base, "id": 2, "telegram_message_id": 11,
+                               "text": "Отлично! Начинай общаться 👉 [Катя](https://t.me/katya_spb)"})
+        assert match["service"] is False
+        out = db._feed_item({**base, "id": 3, "telegram_message_id": 12,
+                             "text": "1", "is_outgoing": 1})
+        assert out["service"] is False
+        from flask import render_template
+        with client.application.test_request_context("/"):
+            html = render_template("partials/app_feed.html", items=[item, match])
+        assert html.count('class="fold"') == 1 and "ещё 2" in html
+        assert "row--service" in html
+        assert html.index("Катя") > html.index('class="fold"')
+
+    def test_photo_opens_in_lightbox(self, client) -> None:
+        """Клик по миниатюре — просмотр поверх ленты (<dialog>), не новая
+        вкладка; стрелки листают альбом анкеты."""
+        js = client.get("/static/js/app.js").get_data(as_text=True)
+        assert "function openLightbox" in js and "showModal()" in js
+        assert "ArrowLeft" in js and "ArrowRight" in js
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        assert ".lightbox[open]" in css

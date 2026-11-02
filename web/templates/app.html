@@ -1,17 +1,6 @@
 {% extends "base.html" %}
 {% block title %}DvAI — лента{% endblock %}
 
-{% block topbar_status %}
-{# Состояние основного аккаунта: что из двух переключателей включено. #}
-{% set main = accounts|selectattr('session', 'equalto', account_session)|list|first %}
-{% set scroll_on = main.scroll if main else mode in ('SEMI_AUTO', 'AUTO') %}
-{% set auto_on = main.auto if main else mode == 'AUTO' %}
-<span class="mode-pill mode-pill--{{ mode|lower }} {% if scroll_on or auto_on %}mode-pill--on{% endif %}" id="mode-pill"
-      title="Основной аккаунт{% if account_session %} ({{ account_session }}){% endif %}">
-    {%- if scroll_on and auto_on %}скроллинг + авто{% elif scroll_on %}скроллинг{% elif auto_on %}авто{% else %}наблюдение{% endif -%}
-</span>
-{% endblock %}
-
 {% block topbar_actions %}
 <button type="button" class="icon-btn" id="debug-open" aria-controls="debug-drawer" aria-expanded="false"
         aria-label="Отладка" title="Отладка: логи и состояние бота">
@@ -41,7 +30,7 @@
     <button type="button" class="btn btn--sm" id="bot-error-close">Понятно</button>
 </div>
 
-{# ── Первый экран: пульт аккаунтов (статус — плашка в шапке, цифры — в настройках) ──
+{# ── Первый экран: пульт аккаунтов (статус — в каждой карточке, цифры — в настройках) ──
    Каждый аккаунт — своя карточка с двумя независимыми переключателями:
    «Скроллинг» — бот сам листает ленту Leo (❤️/👎), «Авто» — переписка с
    девушкой в личке после взаимного лайка. Оба выключены — только наблюдение.
@@ -68,7 +57,12 @@
                 <span class="account-form__avatar" aria-hidden="true">{{ acc.session[:1]|upper }}{{ acc.session[-1:] if acc.session[-1:].isdigit() else '' }}</span>
                 <span class="account-form__text">
                     <span class="account-form__session">{{ acc.session }}</span>
-                    <span class="account-form__phone">{% if acc.session == account_session %}в ленте{% elif acc.phone %}{{ acc.phone }}{% else %}показать в ленте{% endif %}</span>
+                    {# Состояние аккаунта (раньше — плашка в шапке, только для основного). #}
+                    <span class="account-form__phone">
+                        <span class="acct-state {% if acc.scroll or acc.auto %}is-on{% endif %}">
+                            {%- if acc.scroll and acc.auto %}скроллинг + авто{% elif acc.scroll %}скроллинг{% elif acc.auto %}авто{% else %}наблюдение{% endif -%}
+                        </span>{% if acc.session == account_session %} · в ленте{% endif %}
+                    </span>
                 </span>
             </button>
         </form>

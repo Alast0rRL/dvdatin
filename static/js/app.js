@@ -512,6 +512,95 @@
     var debugLevelSel = document.getElementById('debug-level');
     if (debugLevelSel) debugLevelSel.addEventListener('change', refreshDebug);
 
+    /* ── Просмотр фото поверх ленты ─────────────────────────────────
+       Клик по миниатюре открывает <dialog> вместо новой вкладки; ← → листают
+       фото этой же анкеты (альбом), Esc / клик по фону закрывают. Ctrl/Cmd/
+       средняя кнопка — как раньше, новая вкладка. */
+    var lightbox = null;
+    var lbImg, lbCount, lbPrev, lbNext;
+    var lbUrls = [];
+    var lbIndex = 0;
+
+    function buildLightbox() {
+        lightbox = document.createElement('dialog');
+        lightbox.className = 'lightbox';
+        lightbox.id = 'lightbox';
+        lightbox.setAttribute('aria-label', 'Просмотр фото');
+        var bar = document.createElement('div');
+        bar.className = 'lightbox__bar';
+        lbCount = document.createElement('span');
+        lbCount.className = 'lightbox__count';
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'icon-btn';
+        close.setAttribute('aria-label', 'Закрыть');
+        close.title = 'Закрыть (Esc)';
+        close.textContent = '✕';
+        close.addEventListener('click', function () { lightbox.close(); });
+        bar.appendChild(lbCount);
+        bar.appendChild(close);
+        lbPrev = document.createElement('button');
+        lbPrev.type = 'button';
+        lbPrev.className = 'lightbox__nav';
+        lbPrev.setAttribute('aria-label', 'Предыдущее фото');
+        lbPrev.textContent = '‹';
+        lbPrev.addEventListener('click', function () { showPhoto(lbIndex - 1); });
+        lbNext = document.createElement('button');
+        lbNext.type = 'button';
+        lbNext.className = 'lightbox__nav';
+        lbNext.setAttribute('aria-label', 'Следующее фото');
+        lbNext.textContent = '›';
+        lbNext.addEventListener('click', function () { showPhoto(lbIndex + 1); });
+        lbImg = document.createElement('img');
+        lbImg.className = 'lightbox__img';
+        lbImg.alt = 'фото';
+        lightbox.appendChild(bar);
+        lightbox.appendChild(lbPrev);
+        lightbox.appendChild(lbImg);
+        lightbox.appendChild(lbNext);
+        // Клик мимо фото и кнопок (по самому dialog) — закрыть.
+        lightbox.addEventListener('click', function (e) {
+            if (e.target === lightbox) lightbox.close();
+        });
+        lightbox.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowLeft') { e.preventDefault(); showPhoto(lbIndex - 1); }
+            if (e.key === 'ArrowRight') { e.preventDefault(); showPhoto(lbIndex + 1); }
+        });
+        document.body.appendChild(lightbox);
+    }
+
+    function showPhoto(i) {
+        if (i < 0 || i >= lbUrls.length) return;
+        lbIndex = i;
+        lbImg.src = lbUrls[i];
+        lbCount.textContent = lbUrls.length > 1 ? (i + 1) + ' / ' + lbUrls.length : '';
+        lbPrev.disabled = i === 0;
+        lbNext.disabled = i === lbUrls.length - 1;
+    }
+
+    function openLightbox(link) {
+        if (typeof HTMLDialogElement === 'undefined') return false;
+        if (!lightbox) buildLightbox();
+        var group = link.closest('.thumbs');
+        var links = group ? group.querySelectorAll('a.thumbs__item') : [link];
+        lbUrls = [];
+        var start = 0;
+        for (var i = 0; i < links.length; i++) {
+            if (links[i] === link) start = i;
+            lbUrls.push(links[i].href);
+        }
+        showPhoto(start);
+        lightbox.showModal();
+        return true;
+    }
+
+    document.addEventListener('click', function (e) {
+        if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        var link = e.target.closest && e.target.closest('a.thumbs__item');
+        if (!link) return;
+        if (openLightbox(link)) e.preventDefault();
+    });
+
     if (app) {
         setInterval(poll, POLL_MS);
         applyFilter();

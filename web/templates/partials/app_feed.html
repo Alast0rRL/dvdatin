@@ -3,7 +3,7 @@
    и в Telegram (текст + фото). data-decision/data-name остаются скрытыми
    атрибутами для клиентского фильтра и поиска. #}
 {% for item in items %}
-<article class="row row--{{ item.kind }} row--{{ item.direction }}"
+<article class="row row--{{ item.kind }} row--{{ item.direction }}{% if item.service %} row--service{% endif %}"
          data-decision="{{ item.decision or '' }}"
          data-kind="{{ item.kind }}"
          data-name="{{ item.name or '' }}"
@@ -33,7 +33,23 @@
         <div class="row__text">🎬 видео</div>
         {% endif %}
 
-        {% if item.text %}
+        {% if item.service %}
+        {# Служебное сообщение Leo — одна строка, остальное по клику. #}
+        {% set lines = item.text.strip().split('
+') %}
+        {% if lines|length > 1 %}
+        <details class="fold">
+            <summary class="fold__head">
+                <span class="fold__first">{{ lines[0]|leo_text }}</span>
+                <span class="fold__more">ещё {{ lines|length - 1 }}</span>
+            </summary>
+            <div class="row__text">{{ lines[1:]|join('
+')|leo_text }}</div>
+        </details>
+        {% else %}
+        <div class="row__text">{{ item.text|leo_text }}</div>
+        {% endif %}
+        {% elif item.text %}
         <div class="row__text">{{ item.text|leo_text }}</div>
         {% endif %}
     </div>
