@@ -2642,14 +2642,10 @@ class TestCollectorAutoActions:
         auto_client.forward_messages.assert_awaited_once()
 
     def test_log_failure_does_not_resend_action(self) -> None:
-        """DB failure after Telegram send: action CAN repeat on retry.
+        """Сбой записи в журнал после отправки: повторный проход не шлёт.
 
-        После удаления _processed_profile_ids (HIGH-1 fix) дублирование
-        действий при ошибке БД становится возможным — это принятый trade-off
-        (HIGH-2). Идемпотентность по telegram_message_id обеспечивается
-        на уровне DB (has_auto_action_for_message), а не в памяти движка.
-        Если record_auto_action упал — БД не знает об отправке, и повторный
-        вызов _process_message отправит действие снова.
+        Журнал не знает об отправке, но карточка уже «занята» в памяти
+        (``_reacted_cards``): второй 👎 ушёл бы на СЛЕДУЮЩУЮ анкету.
         """
         from models.decision import AIDecision
 
@@ -2671,16 +2667,48 @@ class TestCollectorAutoActions:
         loop = asyncio.get_event_loop()
         loop.run_until_complete(collector._process_message(task))
         loop.run_until_complete(collector._process_message(task))
-        # Оба прохода отправляют действие (дублирование при ошибке БД —
-        # принятый trade-off). Второй проход также пытается переслать
-        # уведомление (notify), т.к. maybe_act снова вызывается.
-        # Берём 👎: LIKE открыл бы композер и второй проход отложился бы
-        # (DEFERRED), а тест про повтор при ошибке БД.
         action_calls = [
             c for c in auto_client.send_message.call_args_list
             if c.args[1] in ("❤️", "\U0001F44E")
         ]
-        assert len(action_calls) == 2
+        assert len(action_calls) == 1
+
+    def test_card_reacted_once_before_journal_written(self) -> None:
+        """Два прохода по одной карточке до записи журнала → одна реакция.
+
+        Прод 2026-11-02: «активная анкета» после капчи и живой хендлер
+        обработали карточку параллельно (фото-шаг ~6 с), оба прошли
+        проверку журнала и послали 👎 — второй попал на следующую анкету.
+        """
+        from models.decision import AIDecision
+
+        auto_client = make_tg_client()
+        auto_client.is_connected.return_value = True
+        other_client = AsyncMock()
+        collector = self._make_collector(
+            self._make_config(), self._make_decision(AIDecision.DISLIKE),
+            auto_client, other_client,
+        )
+        # Журнал ещё пуст для обоих проходов.
+        collector._db.has_reaction_for_message = AsyncMock(return_value=False)
+        task = RawTask(
+            chat_id=1234060895, message_id=905, sender_id=1234060895,
+            sender_username="", sender_name="", text="Полина, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now",
+            msg=self._auto_event_on_client(auto_client).message, raw_id=6,
+        )
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.gather(
+            collector._process_message(task),
+            collector._process_message(task),
+        ))
+        action_calls = [
+            c for c in auto_client.send_message.call_args_list
+            if c.args[1] in ("❤️", "\U0001F44E")
+        ]
+        assert len(action_calls) == 1
+        collector._db.record_auto_action.assert_awaited_once()
 
     def test_no_action_when_message_on_other_account(self) -> None:
         from models.decision import AIDecision

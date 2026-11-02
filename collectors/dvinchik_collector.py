@@ -177,6 +177,10 @@ class DvinchikCollector(
         )
         self._db = db
         self._dedup: Dedup = Dedup()
+        # Карточки, на которые реакция уже взята в работу (за аккаунт):
+        # два прохода по одной карточке (живой хендлер + «активная анкета»
+        # после капчи) не должны слать два 👎 — второй уходит на следующую.
+        self._reacted_cards: Dedup = Dedup()
         self._parser = DvinchikParser(config.filters)
         # Стикер-приветствие девушке после взаимного лайка.
         self._match_greeter = MatchGreeter(
@@ -856,7 +860,21 @@ class DvinchikCollector(
         logged_decision: str,
         informative: bool | None = None,
     ) -> None:
-        """Одна реакция на карточку: проверка журнала → действие → запись."""
+        """Одна реакция на карточку: проверка журнала → действие → запись.
+
+        Карточка «занимается» синхронно, до первого ``await``: журнал
+        пишется только после отправки (а перед ней — фото-шаг на секунды),
+        поэтому параллельный проход по той же карточке проверку журнала
+        проходит. Прод 2026-11-02: живой хендлер и «активная анкета» после
+        капчи послали два 👎, второй ушёл на следующую анкету (UNIQUE).
+        """
+        claim = (task.account_session or "", task.chat_id, task.message_id)
+        if self._reacted_cards.is_known(claim):
+            logger.info(
+                f"AutoAction: карточка {task.message_id} уже обрабатывается"
+            )
+            return
+        self._reacted_cards.mark(claim)
         try:
             if await self._db.has_reaction_for_message(
                 task.chat_id, task.message_id
