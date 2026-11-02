@@ -571,6 +571,14 @@ class TestWakeUpAfterSticker:
         assert row["wake_at"] and row["wake_msg_id"] == 500
         assert [st for _, st in results] == [WAKE_UP_SENT]
 
+    def test_old_silent_match_not_woken(self, db: Database) -> None:
+        """Её вечер давно прошёл (старый привет) — «АЛООО» не шлём."""
+        self._waiting(db, _ago(49))
+        client = self._client()
+        assert run(self._intro(db).process(client, self.S, "AUTO")) == []
+        client.send_message.assert_not_called()
+        assert self._row(db)["status"] == WAITING_REPLY
+
     def test_not_a_day_yet(self, db: Database) -> None:
         self._waiting(db, _ago(23))
         client = self._client()

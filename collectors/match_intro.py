@@ -92,6 +92,9 @@ GREETING_STICKER_SKEW_SEC: float = 60.0
 #: Она написала первой: её сообщение не старше стольких секунд до привета —
 #: тоже ответ (матч мог висеть, пока владелец не нажал «показать»).
 EARLY_REPLY_SEC: float = 24 * 3600.0
+#: «АЛООО» — в первый вечер после суток тишины: позже стольких часов после
+#: срока не шлём (иначе на запуске его получили бы все старые матчи).
+WAKE_UP_LATE_HOURS: float = 24.0
 
 
 
@@ -586,6 +589,10 @@ class MatchIntro:
                 if now - woke < limit:
                     continue
             elif greeted is None or now - greeted < limit or not evening:
+                continue
+            elif now - greeted >= limit + timedelta(hours=WAKE_UP_LATE_HOURS):
+                # Её вечер для «АЛООО» прошёл (старые приветы до 2026-11-02,
+                # бот лежал) — не пишем, ждём её ответа как раньше.
                 continue
             user_id = int(row["user_id"])
             name = row.get("name") or str(user_id)
