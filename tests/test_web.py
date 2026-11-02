@@ -2869,3 +2869,10 @@ class TestRedesign:
         assert "ArrowLeft" in js and "ArrowRight" in js
         css = client.get("/static/css/app.css").get_data(as_text=True)
         assert ".lightbox[open]" in css
+
+    def test_rate_photo_not_cropped(self, client) -> None:
+        """/rate показывает фото целиком (contain), без обрезки под рамку."""
+        import re
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        block = re.search(r"\n\.rate__photo \{([^}]*)\}", css).group(1)
+        assert "object-fit: contain" in block and "cover" not in block

@@ -1129,3 +1129,4 @@ tests/test_web.py::TestRedesign::test_desktop_layout_sidebar_and_feed
 tests/test_web.py::TestRedesign::test_captcha_blocks_replaced_not_appended
 tests/test_web.py::TestRedesign::test_leo_menu_collapsed_match_kept
 tests/test_web.py::TestRedesign::test_photo_opens_in_lightbox
+tests/test_web.py::TestRedesign::test_rate_photo_not_cropped

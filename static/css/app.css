@@ -1110,11 +1110,15 @@ a.seg__btn {
     grid-template-columns: minmax(0, 1fr);
     min-height: 240px;
 }
+/* Фото — целиком, без обрезки (владелец, 2026-11-02: «я должен видеть всё»):
+   рамка постоянной высоты (кнопки не прыгают между фото), снимок вписан
+   в неё (contain), свободное место — фон рамки. */
 .rate__photo {
     width: 100%;
-    max-height: 56vh;          /* кнопки оценки видны без прокрутки */
-    aspect-ratio: 3 / 4;
-    object-fit: cover;
+    /* Всё, что выше и ниже фото (заголовок, подсказки, кнопки), — ~420px:
+       кнопки оценки видны без прокрутки на любом экране. */
+    height: clamp(240px, calc(100vh - 420px), 72vh);
+    object-fit: contain;
     border-radius: 22px;
     background: var(--thumb-bg);
     border: 1px solid var(--line);
@@ -1339,7 +1343,7 @@ a.seg__btn {
     .rate__hint--desktop { display: none; }
     .rate__hint--touch { display: block; }
     .rate__photos { min-height: 0; }
-    .rate__photo { max-height: 64vh; }
+    .rate__photo { height: 64vh; }
     .rate__actions { flex-wrap: nowrap; gap: 6px; }
     .rate__btn { min-width: 0; flex: 1 1 0; padding-left: 6px; padding-right: 6px; font-size: 15px; }
     .dialogs { padding: 24px 12px 40px; }
