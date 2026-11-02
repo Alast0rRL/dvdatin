@@ -6,7 +6,7 @@
 {% set main = accounts|selectattr('session', 'equalto', account_session)|list|first %}
 {% set scroll_on = main.scroll if main else mode in ('SEMI_AUTO', 'AUTO') %}
 {% set auto_on = main.auto if main else mode == 'AUTO' %}
-<span class="mode-pill mode-pill--{{ mode|lower }}" id="mode-pill"
+<span class="mode-pill mode-pill--{{ mode|lower }} {% if scroll_on or auto_on %}mode-pill--on{% endif %}" id="mode-pill"
       title="Основной аккаунт{% if account_session %} ({{ account_session }}){% endif %}">
     {%- if scroll_on and auto_on %}скроллинг + авто{% elif scroll_on %}скроллинг{% elif auto_on %}авто{% else %}наблюдение{% endif -%}
 </span>
@@ -41,47 +41,13 @@
     <button type="button" class="btn btn--sm" id="bot-error-close">Понятно</button>
 </div>
 
-{# ── Первый экран: что делает бот прямо сейчас + цифры за сутки + пульт ──
+{# ── Первый экран: пульт аккаунтов (статус — плашка в шапке, цифры — в настройках) ──
    Каждый аккаунт — своя карточка с двумя независимыми переключателями:
    «Скроллинг» — бот сам листает ленту Leo (❤️/👎), «Авто» — переписка с
    девушкой в личке после взаимного лайка. Оба выключены — только наблюдение.
    Имя аккаунта делает его основным (его чат — в ленте сайта). #}
 {% set rows = accounts if accounts else [{'session': '', 'phone': '', 'scroll': mode in ('SEMI_AUTO', 'AUTO'), 'auto': mode == 'AUTO'}] %}
-{% set any_scroll = rows|selectattr('scroll')|list|length > 0 %}
-{% set any_auto = rows|selectattr('auto')|list|length > 0 %}
-<section class="hero" id="hero" aria-labelledby="hero-title">
-    <p class="hero__eyebrow">
-        <span class="hero__pulse {% if any_scroll or any_auto %}is-on{% endif %}" aria-hidden="true"></span>
-        {% if any_scroll or any_auto %}Бот работает{% else %}Бот на паузе{% endif %}
-    </p>
-    <h1 class="hero__title" id="hero-title">
-        {%- if any_scroll and any_auto %}Листает анкеты и&nbsp;ведёт переписки
-        {%- elif any_scroll %}Листает анкеты за&nbsp;тебя
-        {%- elif any_auto %}Ведёт переписки после матча
-        {%- else %}Только наблюдает{% endif -%}
-    </h1>
-
-    {% set ds = day_stats or {} %}
-    <dl class="stats" aria-label="За последние сутки">
-        <div class="stats__item">
-            <dt class="stats__label">Лайков</dt>
-            <dd class="stats__value" data-count="{{ ds.likes or 0 }}">{{ ds.likes or 0 }}</dd>
-        </div>
-        <div class="stats__item">
-            <dt class="stats__label">Пропущено</dt>
-            <dd class="stats__value" data-count="{{ ds.dislikes or 0 }}">{{ ds.dislikes or 0 }}</dd>
-        </div>
-        <div class="stats__item stats__item--accent">
-            <dt class="stats__label">Матчей</dt>
-            <dd class="stats__value" data-count="{{ ds.matches or 0 }}">{{ ds.matches or 0 }}</dd>
-        </div>
-        <div class="stats__item">
-            <dt class="stats__label">Ответили</dt>
-            <dd class="stats__value" data-count="{{ ds.replied or 0 }}">{{ ds.replied or 0 }}</dd>
-        </div>
-    </dl>
-    <p class="stats__note">за последние 24 часа</p>
-
+<section class="hero" id="hero" aria-label="Аккаунты">
     <div class="acct-rows" id="acct-rows">
     {% for acc in rows %}
     <div class="acct-row {% if acc.session and acc.session == account_session %}is-main{% endif %}"

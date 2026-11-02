@@ -1,5 +1,5 @@
 {# ── Настройки: выдвижная панель на том же экране (без отдельных вкладок) ──
-   Только то, что меняют РЕДКО: фильтры и правила SKIP/LIKE.
+   Сводка за сутки и то, что меняют РЕДКО: фильтры и правила SKIP/LIKE.
    Режим работы и аккаунт-исполнитель — «горячие» селекторы, они в топбаре. #}
 <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="drawer" aria-label="Настройки" hidden>
@@ -9,6 +9,30 @@
     </div>
 
     <div class="drawer__body">
+        {# Сводка за сутки (SyncDB.get_day_stats): раньше была на первом экране. #}
+        {% set ds = day_stats or {} %}
+        <section class="drawer__section">
+            <h3>За последние 24 часа</h3>
+            <dl class="stats" aria-label="За последние сутки">
+                <div class="stats__item">
+                    <dt class="stats__label">Лайков</dt>
+                    <dd class="stats__value" data-count="{{ ds.likes or 0 }}">{{ ds.likes or 0 }}</dd>
+                </div>
+                <div class="stats__item">
+                    <dt class="stats__label">Пропущено</dt>
+                    <dd class="stats__value" data-count="{{ ds.dislikes or 0 }}">{{ ds.dislikes or 0 }}</dd>
+                </div>
+                <div class="stats__item stats__item--accent">
+                    <dt class="stats__label">Матчей</dt>
+                    <dd class="stats__value" data-count="{{ ds.matches or 0 }}">{{ ds.matches or 0 }}</dd>
+                </div>
+                <div class="stats__item">
+                    <dt class="stats__label">Ответили</dt>
+                    <dd class="stats__value" data-count="{{ ds.replied or 0 }}">{{ ds.replied or 0 }}</dd>
+                </div>
+            </dl>
+        </section>
+
         <section class="drawer__section">
             <h3>Фильтры</h3>
             <p class="drawer__hint">Возраст и города, по которым отбираются анкеты.</p>

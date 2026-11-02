@@ -33,12 +33,14 @@
         });
     }
 
-    /* ── Цифры первого экрана: короткий подсчёт от нуля ───────────── */
-    /* Только украшение: число уже стоит в разметке (без JS — оно же). */
+    /* ── Сводка за сутки (в настройках): короткий подсчёт от нуля ──── */
+    /* Только украшение: число уже стоит в разметке (без JS — оно же).
+       Запускается при открытии панели, чтобы подсчёт было видно. */
     var reduceMotion = window.matchMedia &&
         window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!reduceMotion && window.requestAnimationFrame) {
-        document.querySelectorAll('.stats__value[data-count]').forEach(function (el) {
+    function animateCounts(root) {
+        if (reduceMotion || !window.requestAnimationFrame || !root) return;
+        root.querySelectorAll('.stats__value[data-count]').forEach(function (el) {
             var target = parseInt(el.dataset.count, 10);
             if (!target || isNaN(target)) return;
             var start = null;
@@ -72,6 +74,7 @@
         if (backdrop) backdrop.hidden = false;
         document.body.style.overflow = 'hidden';
         if (openBtn) openBtn.setAttribute('aria-expanded', 'true');
+        animateCounts(drawer);
         var close = document.getElementById('drawer-close');
         if (close) close.focus();
     }

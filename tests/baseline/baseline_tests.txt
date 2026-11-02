@@ -1105,6 +1105,6 @@ tests/test_web.py::TestDialogsPage::test_unknown_dialog_404
 tests/test_web.py::TestDialogsPage::test_export_json
 tests/test_web.py::TestRedesign::test_leo_markdown_link_rendered_as_link
 tests/test_web.py::TestRedesign::test_leo_text_escapes_and_blocks_scripts
-tests/test_web.py::TestRedesign::test_hero_shows_day_stats
+tests/test_web.py::TestRedesign::test_day_stats_in_settings_not_on_first_screen
 tests/test_web.py::TestRedesign::test_day_stats_counts_last_day
 tests/test_web.py::TestRedesign::test_broken_image_cleanup_only_for_feed_thumbs

@@ -84,7 +84,7 @@ python -m pytest tests/test_ai.py -v
 - **Сырых цветов вне палитр в `app.css` нет** (темы через CSS-переменные). Тест: `TestTheme::test_no_raw_colors_outside_palettes`.
 - **Коды причин переводит только `services/reason_labels.py`** (сайт и TG); новые коды добавлять туда. Тест: `TestReasonLabels`.
 - **Запрос фото `/rate` идёт по `idx_raw_unique`** (`rm.account_session IN (pm.account_session, '')`). Тест: `test_photo_query_uses_raw_index`.
-- **Шапка — только разделы и действия; пульт аккаунтов — на первом экране (`#hero`)** (редизайн 2026-11-02). Анимации появления — только сдвигом, без `opacity: 0` (контент виден, даже если анимация не проиграется). Тест: `test_topbar_has_row_per_account`.
+- **Шапка — только разделы, плашка статуса и действия; первый экран (`#hero`) — только карточки аккаунтов, сводка за сутки — в панели настроек** (владелец, 2026-11-02). Анимации появления — только сдвигом, без `opacity: 0` (контент виден, даже если анимация не проиграется). Тесты: `test_topbar_has_row_per_account`, `test_day_stats_in_settings_not_on_first_screen`.
 - **Текст Leo в ленте — через фильтр `leo_text`** (экранирование + markdown-ссылки → `<a>`, только http(s)/tg). Тесты: `TestRedesign`.
 - **`app.js` удаляет незагрузившиеся картинки только из ленты/переписки** (`DROPPABLE_IMG`); фото `/rate` обрабатывает `rate.js` (заглушка «пропусти»). Тест: `test_broken_image_cleanup_only_for_feed_thumbs`.
 - **Логи, ошибки и текст из БД в JS — только через `textContent`**; `innerHTML` — лишь для HTML-фрагментов, отрисованных сервером (Jinja-экранирование).

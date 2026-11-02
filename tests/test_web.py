@@ -2780,13 +2780,16 @@ class TestRedesign:
         assert 'href="javascript' not in html
         assert '"onmouseover' not in html
 
-    def test_hero_shows_day_stats(self, client) -> None:
+    def test_day_stats_in_settings_not_on_first_screen(self, client) -> None:
+        """Владелец 2026-11-02: наверху — только аккаунты, цифры — в настройках."""
         _login(client)
         data = client.get("/").get_data(as_text=True)
-        assert 'id="hero"' in data
+        hero = data[data.index('id="hero"'):data.index('id="stream-banner"')]
+        assert 'class="stats' not in hero and "Бот работает" not in hero
+        drawer = _drawer_html(data)
         for label in ("Лайков", "Пропущено", "Матчей", "Ответили"):
-            assert label in data
-        assert 'data-count="' in data
+            assert label in drawer
+        assert 'data-count="' in drawer
 
     def test_day_stats_counts_last_day(self, client) -> None:
         from datetime import datetime, timedelta, timezone

@@ -271,6 +271,21 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     font-size: 12px;
     font-weight: 600;
 }
+.mode-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+/* Точка статуса: серая — бот только наблюдает, зелёная с пульсом — работает. */
+.mode-pill::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--faint);
+}
+.mode-pill--on { color: var(--text); }
+.mode-pill--on::before { background: var(--like); animation: pulse 2s ease-out infinite; }
 .mode-pill--semi_auto { color: var(--accent); border-color: var(--accent-line); }
 .mode-pill--auto { color: var(--like-fg); border-color: var(--like-line); }
 
@@ -279,60 +294,24 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     width: 100%;
     max-width: 860px;
     margin: 0 auto;
-    padding: 56px 16px 24px;
+    padding: 28px 16px 8px;
 }
 /* Только сдвиг, без прозрачности: если анимация не проиграется (фоновая
    вкладка, слабый телефон), первый экран всё равно виден. */
-.hero > * { animation: lift .6s cubic-bezier(.2, .7, .2, 1) both; }
-.hero > *:nth-child(2) { animation-delay: .06s; }
-.hero > *:nth-child(3) { animation-delay: .12s; }
-.hero > *:nth-child(4) { animation-delay: .16s; }
-.hero > *:nth-child(5) { animation-delay: .22s; }
-
-.hero__eyebrow {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    margin: 0 0 12px;
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: .02em;
-    text-transform: uppercase;
-}
-.hero__pulse {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--faint);
-}
-.hero__pulse.is-on {
-    background: var(--like);
-    box-shadow: 0 0 0 0 var(--like-line);
-    animation: pulse 2s ease-out infinite;
-}
-.hero__title {
-    margin: 0;
-    max-width: 640px;
-    font-size: clamp(30px, 5vw, 46px);
-    line-height: 1.08;
-    font-weight: 800;
-    letter-spacing: -.03em;
-    overflow-wrap: anywhere;
-}
+.hero > * { animation: lift .5s cubic-bezier(.2, .7, .2, 1) both; }
 
 .stats {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 12px;
-    margin: 32px 0 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 4px 0 0;
 }
 .stats__item {
     min-width: 0;
-    padding: 16px 18px;
-    background: var(--bg-soft);
+    padding: 14px 16px;
+    background: var(--bg);
     border: 1px solid var(--line);
-    border-radius: 18px;
+    border-radius: 16px;
     transition: transform .2s ease, box-shadow .2s ease;
 }
 .stats__item:hover { transform: translateY(-2px); box-shadow: 0 10px 26px var(--shadow-soft); }
@@ -349,7 +328,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     font-variant-numeric: tabular-nums;
 }
 .stats__item--accent .stats__value { color: var(--accent); }
-.stats__note { margin: 8px 2px 0; color: var(--faint); font-size: 12px; }
 
 /* Карточка аккаунта: кто → переключатели → кого ищет → стрелка. */
 .acct-rows {
@@ -357,7 +335,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     flex-direction: column;
     gap: 10px;
     min-width: 0;
-    margin-top: 28px;
 }
 .acct-row {
     display: flex;
@@ -508,7 +485,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     color: var(--dislike-fg);
     font-size: 14px;
     overflow-wrap: anywhere;
-    animation: rise .4s ease both;
+    animation: lift .4s ease both;
 }
 .stream-error__title { font-weight: 700; font-size: 15px; }
 .stream-error__reason,
@@ -1183,7 +1160,7 @@ a.seg__btn {
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 @keyframes lift { from { transform: translateY(14px); } to { transform: none; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-@keyframes slide-in { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+@keyframes slide-in { from { transform: translateX(28px); } to { transform: none; } }
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes pulse {
     0% { box-shadow: 0 0 0 0 var(--like-line); }
@@ -1201,19 +1178,15 @@ a.seg__btn {
 
 /* ── Узкие экраны ──────────────────────────────────────────────── */
 @media (max-width: 720px) {
-    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .mode-switch { margin-left: 0; }
 }
 @media (max-width: 620px) {
     .topbar { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 8px 12px; }
     .topbar-side--right { justify-content: flex-start; }
-    .mode-pill, .brand-name { display: none; }
+    .brand-name { display: none; }
     .brand { margin-right: 2px; }
     .topnav__link { padding: 6px 11px; font-size: 13px; }
-    .hero { padding: 32px 16px 12px; }
-    .stats { margin-top: 22px; }
-    .stats__item { padding: 13px 14px; border-radius: 16px; }
-    .stats__value { font-size: 24px; }
+    .hero { padding: 16px 12px 4px; }
     .acct-row { padding: 10px; border-radius: 18px; }
     .account-form { flex: 1 1 100%; }
     .account-form__name { max-width: none; width: 100%; }
