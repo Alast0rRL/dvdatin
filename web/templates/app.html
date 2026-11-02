@@ -49,6 +49,19 @@
             <span class="account-form__text">{{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}</span>
         </button>
     </form>
+    {# Кого ищет аккаунт: девушек или кентов (режим «кенты» — на одном аккаунте). #}
+    {% set fr = acc.friends if acc.friends is defined else false %}
+    <form method="POST" action="{{ url_for('settings.update_audience') }}" class="audience-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+        <input type="hidden" name="account_session" value="{{ acc.session }}">
+        <button type="submit" class="audience-form__btn {% if fr %}is-active{% endif %}"
+                aria-pressed="{{ 'true' if fr else 'false' }}"
+                aria-label="Кого ищет {{ acc.session }}"
+                title="{% if fr %}{{ acc.session }} ищет кентов (парней). Нажми — снова девушки{% else %}{{ acc.session }} ищет девушек. Нажми — искать кентов (парней){% endif %}">
+            {% if fr %}🤝 Кенты{% else %}👩 Девушки{% endif %}
+        </button>
+    </form>
     {% if rows|length > 1 %}
     {# Стрелка: аккаунт в бане → девушкам после матча пишет другой аккаунт. #}
     {% set to = acc.redirect if acc.redirect is defined else '' %}

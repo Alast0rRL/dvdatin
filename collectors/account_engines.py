@@ -221,6 +221,24 @@ class AccountEnginesMixin:
             else f"{session}: перенаправление лички снято"
         )
 
+    def set_friends_account(self, session: str) -> None:
+        """Режим «кенты» на аккаунте ``session`` на лету (пусто — выключен).
+
+        Фильтр/правила выбираются по ``config.friends`` на каждой карточке;
+        текст 💌 у движков меняем здесь.
+        """
+        friends = self._config.friends
+        friends.enabled = bool(session)
+        friends.account_session = session
+        for name, engine in self._engines.items():
+            engine._like_texts = (
+                list(friends.like_message) if friends.is_friends(name) else None
+            )
+        logger.info(
+            f"Кенты: {session} ищет парней" if session
+            else "Кенты выключены: все аккаунты ищут девушек"
+        )
+
     def set_mode(self, mode: Mode, session: str | None = None) -> None:
         """Старый интерфейс режима (ControlBot, стоп на лайке, «Продолжить»).
 

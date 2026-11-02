@@ -258,6 +258,17 @@ class TestFriendsCollector:
         assert engine._pick_message_text() == "Здарова! Го знакомиться 🤝"
         assert collector.auto_engine("dvai")._pick_message_text() == "Берем)"
 
+    def test_switch_friends_on_the_fly(self) -> None:
+        """Кнопка на сайте: кенты включаются/переезжают без перезапуска."""
+        collector, _, auto = self._collector(enabled=False)
+        collector.set_friends_account("dvai_2")
+        assert collector.auto_engine("dvai_2")._pick_message_text() == "Здарова! Го знакомиться 🤝"
+        run(collector._process_message(self._task(auto, "Саша, 20, Санкт-Петербург")))
+        collector._friends_decision_service.evaluate.assert_awaited_once()
+        collector.set_friends_account("")
+        assert collector.auto_engine("dvai_2")._pick_message_text() == "Берем)"
+        assert not collector._is_friends_session("dvai_2")
+
     def test_match_with_friend_only_notifies_owner(self) -> None:
         collector, _, auto = self._collector()
         collector._match_greeter.greet = AsyncMock(return_value="SENT")

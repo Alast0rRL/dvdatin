@@ -268,6 +268,62 @@ def update_redirect() -> tuple:
     return redirect(redirect_target)
 
 
+@settings_bp.route("/settings/audience", methods=["POST"])
+@login_required
+def update_audience() -> tuple:
+    """Кнопка «Девушки / Кенты» в строке аккаунта (режим «кенты»).
+
+    Нажатие на аккаунте девушек делает его аккаунтом кентов (кенты — только
+    на одном аккаунте, прежний возвращается к девушкам); на аккаунте кентов —
+    возвращает девушек. Персистит ``friends`` в config.yaml, меняет на лету.
+    """
+    token = request.form.get("csrf_token", "")
+    if token != session.get("_csrf_token"):
+        flash("Ошибка безопасности", "error")
+        return ("CSRF token invalid", 403)
+
+    account = (request.form.get("account_session") or "").strip()
+    redirect_target = request.form.get("next", "")
+    if not redirect_target or not redirect_target.startswith("/") or redirect_target.startswith("//"):
+        redirect_target = url_for("chat.index")
+
+    config_path = _get_config_path()
+    accounts, _ = _get_accounts(config_path)
+    if account not in [a["session"] for a in accounts]:
+        flash(f"Аккаунт {account!r} не найден", "error")
+        return redirect(redirect_target)
+    is_friends = any(a["session"] == account and a["friends"] for a in accounts)
+    target = "" if is_friends else account
+
+    try:
+        from app.config import AppConfig
+        config = AppConfig.load(config_path)
+        config.persist_friends_account(config_path, target)
+    except Exception as e:
+        flash(f"Ошибка: {e}", "error")
+        return redirect(redirect_target)
+
+    try:
+        from web.actions import set_friends_sync
+        live_status = set_friends_sync(target)
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"Web audience switch: {type(e).__name__}: {e!r}")
+        live_status = "ERROR"
+
+    what = (
+        f"{account}: ищет кентов (парней)" if target
+        else f"{account}: ищет девушек"
+    )
+    if live_status == "OK":
+        flash(what, "success")
+    elif live_status == "ERROR":
+        flash(f"{what} — сохранено, но не применено на лету", "warning")
+    else:
+        flash(f"{what} (применится после перезапуска)", "warning")
+    return redirect(redirect_target)
+
+
 @settings_bp.route("/settings/account", methods=["POST"])
 @login_required
 def update_account() -> tuple:
@@ -363,6 +419,11 @@ def _get_accounts(config_path: Path) -> tuple[list[dict], str]:
     redirects = auto_actions.get("account_redirects") or {}
     if not isinstance(redirects, dict):
         redirects = {}
+    friends_raw = raw.get("friends") or {}
+    friends_session = (
+        str(friends_raw.get("account_session") or "")
+        if friends_raw.get("enabled") else ""
+    )
     accounts = []
     for acc in accounts_raw:
         session = acc.get("session") or ""
@@ -375,6 +436,7 @@ def _get_accounts(config_path: Path) -> tuple[list[dict], str]:
                 "scroll": controls.scroll, "auto": controls.auto,
                 "mode": controls.legacy_mode.value,
                 "redirect": str(redirects.get(session) or ""),
+                "friends": bool(friends_session) and session == friends_session,
             })
     return accounts, account_session
 

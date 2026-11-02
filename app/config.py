@@ -775,6 +775,26 @@ class AppConfig(BaseModel):
             str(k): str(v) for k, v in stored.items()
         }
 
+    def persist_friends_account(self, path: Path, session: str) -> None:
+        """Режим «кенты» на аккаунте ``session`` (пусто — у всех девушки).
+
+        Кенты — только на одном аккаунте: включение на другом снимает
+        с прежнего. Остальные поля ``friends`` (фильтры, тексты) не трогает.
+        """
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        else:
+            raw = {}
+        friends = raw.get("friends") or {}
+        friends["enabled"] = bool(session)
+        friends["account_session"] = session
+        raw["friends"] = friends
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+        self.friends.enabled = bool(session)
+        self.friends.account_session = session
+
     def persist_account_session(self, path: Path, session: str) -> None:
         """Сохраняет auto_actions.account_session в YAML-файл.
 

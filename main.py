@@ -186,34 +186,32 @@ async def main() -> None:
 
     # Режим «кенты» (config.friends): аккаунт ищет парней-друзей — свои
     # фильтр (возраст/город) и правила, без «девичьих» признаков H/P.
-    friends_filter_service = None
-    friends_decision_service = None
     friends_cfg = config.friends
-    if friends_cfg.enabled and friends_cfg.account_session:
-        friends_config = config.model_copy(update={"filters": friends_cfg.filters})
-        friends_filter_service = FilterService(
-            db, profile_service, FilterEngine(friends_config),
-        )
-        friends_prefs_path = Path(friends_cfg.preferences_file)
-        friends_preferences = load_preferences(
-            friends_prefs_path,
-            example=friends_prefs_path.with_name("preferences_friends.example.yaml"),
-        )
-        friends_decision_service = DecisionService(
-            db,
-            friends_config,
-            profile_service,
-            friends_filter_service,
-            preferences=friends_preferences,
-            builtin_features=False,
-        )
-        logger.info(
-            f"Кенты: {friends_cfg.account_session} ищет парней "
-            f"({friends_cfg.filters.age.min}–{friends_cfg.filters.age.max}, "
-            f"skip={len(friends_preferences._prefs.skip)} "
-            f"like={len(friends_preferences._prefs.like)} "
-            f"like_hard={len(friends_preferences._prefs.like_hard)})"
-        )
+    # Строим всегда: режим включается на лету кнопкой на сайте.
+    friends_config = config.model_copy(update={"filters": friends_cfg.filters})
+    friends_filter_service = FilterService(
+        db, profile_service, FilterEngine(friends_config),
+    )
+    friends_prefs_path = Path(friends_cfg.preferences_file)
+    friends_preferences = load_preferences(
+        friends_prefs_path,
+        example=friends_prefs_path.with_name("preferences_friends.example.yaml"),
+    )
+    friends_decision_service = DecisionService(
+        db,
+        friends_config,
+        profile_service,
+        friends_filter_service,
+        preferences=friends_preferences,
+        builtin_features=False,
+    )
+    logger.info(
+        f"Кенты: {friends_cfg.account_session or 'выключены'}, правила "
+        f"({friends_cfg.filters.age.min}–{friends_cfg.filters.age.max}, "
+        f"skip={len(friends_preferences._prefs.skip)} "
+        f"like={len(friends_preferences._prefs.like)} "
+        f"like_hard={len(friends_preferences._prefs.like_hard)})"
+    )
 
     # Stage 8: ручные решения владельца по REVIEW-анкетам (журнал в файле).
     mr_cfg = config.manual_review

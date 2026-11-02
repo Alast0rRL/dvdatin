@@ -598,6 +598,7 @@ tests/test_friends.py::TestFriendsDecision::test_example_fallback_used_when_live
 tests/test_friends.py::TestFriendsCollector::test_friends_profile_uses_friends_services_and_skips_photo
 tests/test_friends.py::TestFriendsCollector::test_disabled_friends_uses_girls_pipeline
 tests/test_friends.py::TestFriendsCollector::test_friends_engine_sends_own_like_text
+tests/test_friends.py::TestFriendsCollector::test_switch_friends_on_the_fly
 tests/test_friends.py::TestFriendsCollector::test_match_with_friend_only_notifies_owner
 tests/test_friends.py::TestFriendsNotInRateQueue::test_friends_profile_excluded
 tests/test_manual_review.py::TestClassifyOutgoing::test_heart_is_like
@@ -615,6 +616,7 @@ tests/test_manual_review.py::TestManualReviewLogic::test_profile_not_review_not_
 tests/test_manual_review.py::TestManualReviewLogic::test_unknown_context_profile_not_recorded
 tests/test_match_greeter.py::TestMatchParsing::test_username_link_without_default_text
 tests/test_match_greeter.py::TestMatchParsing::test_user_id_link_is_a_match
+tests/test_match_greeter.py::TestMatchParsing::test_channel_invite_ad_is_not_a_match
 tests/test_match_greeter.py::TestMatchGreeter::test_sends_only_sticker_once
 tests/test_match_greeter.py::TestMatchGreeter::test_already_greeted_is_skipped
 tests/test_match_greeter.py::TestMatchGreeter::test_existing_chat_is_skipped
@@ -994,6 +996,7 @@ tests/test_web.py::TestAccountSettings::test_toggle_auto_independent_of_scroll
 tests/test_web.py::TestAccountSettings::test_both_off_is_observe
 tests/test_web.py::TestAccountSettings::test_update_mode_unknown_account_refused
 tests/test_web.py::TestAccountSettings::test_redirect_arrow_toggles
+tests/test_web.py::TestAccountSettings::test_audience_button_toggles_friends
 tests/test_web.py::TestAccountSettings::test_redirect_unknown_account_refused
 tests/test_web.py::TestAccountSettings::test_no_redirect_arrow_with_one_account
 tests/test_web.py::TestAccountSettings::test_account_dropdown_in_app_drawer

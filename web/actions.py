@@ -258,6 +258,18 @@ def set_redirect_sync(session: str, target: str) -> str:
     return "OK"
 
 
+def set_friends_sync(session: str) -> str:
+    """Режим «кенты» на живом коллекторе: "OK" / "DISABLED" / "ERROR"."""
+    if _collector is None:
+        return "DISABLED"
+    try:
+        _collector.set_friends_account(session)
+    except Exception as e:
+        logger.error(f"Friends bridge: {type(e).__name__}: {e!r}")
+        return "ERROR"
+    return "OK"
+
+
 def set_controls_sync(session: str | None, scroll: bool, auto: bool) -> str:
     """«Скроллинг»/«Авто» аккаунта на живом коллекторе (+ толчок ленты).
 

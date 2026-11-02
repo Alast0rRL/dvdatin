@@ -1129,6 +1129,44 @@ class TestAccountSettings:
             web_actions.set_collector(None)
         assert calls == [("dvai", "dvai_2"), ("dvai", "")]
 
+    def test_audience_button_toggles_friends(self, client, tmp_path) -> None:
+        """Кнопка «Девушки / Кенты»: кенты — только на одном аккаунте."""
+        import yaml
+        from web import actions as web_actions
+
+        self._write_config(tmp_path)
+        calls: list = []
+
+        class _Fake:
+            def set_friends_account(self, session):
+                calls.append(session)
+
+        _login(client)
+        web_actions.set_collector(_Fake())
+        try:
+            data = client.get("/").get_data(as_text=True)
+            assert data.count('class="audience-form"') == 2
+            assert "👩 Девушки" in data and "🤝 Кенты" not in data
+            with client.session_transaction() as sess:
+                token = sess.get("_csrf_token", "")
+            client.post("/settings/audience",
+                        data={"account_session": "dvai", "csrf_token": token})
+            client.post("/settings/audience",
+                        data={"account_session": "dvai_2", "csrf_token": token})
+            cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert cfg["friends"]["enabled"] is True
+            assert cfg["friends"]["account_session"] == "dvai_2"
+            data = client.get("/").get_data(as_text=True)
+            row2 = data[data.index('data-account="dvai_2"'):]
+            assert "🤝 Кенты" in row2
+            client.post("/settings/audience",
+                        data={"account_session": "dvai_2", "csrf_token": token})
+            cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert cfg["friends"]["enabled"] is False
+        finally:
+            web_actions.set_collector(None)
+        assert calls == ["dvai", "dvai_2", ""]
+
     def test_redirect_unknown_account_refused(self, client, tmp_path) -> None:
         import yaml
         self._write_config(tmp_path)
