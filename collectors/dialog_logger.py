@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from collectors.dvinchik_parser import is_valid_username
 from collectors.match_greeter import flood_pause_sec
 
 if TYPE_CHECKING:
@@ -116,6 +117,9 @@ class DialogLogger:
         self._last_sync: dict[str, float] = {}
         # Старые матчи, чей @username не удалось резолвить (не повторяем).
         self._unresolvable: set[tuple[str, str]] = set()
+        # Чаты, которые уже не найти: предупреждение — один раз за запуск,
+        # а не каждый час (прод 2026-11-02: 150 одинаковых строк за 4 дня).
+        self._lost_chats: set[tuple[str, int]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -148,14 +152,16 @@ class DialogLogger:
         if not self._enabled:
             return 0
         user_id = int(match.telegram_user_id or 0)
-        if not user_id and match.telegram_username and client is not None:
+        username = match.telegram_username or ""
+        if not user_id and username and not is_valid_username(username):
+            return 0  # хэш приглашения в канал, не девушка
+        if not user_id and username and client is not None:
             try:
-                peer = await client.get_input_entity(match.telegram_username)
+                peer = await client.get_input_entity(username)
                 user_id = int(getattr(peer, "user_id", 0) or 0)
             except Exception as e:
-                logger.error(
-                    f"DialogLog: не нашёл user_id {match.telegram_username}: {e}"
-                )
+                # Девушка удалила аккаунт / сменила @username — не сбой бота.
+                logger.warning(f"DialogLog: не нашёл user_id @{username}: {e}")
                 return 0
         if not user_id:
             return 0
@@ -286,11 +292,15 @@ class DialogLogger:
             peer = await self._peer(client, user_id, row.get("username") or "")
             if peer is None:
                 # Девушка сменила/удалила @username, а в кэше сессии её нет —
-                # штатная ситуация, не ошибка бота; повтор через час.
-                logger.warning(
-                    f"DialogLog: чат {user_id} не найти "
-                    f"(@{row.get('username') or '—'} больше не существует)"
-                )
+                # штатная ситуация, не ошибка бота; повтор через час, но
+                # в лог — один раз за запуск.
+                key = (account_session, user_id)
+                if key not in self._lost_chats:
+                    self._lost_chats.add(key)
+                    logger.warning(
+                        f"DialogLog: чат {user_id} не найти "
+                        f"(@{row.get('username') or '—'} больше не существует)"
+                    )
                 await self._db.mark_dialog_synced(account_session, user_id)
                 return 0
             async for msg in client.iter_messages(
@@ -358,7 +368,8 @@ class DialogLogger:
             return True
         todo = [
             r for r in rows
-            if (account_session, str(r["telegram_username"]).lower())
+            if is_valid_username(str(r["telegram_username"]))
+            and (account_session, str(r["telegram_username"]).lower())
             not in self._unresolvable
         ][:RESOLVE_BATCH]
         for row in todo:

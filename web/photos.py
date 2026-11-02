@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -26,12 +27,29 @@ MEDIA_ROOT = Path(__file__).resolve().parent.parent / "media"
 _telegram_clients: list = []
 _telegram_sessions: list[str] = []
 
+#: Фото, которого нет ни у одного клиента (Leo удалил сообщение), не ищем
+#: снова столько секунд: иначе каждый просмотр /rate — запросы в Telegram
+#: и строка WARNING (прод 2026-11-02: 125 за ночь).
+MISSING_TTL_SEC: float = 6 * 3600
+_missing: dict[tuple[int, int, int, str], float] = {}
+
+
+def _is_known_missing(key: tuple[int, int, int, str]) -> bool:
+    at = _missing.get(key)
+    if at is None:
+        return False
+    if time.monotonic() - at > MISSING_TTL_SEC:
+        _missing.pop(key, None)
+        return False
+    return True
+
 
 def set_telegram_clients(clients: list) -> None:
     """Обратная совместимость: задать список клиентов без имён сессий."""
     global _telegram_clients, _telegram_sessions
     _telegram_clients = list(clients)
     _telegram_sessions = [""] * len(_telegram_clients)
+    _missing.clear()
 
 
 def set_telegram_clients_with_sessions(
@@ -44,6 +62,7 @@ def set_telegram_clients_with_sessions(
     """
     global _telegram_clients, _telegram_sessions
     _telegram_clients = list(clients)
+    _missing.clear()
     if sessions is None:
         _telegram_sessions = [""] * len(_telegram_clients)
     else:
@@ -160,6 +179,10 @@ async def download_photo(
     if cached:
         return cached
 
+    missing_key = (chat_id, message_id, profile_id, account_session or "")
+    if _is_known_missing(missing_key):
+        return None
+
     clients = get_telegram_clients()
     if not clients:
         logger.warning("TelegramClient недоступен для скачивания фото")
@@ -194,6 +217,7 @@ async def download_photo(
             )
             return result
 
+    _missing[missing_key] = time.monotonic()
     logger.warning(
         f"Photo not found on any client: profile={profile_id} msg={message_id}"
     )

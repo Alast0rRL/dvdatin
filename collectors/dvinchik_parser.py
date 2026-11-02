@@ -40,6 +40,18 @@ MATCH_RE = re.compile(
     r"|tg://user\?id=(?P<user_id>\d+))",
 )
 
+#: Настоящий @username Telegram (как в ``MATCH_RE``).
+USERNAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")
+
+
+def is_valid_username(username: str | None) -> bool:
+    """Похоже на настоящий @username, а не хэш приглашения «+abc…».
+
+    До фикса MATCH_RE (2026-11-02) в ``match_responses`` попали хэши
+    ссылок-приглашений из рекламы Leo — их не резолвим (вечная ошибка).
+    """
+    return bool(USERNAME_RE.fullmatch((username or "").lstrip("@")))
+
 # Отказ Leo в лайке/сообщении из-за дневного лимита:
 #   «Слишком много ❤️ за сегодня. / Перейди на Premium и получи больше ❤️!»
 # Консервативные индикаторы: «слишком много» / «закончились» / «лимит» / «позже»

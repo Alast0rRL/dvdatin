@@ -292,6 +292,51 @@ class TestDialogLogger:
         assert [r["text"] for r in messages(db)] == ["привет"]
 
 
+    def test_invite_hash_is_not_resolved(self, db) -> None:
+        """Прод 2026-11-02: хэш приглашения «+-B9Op…» из рекламы Leo попал
+        в матчи до фикса парсера — резолвить его нельзя (вечный ERROR)."""
+        log = DialogLogger(db)
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value=SimpleNamespace(user_id=9))
+        match = ParsedMatch(name="блог", telegram_username="+-B9OpKOEIl5mY2E6")
+        assert run(log.track(client, "dvai", match)) == 0
+        client.get_input_entity.assert_not_awaited()
+
+    def test_old_invite_hash_match_skipped(self, db) -> None:
+        run(db.save_raw_message(
+            telegram_message_id=501, chat_id=LEO, sender_id=LEO,
+            sender_username="", sender_name="", message_date=DATE.isoformat(),
+            text="реклама", raw_entities="[]", account_session="dvai",
+        ))
+        run(db.record_match_response("блог", LEO, 501,
+                                     telegram_username="+zDdT_5HDkm8xN2E6"))
+        log = DialogLogger(db)
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value=SimpleNamespace(user_id=9))
+        client.iter_messages = History([])
+        run(log.sync(client, "dvai"))
+        client.get_input_entity.assert_not_awaited()
+
+    def test_lost_chat_warned_once_per_run(self, db) -> None:
+        """Чат, который не найти, — одно предупреждение за запуск, а не
+        каждый час (прод 2026-11-02: 150 одинаковых строк за 4 дня)."""
+        from loguru import logger as _logger
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(side_effect=ValueError("nope"))
+        lines: list[str] = []
+        sink = _logger.add(lambda m: lines.append(str(m)), level="WARNING")
+        try:
+            run(log.sync(client, "dvai"))
+            log._last_sync.clear()
+            run(db.mark_dialog_synced("dvai", 77))
+            run(log._sync_chat(client, "dvai", {"user_id": 77, "username": ""}))
+        finally:
+            _logger.remove(sink)
+        assert sum("не найти" in line for line in lines) == 1
+
+
 class TestCollectorDialogLog:
     def _collector(self):
         collector, other, auto = _Greeting()._collector("SEMI_AUTO")
