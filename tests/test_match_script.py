@@ -96,6 +96,9 @@ class TestClassify:
         ("Что это?", R.ASKS_WHAT),
         ("зачем ты мне мою анкету скинул", R.ASKS_WHAT),
         ("а нахрена", R.ASKS_WHAT),
+        ("А для чего закрепил?", R.ASKS_PIN),
+        ("зачем закрепил мою анкету", R.ASKS_PIN),
+        ("а чего запинил", R.ASKS_PIN),
         ("?", R.ABOUT_WHAT),
         ("что?", R.ABOUT_WHAT),
         ("О чём?", R.ABOUT_WHAT),
@@ -120,12 +123,20 @@ class TestClassify:
         assert R.strongest([R.ASKS_WHAT, R.GO_AWAY, R.OTHER]) == R.GO_AWAY
         assert R.strongest([R.OTHER, R.ASKS_WHAT]) == R.ASKS_WHAT
 
+    def test_pin_question_beats_generic_what(self) -> None:
+        """Прод 2026-11-02: «Ну да, я» + «А для чего закрепил?» → не «Пусть лежит здесь»."""
+        kinds = [R.classify("Ну да, я"), R.classify("А для чего закрепил?")]
+        assert R.strongest(kinds) == R.ASKS_PIN
+        assert R.strongest([R.ASKS_PIN, R.ASKS_WHAT]) == R.ASKS_PIN
+
 
 class TestDecide:
     @pytest.mark.parametrize("step,kind,expected", [
         (R.AFTER_PIN, R.ASKS_WHAT, ("card_here", R.WAIT_MORE)),
         (R.AFTER_PIN, R.ABOUT_WHAT, ("card_here", R.WAIT_MORE)),
         (R.AFTER_PIN, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
+        (R.AFTER_PIN, R.ASKS_PIN, ("pin_why", R.WAIT_MORE)),
+        (R.WAIT_MORE, R.ASKS_PIN, ("pin_why", R.WAIT_MORE)),
         (R.AFTER_PIN, R.OTHER, ("tell_me", R.TELL_ME)),
         (R.WAIT_MORE, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
         (R.WAIT_MORE, R.OTHER, (None, R.HANDOFF)),
@@ -210,6 +221,17 @@ class TestMatchScript:
         assert got["script_msg_id"] == 300 and got["script_pending"] == ""
         assert got["script_variant"] == "card_here:0"
         assert results[0][1] == R.WAIT_MORE
+
+    def test_pin_question_answered_not_card_here(self, db: Database) -> None:
+        """Прод 2026-11-02 (Рина): «Ну да, я» + «А для чего закрепил?»."""
+        step_to(db, R.AFTER_PIN)
+        script = make_script(db)
+        assert run(script.note_message(S, UID, "Ну да, я", "AUTO"))
+        client, _ = reply(db, script, "А для чего закрепил?")
+        assert sent_text(client) == "Чтобы знать, с кем общаюсь"
+        got = row(db)
+        assert got["script_step"] == R.WAIT_MORE
+        assert got["script_variant"] == "pin_why:0"
 
     def test_too_many_then_convenient(self, db: Database) -> None:
         step_to(db, R.WAIT_MORE)

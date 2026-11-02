@@ -164,6 +164,7 @@ auto_actions:
     delete_for_both: true
     texts:
       card_here: ["Пусть лежит здесь"]
+      pin_why: ["Чтобы знать, с кем общаюсь"]
       convenient: ["Это так-то удобно"]
       tell_me: ["Рассказывайте, дамочка"]
       who_then: ["А кто? Парнишка?"]

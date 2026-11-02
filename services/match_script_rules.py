@@ -17,6 +17,7 @@ RUDE: str = "rude"                # прямое оскорбление → уд
 ASKS_BOT: str = "asks_bot"        # «ты бот?» → владельцу (бот не врёт)
 NOT_DAMOCHKA: str = "not_damochka"
 ASKS_TOO_MANY: str = "asks_too_many"
+ASKS_PIN: str = "asks_pin"        # «а зачем закрепил?» → «Чтобы знать, с кем общаюсь»
 ASKS_WHAT: str = "asks_what"      # «что это / зачем» про анкету
 ABOUT_WHAT: str = "about_what"    # «о чём? / что?»
 OTHER: str = "other"
@@ -39,7 +40,10 @@ STOP_KINDS: frozenset[str] = frozenset({GO_AWAY, RUDE})
 
 #: Важность вида: при нескольких её сообщениях подряд побеждает важнейший.
 _PRIORITY: dict[str, int] = {
-    GO_AWAY: 4, RUDE: 4, ASKS_BOT: 3,
+    GO_AWAY: 5, RUDE: 5, ASKS_BOT: 4,
+    # Вопрос про закреп важнее общего «зачем»: «Ну да, я» + «А для чего
+    # закрепил?» — ответ про закреп, не «Пусть лежит здесь» (владелец, 2026-11-03).
+    ASKS_PIN: 3,
     NOT_DAMOCHKA: 2, ASKS_TOO_MANY: 2, ASKS_WHAT: 2, ABOUT_WHAT: 2,
     OTHER: 1,
 }
@@ -69,6 +73,9 @@ _RULES: list[tuple[str, list[str]]] = [
         r"много\s+(с\s+кем|кем|девуш|девоч|анкет|общ|переписк|таких)",
         r"не\s+перепутать", r"не\s+путать", r"чтоб(ы)?\s+не\s+(за|пере)?пута",
         r"столько\s+(девуш|девоч|анкет)", r"конвейер", r"коллекци",
+    ]),
+    (ASKS_PIN, [
+        r"закреп", r"запин",
     ]),
     (ASKS_WHAT, [
         r"что\s+это", r"это\s+что", r"зачем", r"нафига", r"нахрена", r"нафиг",
@@ -125,7 +132,8 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
     """(ключ фразы из ``MatchScriptTexts`` или None, следующий шаг).
 
     Схема владельца (канвас «Знакомство для бота», 2026-11-02):
-    анкета → «что это/зачем» → «Пусть лежит здесь»; «много с кем общаешься,
+    анкета → «что это/зачем» → «Пусть лежит здесь»; «зачем закрепил?» →
+    «Чтобы знать, с кем общаюсь» (2026-11-03); «много с кем общаешься,
     чтобы не перепутать?» → «Это так-то удобно»; пишет о другом →
     «Рассказывайте, дамочка» → «я не дамочка» → «А кто? Парнишка?»;
     «о чём?/что?» → «О себе конечно». После «Пусть лежит здесь» / «удобно»
@@ -135,6 +143,8 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
         return None, DELETED
     if kind == ASKS_BOT:
         return None, HANDOFF
+    if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_PIN:
+        return "pin_why", WAIT_MORE
     if step == AFTER_PIN:
         if kind in (ASKS_WHAT, ABOUT_WHAT):
             return "card_here", WAIT_MORE
