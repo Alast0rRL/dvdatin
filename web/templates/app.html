@@ -46,6 +46,10 @@
    «Скроллинг» — бот сам листает ленту Leo (❤️/👎), «Авто» — переписка с
    девушкой в личке после взаимного лайка. Оба выключены — только наблюдение.
    Имя аккаунта делает его основным (его чат — в ленте сайта). #}
+{# ── Раскладка: на широком экране слева закреплённый пульт (аккаунты,
+   баннер остановки, капчи), справа лента; на узком — всё друг под другом. #}
+<div class="layout">
+<aside class="layout__side" aria-label="Управление">
 {% set rows = accounts if accounts else [{'session': '', 'phone': '', 'scroll': mode in ('SEMI_AUTO', 'AUTO'), 'auto': mode == 'AUTO'}] %}
 <section class="hero" id="hero" aria-label="Аккаунты">
     <div class="acct-rows" id="acct-rows">
@@ -134,11 +138,15 @@
 <div id="stream-banner">
     {% include "partials/app_stream_error.html" %}
 </div>
+{# Капчи: polling подменяет содержимое целиком (app.js refreshFeed). #}
+<div class="captchas" id="captchas">
+    {% include "partials/app_captchas.html" %}
+</div>
+</aside>
+
 <div class="app" id="app"
      data-sig="{{ signature }}" data-page="{{ page }}" data-total-pages="{{ total_pages }}"
      data-view="{{ view }}">
-
-    {% include "partials/app_captchas.html" %}
 
     {# ── Панель управления списком: вид, фильтр по решению, поиск, счётчик ── #}
     <div class="toolbar">
@@ -185,6 +193,7 @@
         </button>
         {% endif %}
     </div>
+</div>
 </div>
 
 {% include "partials/app_settings.html" %}

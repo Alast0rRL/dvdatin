@@ -302,10 +302,12 @@
                     banner.innerHTML = first.banner;
                 }
                 if (first.bot_error) showBotError(first.bot_error);
-                var oldPending = document.getElementById('pending');
-                if (oldPending) oldPending.remove();
-                if (first.pending) {
-                    feed.insertAdjacentHTML('beforebegin', first.pending);
+                // Капчи — целиком в своём контейнере. Раньше удалялся только
+                // #pending, а блоки «бот нажал…» (без id) копились при каждом
+                // обновлении и вставались под панель фильтров.
+                var captchas = document.getElementById('captchas');
+                if (captchas && typeof first.pending === 'string') {
+                    captchas.innerHTML = first.pending;
                 }
                 feed.innerHTML = first.feed || '';
                 localizeTimes(feed);

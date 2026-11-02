@@ -2817,3 +2817,22 @@ class TestRedesign:
         assert "DROPPABLE_IMG" in js and "t.matches(DROPPABLE_IMG)" in js
         rate = client.get("/static/js/rate.js").get_data(as_text=True)
         assert "rate__missing" in rate
+
+    def test_desktop_layout_sidebar_and_feed(self, client) -> None:
+        """Широкий экран: пульт (аккаунты, баннер, капчи) — левая колонка,
+        лента — правая; поля по бокам больше не пустуют."""
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        side = data[data.index('class="layout__side"'):data.index('id="app"')]
+        assert 'id="acct-rows"' in side and 'id="stream-banner"' in side
+        assert 'id="captchas"' in side
+        css = client.get("/static/css/app.css").get_data(as_text=True)
+        assert ".layout__side" in css and "position: sticky" in css
+        # hidden на html/body ломает sticky — нужен clip.
+        assert "overflow-x: clip" in css
+
+    def test_captcha_blocks_replaced_not_appended(self, client) -> None:
+        """Прод 2026-11-02: каждое обновление ленты дописывало ещё один
+        блок «бот нажал» — контейнер капч заменяется целиком."""
+        js = client.get("/static/js/app.js").get_data(as_text=True)
+        assert "captchas.innerHTML = first.pending" in js

@@ -149,6 +149,9 @@ html, body {
     font: 15px/1.55 "Onest", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;   /* страховка; основную работу делает min-width: 0 */
+    /* clip, где поддерживается: hidden на html+body делает body контейнером
+       прокрутки, и position: sticky (шапка, пульт, фильтры) переставал липнуть. */
+    overflow-x: clip;
 }
 html { background: var(--bg); }
 /* Тёплое свечение сверху — единственная «декорация», под первым экраном. */
@@ -493,6 +496,21 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .stream-error__hint { color: var(--text-soft); }
 .stream-error__actions { margin-top: 12px; }
 
+/* ── Раскладка страницы ────────────────────────────────────────── */
+/* Узкий экран: пульт и лента друг под другом, каждый блок — колонка
+   860px по центру. Широкий (>= 1180px, см. медиазапрос ниже): слева
+   закреплённый пульт, справа лента — боковые поля больше не пустуют. */
+.layout { width: 100%; min-width: 0; }
+.layout__side { min-width: 0; }
+.captchas {
+    width: 100%;
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 0 16px;
+}
+.captchas:empty { display: none; }
+.captchas .pending { margin: 14px 0 0; }
+
 /* ── Список событий ────────────────────────────────────────────── */
 .app {
     width: 100%;
@@ -525,6 +543,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .row:hover { border-color: var(--row-hover-line); box-shadow: 0 6px 20px var(--shadow-soft); }
 .row--action,
 .row--out { background: var(--bg-row-out); }
+/* Наш исходящий («Я» + 👎) — одной строкой: таких строк половина ленты. */
+.row--out { padding-top: 9px; padding-bottom: 9px; }
+.row--out .row__body { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.row--out .row__name { color: var(--muted); font-size: 13px; font-weight: 600; }
 .row--captcha { border-color: var(--review-line); }
 
 .row__time {
@@ -1155,6 +1177,54 @@ a.seg__btn {
 .chatlog__who { color: var(--faint); font-size: 11px; }
 .chatlog__text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
 .chatlog__media { color: var(--muted); }
+
+/* ── Широкий экран: пульт слева, лента справа ─────────────────── */
+@media (min-width: 1180px) {
+    :root { --topbar-h: 57px; }
+    .layout {
+        display: grid;
+        grid-template-columns: 360px minmax(0, 1fr);
+        gap: 32px;
+        align-items: start;
+        max-width: 1360px;
+        margin: 0 auto;
+        padding: 24px 24px 0;
+    }
+    /* Пульт прилипает под шапкой и прокручивается сам, если не влез. */
+    .layout__side {
+        position: sticky;
+        top: calc(var(--topbar-h) + 20px);
+        max-height: calc(100vh - var(--topbar-h) - 36px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding-bottom: 24px;
+        scrollbar-width: thin;
+    }
+    .layout__side .hero,
+    .layout__side #stream-banner,
+    .layout__side .captchas { max-width: none; padding: 0; }
+    .layout__side .stream-error,
+    .layout__side .captchas .pending { margin: 0; }
+    .layout__side .captchas .pending + .pending { margin-top: 14px; }
+    /* Карточка аккаунта в узкой колонке: имя → переключатели → кого ищет. */
+    .layout__side .account-form { flex: 1 1 100%; }
+    .layout__side .account-form__name { max-width: none; width: 100%; }
+    .layout__side .mode-switch { margin-left: 0; }
+    .layout .app { max-width: 920px; margin: 0; padding: 0 0 72px; }
+    /* Панель фильтров ленты прилипает под шапкой. */
+    .layout .toolbar {
+        position: sticky;
+        top: var(--topbar-h);
+        z-index: 5;
+        margin: 0 0 12px;
+        padding: 10px 0;
+        background: var(--bg);
+        border-bottom: 1px solid var(--line);
+    }
+}
 
 /* ── Анимации ──────────────────────────────────────────────────── */
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }

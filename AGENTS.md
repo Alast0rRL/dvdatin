@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1110 total, no linter/formatter configured)
+# Run all tests (~1112 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -80,6 +80,7 @@ python -m pytest tests/test_ai.py -v
 ### Web UI
 - **Лента = зеркало чата Leo**: читает только `raw_messages`, строго выбранного аккаунта (без legacy `''`) и только `dvinchik.chat_id`; `sent_messages` / `auto_actions_log` не подмешивать. Тесты: `TestChatFeedMirror`, `test_strict_account_filter`, `test_feed_shows_only_leo_chat`.
 - **Вёрстка ленты — одна колонка** (`max-width: 860px; margin: 0 auto`, `minmax(0, 1fr)`, миниатюры 192×256); без выравнивания по краям, `align-self` и абсолютного позиционирования. Тест: `test_feed_is_single_vertical_column`.
+- **Десктоп ≥ 1180 px — две колонки** (`.layout`): слева липкий пульт `.layout__side` (аккаунты, баннер, `#captchas`), справа лента с липким тулбаром; уже — всё в одну колонку. На `html, body` — `overflow-x: clip` (одно `hidden` ломает `position: sticky`). Капчи при обновлении ленты заменяются целиком (`captchas.innerHTML = first.pending`), не дописываются. Тесты: `test_desktop_layout_sidebar_and_feed`, `test_captcha_blocks_replaced_not_appended`.
 - **Альбомы склеиваются в хронологическом порядке, потом лента разворачивается**. Тест: `test_album_whole_in_newest_first_feed`.
 - **Сырых цветов вне палитр в `app.css` нет** (темы через CSS-переменные). Тест: `TestTheme::test_no_raw_colors_outside_palettes`.
 - **Коды причин переводит только `services/reason_labels.py`** (сайт и TG); новые коды добавлять туда. Тест: `TestReasonLabels`.
@@ -128,7 +129,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-11-02): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (192), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (30), test_error_reporter (8), test_filter (26), test_friends (15), test_manual_review (13), test_match_greeter (36), test_match_intro (45), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (168) → **1110 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-02): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (192), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (30), test_error_reporter (8), test_filter (26), test_friends (15), test_manual_review (13), test_match_greeter (36), test_match_intro (45), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (170) → **1112 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 
