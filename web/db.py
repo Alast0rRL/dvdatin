@@ -1084,6 +1084,33 @@ class SyncDB:
             "messages": int((row or {}).get("messages") or 0),
         }
 
+    def get_day_stats(self, since_iso: str) -> dict[str, int]:
+        """Цифры первого экрана с момента ``since_iso`` (UTC ISO).
+
+        ❤️ / 👎 — реакции бота в Leo, матчи — взаимные лайки, ответили —
+        девушки, написавшие в личку. Сбой чтения — нули, а не 500.
+        """
+        try:
+            row = self._query_one(
+                """SELECT
+                    (SELECT COUNT(*) FROM auto_actions_log
+                       WHERE action = 'LIKE' AND sent_at >= ?) AS likes,
+                    (SELECT COUNT(*) FROM auto_actions_log
+                       WHERE action = 'DISLIKE' AND sent_at >= ?) AS dislikes,
+                    (SELECT COUNT(*) FROM match_responses
+                       WHERE responded_at >= ?) AS matches,
+                    (SELECT COUNT(DISTINCT account_session || ':' || user_id)
+                       FROM dialog_messages
+                       WHERE sent_by = 'her' AND message_date >= ?) AS replied""",
+                (since_iso, since_iso, since_iso, since_iso),
+            )
+        except sqlite3.OperationalError:
+            row = None
+        return {
+            key: int((row or {}).get(key) or 0)
+            for key in ("likes", "dislikes", "matches", "replied")
+        }
+
     def export_dialogs(self) -> list[dict[str, Any]]:
         """Все переписки целиком (для анализа): девушка + анкета + сообщения."""
         out: list[dict[str, Any]] = []

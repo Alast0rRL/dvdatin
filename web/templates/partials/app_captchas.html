@@ -2,12 +2,12 @@
 {% if pending %}
 <div class="pending" id="pending">
     <div class="pending__head">
-        <span class="pending__title">⚠️ Капчи ждут ответа ({{ pending | length }})</span>
+        <span class="pending__title">Капчи ждут ответа ({{ pending | length }})</span>
         <span class="pending__hint">лента Leo стоит, пока не ответишь</span>
     </div>
     {% for c in pending %}
     <div class="pending__item" data-captcha-id="{{ c.id }}">
-        <div class="pending__text">{{ c.message_text }}</div>
+        <div class="pending__text">{{ c.message_text|leo_text }}</div>
         <form method="POST" action="{{ url_for('chat.captcha_answer', captcha_id=c.id) }}" class="captcha-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
@@ -39,6 +39,6 @@
         <span class="pending__title">🧩 Капча: бот нажал «{{ c.answer }}»</span>
         <span class="pending__hint">{{ (c.answered_at or '')[11:16] }} UTC</span>
     </div>
-    <div class="pending__text">{{ c.message_text }}</div>
+    <div class="pending__text">{{ c.message_text|leo_text }}</div>
 </div>
 {% endfor %}

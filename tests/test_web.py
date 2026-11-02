@@ -969,7 +969,11 @@ class TestAccountSettings:
             yaml.dump(cfg_data, f, allow_unicode=True)
 
     def test_topbar_has_row_per_account(self, client, tmp_path) -> None:
-        """Своя строка на каждый аккаунт: «Скроллинг» и «Авто», без OBSERVE."""
+        """Своя карточка на каждый аккаунт: «Скроллинг» и «Авто», без OBSERVE.
+
+        С редизайна 2026-11-02 карточки — на первом экране (#hero), а не в
+        шапке: шапка — только разделы и действия.
+        """
         import re
         import yaml
         self._write_config(tmp_path)
@@ -985,10 +989,12 @@ class TestAccountSettings:
         assert rows == ["dvai", "dvai_2"]
         top = data[data.index('id="acct-rows"'):]
         row1 = top[:top.index('data-account="dvai_2"')]
-        row2 = top[top.index('data-account="dvai_2"'):top.index("</header>")]
-        header = data[:data.index("</header>")]
+        row2 = top[top.index('data-account="dvai_2"'):top.index('id="stream-banner"')]
         # Отдельной кнопки OBSERVE / SEMI AUTO больше нет.
-        assert 'value="OBSERVE"' not in header and 'value="SEMI_AUTO"' not in header
+        assert 'value="OBSERVE"' not in data and 'value="SEMI_AUTO"' not in data
+        # Пульт аккаунтов — на первом экране, шапка — только разделы.
+        assert data.index('id="hero"') < data.index('id="acct-rows"')
+        assert 'id="acct-rows"' not in data[:data.index("</header>")]
         # dvai: только «Авто» (своя запись) → кнопка скроллинга включит его.
         assert re.search(r'name="scroll" value="on"\s+class="[^"]*--scroll "', row1)
         assert re.search(r'name="auto" value="off"\s+class="[^"]*--auto is-active', row1)
@@ -1427,6 +1433,23 @@ class TestPhotoAccountSelection:
             # Пробовали только получателя; чужой аккаунт не трогали
             assert client_b.calls == [[503]]
             assert client_a.calls == []
+        finally:
+            photos.set_telegram_clients([])
+
+
+    def test_missing_photo_not_searched_again(self, tmp_path: Path) -> None:
+        """Пропавшее фото не ищем на каждом просмотре (прод 2026-11-02)."""
+        photos, client_a, client_b = self._setup(tmp_path)
+        client_b.fail = True
+        media = tmp_path / "media"
+        try:
+            with patch("web.photos.MEDIA_ROOT", media):
+                loop = asyncio.get_event_loop()
+                for _ in range(3):
+                    assert loop.run_until_complete(photos.download_photo(
+                        1234060895, 504, 45, account_session="dvai_2",
+                    )) is None
+            assert client_b.calls == [[504]]
         finally:
             photos.set_telegram_clients([])
 
@@ -2736,3 +2759,58 @@ class TestDialogsPage:
         (girl,) = data["dialogs"]
         assert girl["user_id"] == 77 and girl["profile"]["name"] == "Алиса"
         assert [m["sent_by"] for m in girl["messages"]] == ["bot", "her", "owner"]
+
+
+# ── Редизайн 2026-11-02: ссылки Leo, первый экран, битые фото ─────
+
+class TestRedesign:
+    """Первый экран (статус + цифры за сутки) и ссылки в тексте Leo."""
+
+    def test_leo_markdown_link_rendered_as_link(self) -> None:
+        """Прод 2026-11-02: лента показывала «[имя](https://t.me/…)» сырым."""
+        from web import leo_text
+        html = str(leo_text("Начинай 👉 [Катя](https://t.me/katya?text=%D0%9F&a=1)"))
+        assert '<a class="row__link" href="https://t.me/katya?text=%D0%9F&amp;a=1"' in html
+        assert ">Катя</a>" in html and "[Катя]" not in html
+
+    def test_leo_text_escapes_and_blocks_scripts(self) -> None:
+        from web import leo_text
+        html = str(leo_text('<b>x</b> [bad](javascript:alert(1)) [q"](https://x.y/"onmouseover=1)'))
+        assert "<b>" not in html and "&lt;b&gt;" in html
+        assert 'href="javascript' not in html
+        assert '"onmouseover' not in html
+
+    def test_hero_shows_day_stats(self, client) -> None:
+        _login(client)
+        data = client.get("/").get_data(as_text=True)
+        assert 'id="hero"' in data
+        for label in ("Лайков", "Пропущено", "Матчей", "Ответили"):
+            assert label in data
+        assert 'data-count="' in data
+
+    def test_day_stats_counts_last_day(self, client) -> None:
+        from datetime import datetime, timedelta, timezone
+        db = client.application.config["SYNC_DB"]
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(days=3)).isoformat()
+        db._execute(
+            "INSERT INTO auto_actions_log (profile_id, action, decision, chat_id, sent_at)"
+            " VALUES (1, 'LIKE', 'LIKE', 1, ?)", (now.isoformat(),),
+        )
+        db._execute(
+            "INSERT INTO auto_actions_log (profile_id, action, decision, chat_id, sent_at)"
+            " VALUES (1, 'LIKE', 'LIKE', 1, ?)", (old,),
+        )
+        since = (now - timedelta(days=1)).isoformat()
+        before = db.get_day_stats(since)["likes"]
+        assert before >= 1
+        stats = db.get_day_stats((now + timedelta(minutes=1)).isoformat())
+        assert stats == {"likes": 0, "dislikes": 0, "matches": 0, "replied": 0}
+
+    def test_broken_image_cleanup_only_for_feed_thumbs(self, client) -> None:
+        """Общий app.js не удаляет фото /rate: раньше пропавшее фото давало
+        пустую карточку без объяснения."""
+        js = client.get("/static/js/app.js").get_data(as_text=True)
+        assert "DROPPABLE_IMG" in js and "t.matches(DROPPABLE_IMG)" in js
+        rate = client.get("/static/js/rate.js").get_data(as_text=True)
+        assert "rate__missing" in rate

@@ -1,92 +1,5 @@
 {% extends "base.html" %}
-{% block title %}DvAI — события{% endblock %}
-
-{# ── Управление — СВОЯ строка на каждый аккаунт ──
-   Два независимых переключателя: «Скроллинг» — бот сам листает ленту Leo
-   (❤️/👎), «Авто» — переписка с девушкой в личке после взаимного лайка.
-   Оба выключены — только наблюдение (бывший OBSERVE, отдельной кнопки нет).
-   Кнопка с именем аккаунта делает его основным (его чат — в ленте сайта,
-   с него уходят ручные ❤️/👎 и ответы на капчи). #}
-{% block mode_switch %}
-<div class="acct-rows" id="acct-rows">
-{% set rows = accounts if accounts else [{'session': '', 'phone': '', 'scroll': mode in ('SEMI_AUTO', 'AUTO'), 'auto': mode == 'AUTO'}] %}
-{% for acc in rows %}
-<div class="acct-row {% if acc.session and acc.session == account_session %}is-main{% endif %}"
-     data-account="{{ acc.session }}">
-    <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch"
-          {% if loop.first %}id="mode-switch"{% endif %}
-          aria-label="Управление {{ acc.session or 'ботом' }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-        {% if acc.session %}<input type="hidden" name="account_session" value="{{ acc.session }}">{% endif %}
-        {% for key, label, hint in [
-            ('scroll', 'Скроллинг', 'бот сам листает ленту: ❤️/👎 и дальше'),
-            ('auto', 'Авто', 'переписка с девушкой в личке после взаимного лайка'),
-        ] %}
-        {% set on = acc[key] %}
-        <button type="submit" name="{{ key }}" value="{{ 'off' if on else 'on' }}"
-                class="mode-switch__btn mode-switch__btn--{{ key }} {% if on %}is-active{% endif %}"
-                aria-pressed="{{ 'true' if on else 'false' }}"
-                title="{{ label }}: {{ 'включён' if on else 'выключен' }} — {{ hint }}">
-            {{ label }}
-        </button>
-        {% endfor %}
-    </form>
-    {% if acc.session %}
-    <form method="POST" action="{{ url_for('settings.update_account') }}" class="account-form"
-          {% if loop.first %}id="account-form"{% endif %}>
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-        <input type="hidden" name="account_session" value="{{ acc.session }}">
-        <button type="submit" class="account-form__name"
-                {% if acc.session == account_session %}aria-current="true"{% endif %}
-                title="{% if acc.session == account_session %}Основной аккаунт: его чат в ленте{% else %}Показать чат этого аккаунта в ленте{% endif %}">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"
-                 aria-hidden="true">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-            </svg>
-            <span class="account-form__text">{{ acc.session }}{% if acc.phone %} — {{ acc.phone }}{% endif %}</span>
-        </button>
-    </form>
-    {# Кого ищет аккаунт: девушек или кентов (режим «кенты» — на одном аккаунте). #}
-    {% set fr = acc.friends if acc.friends is defined else false %}
-    <form method="POST" action="{{ url_for('settings.update_audience') }}" class="audience-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-        <input type="hidden" name="account_session" value="{{ acc.session }}">
-        <button type="submit" class="audience-form__btn {% if fr %}is-active{% endif %}"
-                aria-pressed="{{ 'true' if fr else 'false' }}"
-                aria-label="Кого ищет {{ acc.session }}"
-                title="{% if fr %}{{ acc.session }} ищет кентов (парней). Нажми — снова девушки{% else %}{{ acc.session }} ищет девушек. Нажми — искать кентов (парней){% endif %}">
-            {% if fr %}🤝 Кенты{% else %}👩 Девушки{% endif %}
-        </button>
-    </form>
-    {% if rows|length > 1 %}
-    {# Стрелка: аккаунт в бане → девушкам после матча пишет другой аккаунт. #}
-    {% set to = acc.redirect if acc.redirect is defined else '' %}
-    <form method="POST" action="{{ url_for('settings.update_redirect') }}" class="redirect-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
-        <input type="hidden" name="account_session" value="{{ acc.session }}">
-        <button type="submit" class="redirect-form__btn {% if to %}is-active{% endif %}"
-                aria-pressed="{{ 'true' if to else 'false' }}"
-                aria-label="Перенаправление лички {{ acc.session }}"
-                title="{% if to %}Личка {{ acc.session }} перенаправлена: после матча пишу с {{ to }}. Нажми, чтобы снять{% else %}Перенаправить: после матча на {{ acc.session }} писать девушке с другого аккаунта (если этот в бане){% endif %}">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"
-                 aria-hidden="true">
-                <path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>
-            </svg>
-            {% if to %}<span class="redirect-form__to">{{ to }}</span>{% endif %}
-        </button>
-    </form>
-    {% endif %}
-    {% endif %}
-</div>
-{% endfor %}
-</div>
-{% endblock %}
+{% block title %}DvAI — лента{% endblock %}
 
 {% block topbar_status %}
 {# Состояние основного аккаунта: что из двух переключателей включено. #}
@@ -100,67 +13,158 @@
 {% endblock %}
 
 {% block topbar_actions %}
-{# Переключатель темы: солнце в тёмной, луна в светлой. Выбор живёт в
-   localStorage (см. THEME_* в app.js), применяется до первой отрисовки. #}
-<button type="button" class="icon-btn theme-toggle" id="theme-toggle"
-        aria-label="Сменить тему" title="Сменить тему">
-    <svg class="theme-toggle__sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-         width="18" height="18" aria-hidden="true">
-        <circle cx="12" cy="12" r="4"/>
-        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
-    </svg>
-    <svg class="theme-toggle__moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-         width="18" height="18" aria-hidden="true">
-        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
-    </svg>
-</button>
-<a class="icon-btn" id="rate-open" href="{{ url_for('rate.index') }}"
-   aria-label="Разметка внешности" title="Разметка внешности (обучение бота)">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true">
-        <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/>
-        <polyline points="21 15 16 10 5 21"/>
-    </svg>
-</a>
-<a class="icon-btn" id="dialogs-open" href="{{ url_for('dialogs.index') }}"
-   aria-label="Переписки" title="Переписки с девушками после взаимного лайка">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-    </svg>
-</a>
 <button type="button" class="icon-btn" id="debug-open" aria-controls="debug-drawer" aria-expanded="false"
-        aria-label="Отладка" title="Отладка">
+        aria-label="Отладка" title="Отладка: логи и состояние бота">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true">
         <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
     </svg>
 </button>
 <button type="button" class="icon-btn" id="settings-open" aria-controls="drawer" aria-expanded="false"
-        aria-label="Настройки" title="Настройки">
+        aria-label="Настройки" title="Настройки: фильтры и правила">
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true">
+        <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>
     </svg>
 </button>
 {% endblock %}
 
 {% block content %}
-{# Баннер сбоя автопотока (бот не может листать анкеты). Обновляется из
-   /chat/feed (app.js) без перезагрузки страницы. #}
 {# Всплывающее окно с последней ошибкой бота (заполняет app.js showBotError;
    данные — app_state.bot_error, пишет collectors/error_reporter.py). #}
 <div class="bot-error" id="bot-error" role="alertdialog" aria-live="assertive"
      aria-labelledby="bot-error-title" hidden
      data-error="{{ (bot_error or {})|tojson|forceescape }}">
-    <p class="bot-error__title" id="bot-error-title">⚠️ Ошибка бота</p>
+    <p class="bot-error__title" id="bot-error-title">Ошибка бота</p>
     <p class="bot-error__text" id="bot-error-text"></p>
     <p class="bot-error__meta" id="bot-error-meta"></p>
     <button type="button" class="btn btn--sm" id="bot-error-close">Понятно</button>
 </div>
+
+{# ── Первый экран: что делает бот прямо сейчас + цифры за сутки + пульт ──
+   Каждый аккаунт — своя карточка с двумя независимыми переключателями:
+   «Скроллинг» — бот сам листает ленту Leo (❤️/👎), «Авто» — переписка с
+   девушкой в личке после взаимного лайка. Оба выключены — только наблюдение.
+   Имя аккаунта делает его основным (его чат — в ленте сайта). #}
+{% set rows = accounts if accounts else [{'session': '', 'phone': '', 'scroll': mode in ('SEMI_AUTO', 'AUTO'), 'auto': mode == 'AUTO'}] %}
+{% set any_scroll = rows|selectattr('scroll')|list|length > 0 %}
+{% set any_auto = rows|selectattr('auto')|list|length > 0 %}
+<section class="hero" id="hero" aria-labelledby="hero-title">
+    <p class="hero__eyebrow">
+        <span class="hero__pulse {% if any_scroll or any_auto %}is-on{% endif %}" aria-hidden="true"></span>
+        {% if any_scroll or any_auto %}Бот работает{% else %}Бот на паузе{% endif %}
+    </p>
+    <h1 class="hero__title" id="hero-title">
+        {%- if any_scroll and any_auto %}Листает анкеты и&nbsp;ведёт переписки
+        {%- elif any_scroll %}Листает анкеты за&nbsp;тебя
+        {%- elif any_auto %}Ведёт переписки после матча
+        {%- else %}Только наблюдает{% endif -%}
+    </h1>
+
+    {% set ds = day_stats or {} %}
+    <dl class="stats" aria-label="За последние сутки">
+        <div class="stats__item">
+            <dt class="stats__label">Лайков</dt>
+            <dd class="stats__value" data-count="{{ ds.likes or 0 }}">{{ ds.likes or 0 }}</dd>
+        </div>
+        <div class="stats__item">
+            <dt class="stats__label">Пропущено</dt>
+            <dd class="stats__value" data-count="{{ ds.dislikes or 0 }}">{{ ds.dislikes or 0 }}</dd>
+        </div>
+        <div class="stats__item stats__item--accent">
+            <dt class="stats__label">Матчей</dt>
+            <dd class="stats__value" data-count="{{ ds.matches or 0 }}">{{ ds.matches or 0 }}</dd>
+        </div>
+        <div class="stats__item">
+            <dt class="stats__label">Ответили</dt>
+            <dd class="stats__value" data-count="{{ ds.replied or 0 }}">{{ ds.replied or 0 }}</dd>
+        </div>
+    </dl>
+    <p class="stats__note">за последние 24 часа</p>
+
+    <div class="acct-rows" id="acct-rows">
+    {% for acc in rows %}
+    <div class="acct-row {% if acc.session and acc.session == account_session %}is-main{% endif %}"
+         data-account="{{ acc.session }}">
+        {% if acc.session %}
+        <form method="POST" action="{{ url_for('settings.update_account') }}" class="account-form"
+              {% if loop.first %}id="account-form"{% endif %}>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+            <input type="hidden" name="account_session" value="{{ acc.session }}">
+            <button type="submit" class="account-form__name"
+                    {% if acc.session == account_session %}aria-current="true"{% endif %}
+                    title="{% if acc.session == account_session %}Основной аккаунт: его чат в ленте{% else %}Показать чат этого аккаунта в ленте{% endif %}">
+                <span class="account-form__avatar" aria-hidden="true">{{ acc.session[:1]|upper }}{{ acc.session[-1:] if acc.session[-1:].isdigit() else '' }}</span>
+                <span class="account-form__text">
+                    <span class="account-form__session">{{ acc.session }}</span>
+                    <span class="account-form__phone">{% if acc.session == account_session %}в ленте{% elif acc.phone %}{{ acc.phone }}{% else %}показать в ленте{% endif %}</span>
+                </span>
+            </button>
+        </form>
+        {% endif %}
+        <form method="POST" action="{{ url_for('settings.update_mode') }}" class="mode-switch"
+              {% if loop.first %}id="mode-switch"{% endif %}
+              aria-label="Управление {{ acc.session or 'ботом' }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+            {% if acc.session %}<input type="hidden" name="account_session" value="{{ acc.session }}">{% endif %}
+            {% for key, label, hint in [
+                ('scroll', 'Скроллинг', 'бот сам листает ленту: ❤️/👎 и дальше'),
+                ('auto', 'Авто', 'переписка с девушкой в личке после взаимного лайка'),
+            ] %}
+            {% set on = acc[key] %}
+            <button type="submit" name="{{ key }}" value="{{ 'off' if on else 'on' }}"
+                    class="mode-switch__btn mode-switch__btn--{{ key }} {% if on %}is-active{% endif %}"
+                    aria-pressed="{{ 'true' if on else 'false' }}"
+                    title="{{ label }}: {{ 'включён' if on else 'выключен' }} — {{ hint }}">
+                <span class="mode-switch__track" aria-hidden="true"><span class="mode-switch__knob"></span></span>
+                {{ label }}
+            </button>
+            {% endfor %}
+        </form>
+        {% if acc.session %}
+        {# Кого ищет аккаунт: девушек или кентов (режим «кенты» — на одном аккаунте). #}
+        {% set fr = acc.friends if acc.friends is defined else false %}
+        <form method="POST" action="{{ url_for('settings.update_audience') }}" class="audience-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+            <input type="hidden" name="account_session" value="{{ acc.session }}">
+            <button type="submit" class="audience-form__btn {% if fr %}is-active{% endif %}"
+                    aria-pressed="{{ 'true' if fr else 'false' }}"
+                    aria-label="Кого ищет {{ acc.session }}"
+                    title="{% if fr %}{{ acc.session }} ищет кентов (парней). Нажми — снова девушки{% else %}{{ acc.session }} ищет девушек. Нажми — искать кентов (парней){% endif %}">
+                {% if fr %}🤝 Кенты{% else %}👩 Девушки{% endif %}
+            </button>
+        </form>
+        {% if rows|length > 1 %}
+        {# Стрелка: аккаунт в бане → девушкам после матча пишет другой аккаунт. #}
+        {% set to = acc.redirect if acc.redirect is defined else '' %}
+        <form method="POST" action="{{ url_for('settings.update_redirect') }}" class="redirect-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="next" value="{{ url_for('chat.index') }}">
+            <input type="hidden" name="account_session" value="{{ acc.session }}">
+            <button type="submit" class="redirect-form__btn {% if to %}is-active{% endif %}"
+                    aria-pressed="{{ 'true' if to else 'false' }}"
+                    aria-label="Перенаправление лички {{ acc.session }}"
+                    title="{% if to %}Личка {{ acc.session }} перенаправлена: после матча пишу с {{ to }}. Нажми, чтобы снять{% else %}Перенаправить: после матча на {{ acc.session }} писать девушке с другого аккаунта (если этот в бане){% endif %}">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"
+                     aria-hidden="true">
+                    <path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>
+                </svg>
+                {% if to %}<span class="redirect-form__to">{{ to }}</span>{% endif %}
+            </button>
+        </form>
+        {% endif %}
+        {% endif %}
+    </div>
+    {% endfor %}
+    </div>
+</section>
+
+{# Баннер сбоя автопотока (бот не может листать анкеты). Обновляется из
+   /chat/feed (app.js) без перезагрузки страницы. #}
 <div id="stream-banner">
     {% include "partials/app_stream_error.html" %}
 </div>
@@ -170,7 +174,7 @@
 
     {% include "partials/app_captchas.html" %}
 
-    {# ── Панель управления списком: фильтр по решению, поиск, счётчик ── #}
+    {# ── Панель управления списком: вид, фильтр по решению, поиск, счётчик ── #}
     <div class="toolbar">
         {# Вид ленты: прямой — зеркало чата; улучшенный — только ❤️/👎 и причина.
            Ссылки (работают без JS), выбор запоминается в сессии. #}
@@ -184,14 +188,21 @@
         </nav>
         <div class="seg" id="filter-seg" role="group" aria-label="Фильтр по решению">
             <button type="button" class="seg__btn is-active" data-filter="ALL" aria-pressed="true">Все</button>
-            <button type="button" class="seg__btn" data-filter="LIKE" aria-pressed="false">❤️</button>
+            <button type="button" class="seg__btn" data-filter="LIKE" aria-pressed="false" title="Лайки">❤️</button>
             {% if view != 'smart' %}
-            <button type="button" class="seg__btn" data-filter="REVIEW" aria-pressed="false">🤔</button>
+            <button type="button" class="seg__btn" data-filter="REVIEW" aria-pressed="false" title="На проверку">🤔</button>
             {% endif %}
-            <button type="button" class="seg__btn" data-filter="DISLIKE" aria-pressed="false">👎</button>
+            <button type="button" class="seg__btn" data-filter="DISLIKE" aria-pressed="false" title="Пропуски">👎</button>
         </div>
-        <input type="search" id="feed-search" class="input input--search"
-               placeholder="Имя или город" autocomplete="off" aria-label="Поиск по анкетам">
+        <label class="search">
+            <svg class="search__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                 width="15" height="15" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+            </svg>
+            <input type="search" id="feed-search" class="input input--search"
+                   placeholder="Имя или город" autocomplete="off" aria-label="Поиск по анкетам">
+        </label>
         <span class="toolbar__count" id="feed-count"></span>
     </div>
 

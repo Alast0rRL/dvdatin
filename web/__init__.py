@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from flask import Flask
+from markupsafe import Markup, escape
 
 from web.config import WebConfig
 
@@ -35,6 +37,28 @@ def asset_version() -> str:
     return str(int(newest))
 
 
+#: Markdown-ссылка из текста Leo: «[кишлёнок](https://t.me/…)».
+_MD_LINK = re.compile(r"\[([^\]\n]{1,200})\]\(((?:https?|tg)://[^\s)]{1,2000})\)")
+
+
+def leo_text(text: str | None) -> Markup:
+    """Текст сообщения Leo для ленты: экранирование + ссылки вместо разметки.
+
+    Leo присылает ссылки markdown-разметкой, и лента показывала её сырой
+    («[имя](https://t.me/…?text=%D0%9F…)»). Только http(s)/tg — другие
+    схемы (javascript:) остаются текстом.
+    """
+    safe = str(escape(text or ""))
+
+    def _link(m: re.Match[str]) -> str:
+        return (
+            f'<a class="row__link" href="{m.group(2)}" target="_blank" '
+            f'rel="noopener noreferrer">{m.group(1)}</a>'
+        )
+
+    return Markup(_MD_LINK.sub(_link, safe))
+
+
 def create_app(web_config: WebConfig | None = None) -> Flask:
     """Фабрика Flask-приложения.
 
@@ -55,6 +79,7 @@ def create_app(web_config: WebConfig | None = None) -> Flask:
         app.config["SESSION_COOKIE_SECURE"] = True
 
     app.config["WEB_CONFIG"] = cfg
+    app.jinja_env.filters["leo_text"] = leo_text
 
     # Security headers
     @app.after_request

@@ -126,7 +126,15 @@
         img.alt = '';
         img.draggable = false;
         img.decoding = 'async';
-        img.addEventListener('error', function () { img.classList.add('is-broken'); });
+        img.addEventListener('error', function () {
+            // Leo удалил сообщение — фото не скачать. Говорим, что делать.
+            if (photo !== current) return;
+            photosBox.textContent = '';
+            var miss = document.createElement('div');
+            miss.className = 'rate__missing';
+            miss.textContent = 'Фото больше нет в Telegram — пропусти его (↓)';
+            photosBox.appendChild(miss);
+        });
         img.src = photo.img.src;  // уже в кэше браузера, если предзагрузка успела
         photosBox.appendChild(img);
 

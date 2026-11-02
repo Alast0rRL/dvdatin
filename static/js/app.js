@@ -33,6 +33,28 @@
         });
     }
 
+    /* ── Цифры первого экрана: короткий подсчёт от нуля ───────────── */
+    /* Только украшение: число уже стоит в разметке (без JS — оно же). */
+    var reduceMotion = window.matchMedia &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && window.requestAnimationFrame) {
+        document.querySelectorAll('.stats__value[data-count]').forEach(function (el) {
+            var target = parseInt(el.dataset.count, 10);
+            if (!target || isNaN(target)) return;
+            var start = null;
+            var DURATION = 700;
+            el.textContent = '0';
+            function step(ts) {
+                if (start === null) start = ts;
+                var k = Math.min(1, (ts - start) / DURATION);
+                var eased = 1 - Math.pow(1 - k, 3);
+                el.textContent = String(Math.round(target * eased));
+                if (k < 1) window.requestAnimationFrame(step);
+            }
+            window.requestAnimationFrame(step);
+        });
+    }
+
     /* ── Аккаунт-исполнитель: переключение сразу по выбору ────────── */
     document.querySelectorAll('select[data-auto-submit]').forEach(function (sel) {
         sel.addEventListener('change', function () {
@@ -91,8 +113,12 @@
         img.dataset.broken = '1';
         img.remove();
     }
+    /* Только миниатюры ленты и анкеты в переписке: фото на /rate rate.js
+       обрабатывает сам (раньше и его молча удаляли — пустая карточка). */
+    var DROPPABLE_IMG = 'img.thumbs__img, .dialogs__photos img';
     document.addEventListener('error', function (e) {
-        if (e.target && e.target.tagName === 'IMG') dropBrokenImage(e.target);
+        var t = e.target;
+        if (t && t.tagName === 'IMG' && t.matches(DROPPABLE_IMG)) dropBrokenImage(t);
     }, true);
     function sweepBrokenImages(root) {
         (root || document).querySelectorAll('img.thumbs__img').forEach(function (img) {

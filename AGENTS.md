@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1101 total, no linter/formatter configured)
+# Run all tests (~1110 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -39,6 +39,8 @@ python -m pytest tests/test_ai.py -v
 - **Миграции идемпотентны**; `account_session` и `is_outgoing` мигрируются ДО пересоздания `idx_raw_unique` в `Database.connect()`. Все вызовы `save_raw_message` — keyword.
 - **Дедуп анкет — fingerprint + описание**: fingerprint («имя, возраст, город») лишь даёт кандидатов (`find_profiles_by_fingerprint`), та же анкета — кандидат с похожим описанием (`description_similarity` ≥ `DESCRIPTION_MATCH_RATIO` в `services/profile_service.py`); разные девушки с одним «имя, возраст» не склеиваются. Старые склеенные записи не трогать без согласия владельца. Тесты: `TestDedupByDescription`.
 - **`human_decisions` append-only** (`UNIQUE(ai_decision_id)`), не UPDATE/DELETE.
+- **Невалидные @username (хэши приглашений `+…`) не резолвятся**, потерянный чат — WARNING один раз за запуск. Тесты: `test_invite_hash_is_not_resolved`, `test_lost_chat_warned_once_per_run`.
+- **Пропавшее фото не ищется повторно 6 ч** (`web/photos.py::MISSING_TTL_SEC`). Тест: `test_missing_photo_not_searched_again`.
 - **История сверки не трогает сообщения моложе 120 с** (`HISTORY_SYNC_MIN_AGE_SEC`) — их отдаёт pipeline живой хендлер. Тест: `TestHistorySync`.
 
 ### Решения
@@ -82,6 +84,9 @@ python -m pytest tests/test_ai.py -v
 - **Сырых цветов вне палитр в `app.css` нет** (темы через CSS-переменные). Тест: `TestTheme::test_no_raw_colors_outside_palettes`.
 - **Коды причин переводит только `services/reason_labels.py`** (сайт и TG); новые коды добавлять туда. Тест: `TestReasonLabels`.
 - **Запрос фото `/rate` идёт по `idx_raw_unique`** (`rm.account_session IN (pm.account_session, '')`). Тест: `test_photo_query_uses_raw_index`.
+- **Шапка — только разделы и действия; пульт аккаунтов — на первом экране (`#hero`)** (редизайн 2026-11-02). Анимации появления — только сдвигом, без `opacity: 0` (контент виден, даже если анимация не проиграется). Тест: `test_topbar_has_row_per_account`.
+- **Текст Leo в ленте — через фильтр `leo_text`** (экранирование + markdown-ссылки → `<a>`, только http(s)/tg). Тесты: `TestRedesign`.
+- **`app.js` удаляет незагрузившиеся картинки только из ленты/переписки** (`DROPPABLE_IMG`); фото `/rate` обрабатывает `rate.js` (заглушка «пропусти»). Тест: `test_broken_image_cleanup_only_for_feed_thumbs`.
 - **Логи, ошибки и текст из БД в JS — только через `textContent`**; `innerHTML` — лишь для HTML-фрагментов, отрисованных сервером (Jinja-экранирование).
 
 ### Безопасность и приватность
@@ -123,7 +128,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-11-02): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (192), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_friends (15), test_manual_review (13), test_match_greeter (36), test_match_intro (45), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (162) → **1101 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-02): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (192), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (30), test_error_reporter (8), test_filter (26), test_friends (15), test_manual_review (13), test_match_greeter (36), test_match_intro (45), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (168) → **1110 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

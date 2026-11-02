@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +182,9 @@ def index() -> str:
         preferences=_load_preferences(config_path.parent / "preferences.yaml"),
         stream_error=db.get_stream_error(),
         bot_error=db.get_bot_error(),
+        day_stats=db.get_day_stats(
+            (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        ),
         view=view,
         feed_template=_feed_template(view),
     )
