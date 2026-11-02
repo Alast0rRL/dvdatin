@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1094 total, no linter/formatter configured)
+# Run all tests (~1097 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -68,7 +68,7 @@ python -m pytest tests/test_ai.py -v
 - **Карточка → профиль — по `profile_messages`** (каждый показ), не по `profiles.source_message_id` (первый показ): матч обычно на повторе. Тест: `test_find_match_card_on_repeat_showing`.
 - **Девушка без @username** (`tg://user?id=`) — привет через `InputPeerUserFromMessage` (сообщение Leo своего аккаунта). Тест: `test_unknown_user_id_resolved_via_leo_message`.
 - **Девушке — её карточка матча, не «последний показ профиля»**: при матче запоминаются `card_session` (аккаунт матча) + `card_message_id` (карточка перед уведомлением), пересылается только она; не нашлась или неизвестна — `NO_PROFILE` + уведомление владельцу, поиска «по имени / последнему показу» нет. Один `profile_id` склеивает разных девушек с тем же «имя, возраст». Тесты: `test_card_on_other_account_not_relayed`, `test_match_card_missing_sends_nothing`, `test_unknown_card_sends_nothing`, `test_run_notifies_owner_when_card_missing`, `test_redirected_match_card_from_match_account`.
-- **Владелец пишет сам — бот молчит**: перед отправкой анкеты проверка её чата; наше исходящее новее привета → `OWNER_CHAT`, анкету не шлём. Тест: `test_owner_chatting_cancels_intro`.
+- **Владелец пишет сам — бот молчит**: перед отправкой анкеты проверка её чата; наше исходящее новее привета → `OWNER_CHAT`, анкету не шлём. Свой стикер-привет бота (исходящий стикер в первые `GREETING_STICKER_SKEW_SEC` = 60 с после `greeted_at`) владельцем не считается: дата Telegram бывает на секунду позже часов сервера (прод 2026-11-02). Тесты: `test_owner_chatting_cancels_intro`, `test_own_sticker_dated_after_greeting_is_not_owner`.
 - **Автопереписка — только то, что попросил владелец** (стикер-привет, её анкета + закреп, сценарий `match_script` по его схеме). Новых шагов и фраз не добавлять без явной команды; концы веток и ответы не по сценарию — передача владельцу. Тест: `test_her_story_goes_to_owner`.
 - **Сценарий: бот не отрицает, что он бот** — «ты бот?» → передача владельцу без ответа. Тест: `test_asks_bot_hands_off_without_lying`.
 - **Сценарий: «не пиши» / прямое оскорбление → чат удаляется сразу у обоих** (`delete_for_both`), бытовой мат не по адресу — не грубость. Тесты: `test_go_away_deletes_chat_at_once`, `TestClassify`.
@@ -122,7 +122,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-11-02): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (191), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_friends (14), test_manual_review (13), test_match_greeter (35), test_match_intro (42), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1094 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-02): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (191), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (27), test_error_reporter (8), test_filter (26), test_friends (14), test_manual_review (13), test_match_greeter (35), test_match_intro (45), test_match_script (69), test_parser (63), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (161) → **1097 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

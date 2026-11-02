@@ -680,6 +680,9 @@ tests/test_match_intro.py::TestMatchIntro::test_own_card_sent_from_leo_chat
 tests/test_match_intro.py::TestMatchIntro::test_unknown_card_sends_nothing
 tests/test_match_intro.py::TestMatchIntro::test_owner_chatting_cancels_intro
 tests/test_match_intro.py::TestMatchIntro::test_only_her_reply_after_greeting_sends
+tests/test_match_intro.py::TestMatchIntro::test_own_sticker_dated_after_greeting_is_not_owner
+tests/test_match_intro.py::TestMatchIntro::test_owner_text_right_after_greeting_still_counts
+tests/test_match_intro.py::TestMatchIntro::test_owner_sticker_later_counts
 tests/test_match_intro.py::TestMatchIntro::test_missed_reply_found_in_history
 tests/test_match_intro.py::TestCollectorIntro::test_greeting_sent_enrolls
 tests/test_match_intro.py::TestCollectorIntro::test_redirected_match_card_from_match_account

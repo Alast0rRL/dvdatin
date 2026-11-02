@@ -72,6 +72,9 @@ REPLY_CHECK_HISTORY: int = 10
 #: Сколько последних сообщений её чата смотреть перед отправкой анкеты:
 #: есть ли там сообщения владельца после привета.
 OWNER_CHECK_HISTORY: int = 50
+#: Стикер-привет бота: его дата в Telegram может быть чуть позже
+#: ``greeted_at`` (часы сервера). Исходящий стикер в этом окне — бот, не владелец.
+GREETING_STICKER_SKEW_SEC: float = 60.0
 
 
 
@@ -377,12 +380,18 @@ class MatchIntro:
     async def _owner_wrote(client: Any, peer: Any, row: dict) -> bool:
         """Есть ли в её чате наше исходящее новее привета (пишет владелец).
 
-        Стикер-привет отправлен ДО ``greeted_at``, а анкету бот ещё не слал —
-        значит любое исходящее позже ``greeted_at`` написал владелец.
+        Анкету бот ещё не слал, так что исходящее позже ``greeted_at`` —
+        владелец. Кроме стикер-привета самого бота: ``greeted_at`` — часы
+        сервера сразу после отправки, а дату стикеру ставит Telegram (целые
+        секунды по своим часам) и она бывает на секунду позже (прод
+        2026-11-02, Кулебяка/ари/Вика: бот принял свой стикер за владельца
+        и не отправил анкету). Стикер в первые ``GREETING_STICKER_SKEW_SEC``
+        после привета — это он.
         """
         greeted = _parse_dt(row.get("greeted_at"))
         if greeted is None:
             return False
+        skew = timedelta(seconds=GREETING_STICKER_SKEW_SEC)
         async for msg in client.iter_messages(peer, limit=OWNER_CHECK_HISTORY):
             date = getattr(msg, "date", None)
             if not isinstance(date, datetime):
@@ -391,8 +400,18 @@ class MatchIntro:
                 date = date.replace(tzinfo=timezone.utc)
             if date <= greeted:
                 break
-            if getattr(msg, "out", False):
-                return True
+            if not getattr(msg, "out", False):
+                continue
+            is_sticker = getattr(msg, "sticker", None) is not None
+            if is_sticker and date <= greeted + skew:
+                continue
+            # Без текста (приватность): только что за сообщение и когда.
+            logger.info(
+                f"MatchIntro: исходящее владельца id {getattr(msg, 'id', '?')} "
+                f"({'стикер' if is_sticker else 'сообщение'}) в "
+                f"{date.isoformat()}, привет в {greeted.isoformat()}"
+            )
+            return True
         return False
 
     async def _find_card(

@@ -452,6 +452,52 @@ class TestMatchIntro:
         status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
         assert status == INTRO_SENT
 
+    @staticmethod
+    def _chat_items(*items: SimpleNamespace) -> MagicMock:
+        def iter_messages(*args, **kwargs):
+            async def gen():
+                for m in items:
+                    yield m
+            return gen()
+
+        return MagicMock(side_effect=iter_messages)
+
+    def test_own_sticker_dated_after_greeting_is_not_owner(self) -> None:
+        """Прод 2026-11-02 (Кулебяка): Telegram поставил стикеру-привету дату
+        на секунду позже ``greeted_at`` — бот принял его за владельца и не
+        отправил анкету. Свой стикер в первую минуту — не владелец."""
+        db = make_db()
+        client = make_client()
+        client.iter_messages = self._chat_items(
+            SimpleNamespace(out=False, date=datetime.fromisoformat(
+                "2026-10-29T10:11:00+00:00")),            # её ответ
+            SimpleNamespace(out=True, sticker=object(), date=datetime.fromisoformat(
+                "2026-10-29T10:00:01+00:00")),            # стикер бота
+        )
+        status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
+
+    def test_owner_text_right_after_greeting_still_counts(self) -> None:
+        db = make_db()
+        client = make_client()
+        client.iter_messages = self._chat_items(
+            SimpleNamespace(out=True, date=datetime.fromisoformat(
+                "2026-10-29T10:00:20+00:00")),            # владелец, текст
+        )
+        status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == OWNER_CHAT
+
+    def test_owner_sticker_later_counts(self) -> None:
+        """Стикер владельца через минуты после привета — это его переписка."""
+        db = make_db()
+        client = make_client()
+        client.iter_messages = self._chat_items(
+            SimpleNamespace(out=True, sticker=object(), date=datetime.fromisoformat(
+                "2026-10-29T10:05:00+00:00")),
+        )
+        status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == OWNER_CHAT
+
     def test_missed_reply_found_in_history(self) -> None:
         """Ответ пришёл, пока бот лежал — сверка по истории планирует анкету."""
         greeted = datetime.now(timezone.utc) - timedelta(hours=1)
