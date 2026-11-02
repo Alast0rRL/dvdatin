@@ -76,6 +76,18 @@ class TestMatchParsing:
         m = parser.parse_match(MATCH_ID)
         assert m.telegram_username == "" and m.telegram_user_id == 8690954703
 
+    def test_channel_invite_ad_is_not_a_match(self) -> None:
+        """Реклама Leo со ссылкой-приглашением t.me/+… — не матч (прод 2026-11-02)."""
+        parser = DvinchikParser(make_config().filters)
+        ad = (
+            "Прокачаю твою анкету, я - автор [лучшего блога для мужчин]"
+            "(https://t.me/+-B9OpKOEIl5mY2E6) (18+).\n"
+            "[↪️Записаться на тату](https://t.me/+zDdT_5HDkm8xN2E6)\n"
+            "[канал](https://t.me/joinchat/AAAAAE)"
+        )
+        assert parser.classify(ad) is not MessageType.MATCH
+        assert parser.parse_match(ad) is None
+
 
 class TestMatchGreeter:
     match = ParsedMatch(name="Роза", telegram_username="Hisochkaaa")

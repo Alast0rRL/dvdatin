@@ -30,10 +30,14 @@ PROFILE_RE = re.compile(
 )
 
 # Паттерн MATCH: "[Name](https://t.me/username)" или, если у девушки нет
-# @username, "[Name](tg://user?id=123)".
+# @username, "[Name](tg://user?id=123)". Username — только настоящий
+# (буква + 4..32 символа [A-Za-z0-9_]): ссылки-приглашения в каналы
+# «t.me/+abc…» / «t.me/joinchat/…» из рекламных постов Leo — не матч
+# (прод 2026-11-02: «лучший блог для мужчин» ушёл в MATCH и привет «каналу»).
 MATCH_RE = re.compile(
     r"\[(?P<name>[^\]]+)\]\("
-    r"(?:https?://t\.me/(?P<username>[^)\s?]+)|tg://user\?id=(?P<user_id>\d+))",
+    r"(?:https?://t\.me/(?P<username>[A-Za-z][A-Za-z0-9_]{3,31})/?(?=[)?])"
+    r"|tg://user\?id=(?P<user_id>\d+))",
 )
 
 # Отказ Leo в лайке/сообщении из-за дневного лимита:
