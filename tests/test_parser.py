@@ -110,6 +110,29 @@ class TestParseProfile:
         assert "расстались" in p.description
         assert parser.classify(text) == MessageType.PROFILE
 
+    @pytest.mark.parametrize("text, raw_city", [
+        ("lizzzkkaaa, 19, Санкт-Петербург, Мурино", "Санкт-Петербург, Мурино"),
+        ("алинка, 18, спб, ладожская", "спб, ладожская"),
+    ])
+    def test_city_with_district_is_profile(
+        self, parser: DvinchikParser, text: str, raw_city: str
+    ) -> None:
+        """Прод 2026-11-02: «город, район» уходил в UNKNOWN — лента вставала."""
+        assert parser.classify(text) == MessageType.PROFILE
+        p = parser.parse_profile(text)
+        assert p.raw_city == raw_city
+        assert p.normalized_city == "Санкт-Петербург"
+        assert p.description == ""
+        assert p.filter_result == FilterResult.FILTER_MATCH
+
+    def test_city_with_district_and_description(self, parser: DvinchikParser) -> None:
+        text = "Аня, 18, спб, Девяткино – люблю котиков, чай и книги"
+        p = parser.parse_profile(text)
+        assert p.name == "Аня"
+        assert p.raw_city == "спб, Девяткино"
+        assert p.normalized_city == "Санкт-Петербург"
+        assert p.description == "люблю котиков, чай и книги"
+
     def test_real_simple_name(self, parser: DvinchikParser) -> None:
         text = "wimx, 18, Санкт-Петербург"
         p = parser.parse_profile(text)

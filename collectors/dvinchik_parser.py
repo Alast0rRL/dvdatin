@@ -21,10 +21,13 @@ if TYPE_CHECKING:
 # Имя допускает любой набор символов без перевода строки (включая запятые
 # в декоративном префиксе), лениво — возраст ищется по первой запятой после
 # которой идёт число и город.
+# Город может идти с районом/метро через запятую: «Санкт-Петербург, Мурино»,
+# «спб, ладожская» (прод 2026-11-02: такие карточки уходили в UNKNOWN,
+# реакции не было, и лента вставала на обоих аккаунтах).
 PROFILE_RE = re.compile(
     r"^(?P<name>[^\n]+?),?\s*"
     r"(?P<age>\d{1,3}),\s*"
-    r"(?P<city>[^\n,]+?)"
+    r"(?P<city>[^\n,]+?(?:,\s*[^\n,]+?){0,2})"
     r"(?:\s+[–—]\s+(?P<desc>.+))?$",
     re.DOTALL,
 )
@@ -119,7 +122,8 @@ class DvinchikParser:
         age = int(match.group("age"))
         raw_city = match.group("city").strip()
         description = (match.group("desc") or "").strip()
-        normalized = normalize_city(raw_city)
+        # «Город, район» — фильтр сверяет только город (первую часть).
+        normalized = normalize_city(raw_city.split(",", 1)[0])
 
         filter_result = self._check_filter(age, normalized)
 
