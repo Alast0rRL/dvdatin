@@ -7,7 +7,7 @@ import json
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -2751,6 +2751,54 @@ class TestDialogsPage:
     def test_unknown_dialog_404(self, client) -> None:
         _login(client)
         assert client.get("/dialogs/dvai/1").status_code == 404
+
+    def test_tabs_split_good_and_failed(self, client, sync_db) -> None:
+        """Вкладки итогов: старая переписка, где она замолчала, — «затухла»,
+        свежая со сценарием до конца — «удачные»; чужой вкладке не видна."""
+        self._seed(sync_db)   # Алиса: ответила, потом тишина с 29.10 → затухла
+        _, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        now = datetime.now(timezone.utc)
+        loop.run_until_complete(db.upsert_dialog_contact(
+            "dvai", 88, username="vera", name="Вера", profile_id=None,
+            matched_at=(now - timedelta(hours=5)).isoformat(),
+        ))
+        loop.run_until_complete(db.add_match_dialog("dvai", 88, name="Вера"))
+        loop.run_until_complete(db.update_match_dialog(
+            "dvai", 88, status="INTRO_SENT", script_step="handoff",
+        ))
+        loop.run_until_complete(db.save_dialog_message(
+            "dvai", 88, 5, is_outgoing=False, sent_by="her",
+            message_date=(now - timedelta(hours=1)).isoformat(), text="я Вера",
+        ))
+        _login(client)
+        html = client.get("/dialogs").get_data(as_text=True)
+        assert "Ждёт тебя" in html and "Неудачные" in html and "Удачные" in html
+        assert "Алиса" in html and "Вера" in html
+        good = client.get("/dialogs?cat=good").get_data(as_text=True)
+        assert "Вера" in good and "Алиса" not in good and "ждёт тебя" in good
+        failed = client.get("/dialogs?cat=failed").get_data(as_text=True)
+        assert "Алиса" in failed and "Вера" not in failed
+        assert "затухла" in failed and "все причины" in failed
+        faded = client.get("/dialogs?cat=failed&reason=faded").get_data(as_text=True)
+        assert "Алиса" in faded
+        silent = client.get("/dialogs?cat=failed&reason=silent").get_data(as_text=True)
+        assert "Алиса" not in silent and "В этой вкладке никого" in silent
+        you = client.get("/dialogs?cat=you").get_data(as_text=True)
+        assert "Вера" in you and "Алиса" not in you
+
+    def test_sort_and_bad_params(self, client, sync_db) -> None:
+        self._seed(sync_db)
+        _login(client)
+        html = client.get("/dialogs?cat=zzz&sort=zzz&reason=zzz").get_data(as_text=True)
+        assert "Алиса" in html                     # мусор в параметрах — как «Все»
+        assert "больше её сообщений" in html
+
+    def test_dialog_page_shows_outcome(self, client, sync_db) -> None:
+        self._seed(sync_db)
+        _login(client)
+        html = client.get("/dialogs/dvai/77").get_data(as_text=True)
+        assert "dialogs__verdict" in html and "затухла" in html
 
     def test_export_json(self, client, sync_db) -> None:
         self._seed(sync_db)

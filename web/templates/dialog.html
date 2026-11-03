@@ -6,6 +6,12 @@
     <div class="dialogs__head">
         <a class="back-link" href="{{ url_for('dialogs.index') }}">← Все переписки</a>
         <h1 class="dialogs__title">{{ d.name or d.who }}{% if d.age %}, {{ d.age }}{% endif %}</h1>
+        {% set o = d.outcome %}
+        <p class="dialogs__verdict">
+            <span class="dialogs__badge dialogs__badge--{{ o.category }}">{{ o.label }}</span>
+            {% if o.reason %}<span class="dialogs__hint">{{ reason_hints[o.reason] }}</span>{% endif %}
+            {% if o.needs_you %}<span class="dialogs__badge dialogs__badge--you">ждёт тебя</span>{% endif %}
+        </p>
         <p class="dialogs__stats">
             {% if d.username %}<a href="https://t.me/{{ d.username }}" rel="noopener" target="_blank">{{ d.who }}</a>{% else %}{{ d.who }}{% endif %}
             · {{ d.account_session }}

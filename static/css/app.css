@@ -1211,7 +1211,56 @@ a.seg__btn {
     font-size: 11px;
     font-weight: 600;
 }
-.dialogs__badge--replied { background: var(--like-bg); color: var(--like-fg); border: 1px solid var(--like-line-soft); }
+.dialogs__badge--replied, .dialogs__badge--good { background: var(--like-bg); color: var(--like-fg); border: 1px solid var(--like-line-soft); }
+.dialogs__badge--failed { background: var(--dislike-bg); color: var(--dislike-fg); border: 1px solid var(--dislike-line-soft); }
+.dialogs__badge--active { background: var(--bg-soft); color: var(--muted); border: 1px solid var(--line); }
+.dialogs__badge--you { background: var(--review-bg); color: var(--review-fg); border: 1px solid var(--review-line); }
+/* Итог — полоской слева: зелёная удачные, красная неудачные. */
+.dialogs__item--good { border-left: 4px solid var(--like-line); }
+.dialogs__item--failed { border-left: 4px solid var(--dislike-line); }
+.dialogs__item--active { border-left: 4px solid var(--line); }
+.dialogs__verdict { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
+.dialogs__verdict .dialogs__badge { margin-left: 0; }
+.dialogs__hint { color: var(--muted); font-size: 13px; }
+/* Вкладки итогов и чипы причин / сортировки. */
+.dialogs__tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-soft); }
+.dialogs__tab {
+    flex: 1 1 auto;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    color: var(--text-soft);
+    font-weight: 600;
+    font-size: 14px;
+    text-decoration: none;
+    transition: background-color .18s ease, color .18s ease;
+}
+.dialogs__tab:hover { background: var(--bg-row); color: var(--text); }
+.dialogs__tab.is-active { background: var(--bg-row); color: var(--text); box-shadow: 0 2px 10px var(--shadow-soft); }
+.dialogs__tab--good.is-active { color: var(--like-fg); }
+.dialogs__tab--failed.is-active { color: var(--dislike-fg); }
+.dialogs__tab--you.is-active { color: var(--review-fg); }
+.dialogs__count { font-size: 12px; font-weight: 700; color: var(--faint); }
+.dialogs__reasons, .dialogs__sort { display: flex; flex-wrap: wrap; gap: 6px; }
+.dialogs__tools { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.dialogs__chip {
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 13px;
+    text-decoration: none;
+}
+.dialogs__chip:hover { color: var(--text); border-color: var(--row-hover-line); }
+.dialogs__chip.is-active { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 .dialogs__profile {
     padding: 12px 16px;
     border: 1px solid var(--line);

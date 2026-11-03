@@ -1004,6 +1004,7 @@ class SyncDB:
                c.matched_at, c.last_message_at, c.synced_at,
                md.status AS intro_status,
                md.script_step AS script_step,
+               md.greeted_at AS greeted_at, md.wake_at AS wake_at,
                p.age AS age, p.normalized_city AS city,
                (SELECT COUNT(*) FROM dialog_messages m
                  WHERE m.account_session = c.account_session
@@ -1011,6 +1012,12 @@ class SyncDB:
                (SELECT COUNT(*) FROM dialog_messages m
                  WHERE m.account_session = c.account_session
                    AND m.user_id = c.user_id AND m.sent_by = 'her') AS her_count,
+               (SELECT COUNT(*) FROM dialog_messages m
+                 WHERE m.account_session = c.account_session
+                   AND m.user_id = c.user_id AND m.sent_by = 'owner') AS owner_count,
+               (SELECT MIN(m.message_date) FROM dialog_messages m
+                 WHERE m.account_session = c.account_session
+                   AND m.user_id = c.user_id AND m.sent_by = 'her') AS first_her_at,
                (SELECT m.text || CASE WHEN m.text = '' THEN m.media_type ELSE '' END
                   FROM dialog_messages m
                  WHERE m.account_session = c.account_session
