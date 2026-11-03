@@ -223,6 +223,8 @@ tests/test_collector.py::TestCollectorActiveCard::test_photo_only_message_does_n
 tests/test_collector.py::TestCollectorActiveCard::test_foreign_chat_does_not_mark_card
 tests/test_collector.py::TestCollectorActiveCard::test_other_account_does_not_mark_card
 tests/test_collector.py::TestCollectorActiveCard::test_like_rejection_marks_likes_exhausted
+tests/test_collector.py::TestCollectorActiveCard::test_like_limit_turns_scroll_off
+tests/test_collector.py::TestCollectorActiveCard::test_like_limit_on_card_turns_scroll_off
 tests/test_collector.py::TestCollectorActiveCard::test_match_card_stops_search_in_handler
 tests/test_collector.py::TestCollectorActiveCard::test_match_notice_without_buttons_stops_search
 tests/test_collector.py::TestCollectorActiveCard::test_interested_notice_stops_search

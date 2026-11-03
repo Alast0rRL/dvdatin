@@ -279,6 +279,22 @@ class AccountEnginesMixin:
             "включаю: на первой анкете для лайка лента встанет."
         )
 
+    def stop_scroll_on_like_limit(self, session: str | None = None) -> bool:
+        """Лимит ❤️ исчерпан → «Скроллинг» аккаунта выкл (владелец, 2026-11-03).
+
+        Иначе на первой анкете для лайка бот ничего не шлёт (``LIKE_LIMIT``),
+        Leo ждёт реакцию и лента стоит, а переключатель на сайте горит.
+        «Авто» (личка) не трогаем. True — скроллинг был включён и выключен.
+        """
+        target = self._resolve_session(session)
+        if not self.controls_for(target).scroll:
+            return False
+        logger.warning(
+            f"{target or 'Аккаунт'}: лимит ❤️ исчерпан — скроллинг выключаю"
+        )
+        self.set_controls(target, scroll=False)
+        return True
+
     async def request_mode(
         self, mode: Mode, session: str | None = None,
     ) -> str | None:

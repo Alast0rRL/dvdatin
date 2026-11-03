@@ -29,6 +29,7 @@ from collectors.raw_queue import RawQueue
 from collectors.raw_worker import DvinchikRawWorker, RawTask
 from collectors.stats import CollectorStats
 from core.types import Mode
+from models.decision import AIDecision
 from app.config import (
     AppConfig,
     AutoActionsConfig,
@@ -282,6 +283,48 @@ class TestCollectorActiveCard:
 
         assert engine.likes_exhausted() is True
         collector._db.mark_like_rejected.assert_awaited_once()
+
+    def test_like_limit_turns_scroll_off(self) -> None:
+        """«Слишком много ❤️» → «Скроллинг» аккаунта выкл, «Авто» не трогаем.
+
+        Прод 2026-11-03: лимит пойман, а переключатель на сайте горел.
+        """
+        collector, client, engine = self._collector()
+        with patch.object(AppConfig, "persist_mode"):
+            collector.set_controls(None, scroll=True, auto=True)
+            event = make_event(text="Слишком много ❤️ за сегодня.", msg_id=741310)
+            event.client = client
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        controls = collector.controls_for(None)
+        assert controls.scroll is False
+        assert controls.auto is True
+        assert engine.mode is Mode.OBSERVE
+
+    def test_like_limit_on_card_turns_scroll_off(self) -> None:
+        """Лимит уже стоял (рестарт) и бот упёрся в него на анкете → скроллинг выкл."""
+        collector, client, engine = self._collector()
+        with patch.object(AppConfig, "persist_mode"):
+            collector.set_controls(None, scroll=True)
+        engine.maybe_act = AsyncMock(return_value="LIKE_LIMIT")
+        collector._db.has_reaction_for_message = AsyncMock(return_value=False)
+        task = RawTask(
+            chat_id=1234060895, message_id=741320, sender_id=1234060895,
+            sender_username="", sender_name="", text="Аня, 18, Санкт-Петербург",
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now", msg=None, raw_id=1,
+        )
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._react_to_card(
+                    task, 1, AIDecision.LIKE, reasons=[], logged_decision="LIKE",
+                )
+            )
+
+        assert collector.controls_for(None).scroll is False
+        collector._db.record_auto_action.assert_not_awaited()
 
     @staticmethod
     def _match_event(client: AsyncMock, msg_id: int) -> MagicMock:

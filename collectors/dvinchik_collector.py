@@ -735,6 +735,7 @@ class DvinchikCollector(
             elif engine is not None:
                 try:
                     await engine.handle_like_rejection(task.chat_id)
+                    self.stop_scroll_on_like_limit(engine_session or None)
                 except Exception as e:
                     logger.error(f"AutoAction: обработка лимита лайков: {e}")
             return MessageType.SERVICE
@@ -906,6 +907,11 @@ class DvinchikCollector(
             action = await self._auto_engine.maybe_act(
                 decision, profile_id, **kwargs,
             )
+            if action == "LIKE_LIMIT":
+                # Лимит уже был (например, до рестарта) — лента встала бы.
+                self.stop_scroll_on_like_limit(
+                    self._auto_engine.account_session or None
+                )
             if action not in ("LIKE", "DISLIKE"):
                 return
             try:
