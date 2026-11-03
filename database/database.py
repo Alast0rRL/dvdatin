@@ -289,6 +289,9 @@ CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
 -- (сбор данных для анализа и алгоритма общения). Заводится на КАЖДЫЙ матч
 -- (независимо от привета/автопереписки). Ключ — аккаунт + её user_id.
 -- synced_at — последняя сверка её чата с историей Telegram.
+-- chat_deleted_at — сверка нашла её чат пустым, хотя сообщения были (чат
+-- удалён в Telegram; кто удалил — Telegram не говорит); новое сообщение
+-- в чате снимает отметку.
 CREATE TABLE IF NOT EXISTS dialog_contacts (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -298,6 +301,7 @@ CREATE TABLE IF NOT EXISTS dialog_contacts (
     matched_at TEXT NOT NULL,
     last_message_at TEXT,
     synced_at TEXT,
+    chat_deleted_at TEXT,
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -478,6 +482,8 @@ class Database:
         await self._ensure_chat_context_account_session()
         # Сценарий знакомства: колонки script_* в match_dialogs.
         await self._ensure_match_dialogs_script_columns()
+        # Переписки: отметка «чат удалён в Telegram» (dialog_contacts).
+        await self._ensure_dialog_contacts_deleted_column()
         # Логирование переписок: девушки из автопереписки (до появления
         # dialog_contacts) тоже попадают в реестр.
         await self._backfill_dialog_contacts()
@@ -511,6 +517,19 @@ class Database:
                 await self._connection.commit()
             except Exception as e:
                 logger.warning(f"match_dialogs.{col}: {e}")
+
+    async def _ensure_dialog_contacts_deleted_column(self) -> None:
+        """Добавляет dialog_contacts.chat_deleted_at (идемпотентно)."""
+        cols = await self._connection.execute("PRAGMA table_info(dialog_contacts)")
+        if "chat_deleted_at" in {row[1] for row in await cols.fetchall()}:
+            return
+        try:
+            await self._connection.execute(
+                "ALTER TABLE dialog_contacts ADD COLUMN chat_deleted_at TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            logger.warning(f"dialog_contacts.chat_deleted_at: {e}")
 
     async def _backfill_dialog_contacts(self) -> None:
         """Переносит девушек из match_dialogs в dialog_contacts (идемпотентно)."""
@@ -2199,6 +2218,30 @@ class Database:
         except Exception as e:
             await self._connection.rollback()
             logger.warning(f"mark_dialog_synced: {e}")
+
+    async def set_dialog_chat_deleted(
+        self, account_session: str, user_id: int, deleted: bool,
+    ) -> None:
+        """Отметка «её чат удалён в Telegram» (``deleted=False`` — снять).
+
+        Уже стоящая отметка не перезаписывается: время — первая находка.
+        """
+        sql = (
+            "UPDATE dialog_contacts SET chat_deleted_at = ? "
+            "WHERE account_session = ? AND user_id = ? AND chat_deleted_at IS NULL"
+            if deleted else
+            "UPDATE dialog_contacts SET chat_deleted_at = NULL "
+            "WHERE account_session = ? AND user_id = ?"
+        )
+        params: tuple = (account_session or "", int(user_id))
+        if deleted:
+            params = (datetime.now(timezone.utc).isoformat(),) + params
+        try:
+            await self._connection.execute(sql, params)
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"set_dialog_chat_deleted: {e}")
 
     async def list_untracked_matches(
         self, account_session: str, limit: int = 20,

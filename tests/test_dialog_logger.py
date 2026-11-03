@@ -231,6 +231,54 @@ class TestDialogLogger:
         assert run(log.sync(client, "dvai")) == 1
         assert history.calls[0]["min_id"] == 2
 
+    @staticmethod
+    def _deleted_at(db: Database) -> str | None:
+        async def _q() -> str | None:
+            cur = await db._connection.execute(
+                "SELECT chat_deleted_at FROM dialog_contacts WHERE user_id = 77")
+            return (await cur.fetchone())[0]
+        return run(_q())
+
+    def test_sync_marks_deleted_chat_and_clears_on_new_message(self, db) -> None:
+        """Сообщения были, а история пуста — чат удалён (в «Неудачные»);
+        она написала снова — отметка снимается."""
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        run(log.log_event("dvai", tg_msg(2, "привет"), outgoing=False, user_id=77))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value="peer")
+        history = History([])
+        client.iter_messages = history
+        run(log.sync(client, "dvai"))
+        assert self._deleted_at(db) is not None
+        assert history.calls[-1] == {"peer": "peer", "limit": 1, "min_id": 0}
+        history.msgs = [tg_msg(5, "ау")]
+        log._last_sync.clear()
+        run(db.mark_dialog_synced("dvai", 77, at="2000-01-01"))
+        run(log.sync(client, "dvai"))
+        assert self._deleted_at(db) is None
+
+    def test_sync_quiet_chat_is_not_deleted(self, db) -> None:
+        """Новых сообщений нет, но старые на месте — чат не удалён."""
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        run(log.log_event("dvai", tg_msg(2, "привет"), outgoing=False, user_id=77))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value="peer")
+        client.iter_messages = History([tg_msg(2, "привет")])
+        run(log.sync(client, "dvai"))
+        assert self._deleted_at(db) is None
+
+    def test_sync_new_contact_without_messages_is_not_deleted(self, db) -> None:
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value="peer")
+        history = History([])
+        client.iter_messages = history
+        run(log.sync(client, "dvai"))
+        assert self._deleted_at(db) is None and len(history.calls) == 1
+
     def test_sync_flood_wait_stops_pass(self, db) -> None:
         log = DialogLogger(db)
         run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))

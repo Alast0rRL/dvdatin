@@ -33,6 +33,18 @@ class TestClassify:
         out = o.classify(make_row(script_step="deleted", her_count=2), NOW)
         assert (out.category, out.reason) == (o.FAILED, o.REJECTED)
 
+    def test_deleted_chat_is_failed(self) -> None:
+        """Чат удалён в Telegram — в «Неудачные», даже если шло хорошо."""
+        row = make_row(her_count=9, script_step="handoff", last=1,
+                       chat_deleted_at=NOW.isoformat())
+        out = o.classify(row, NOW)
+        assert (out.category, out.reason) == (o.FAILED, o.DELETED)
+        assert not out.needs_you
+
+    def test_bot_delete_stays_rejected(self) -> None:
+        row = make_row(script_step="deleted", chat_deleted_at=NOW.isoformat())
+        assert o.classify(row, NOW).reason == o.REJECTED
+
     def test_no_reply_after_wake_up_is_silent(self) -> None:
         out = o.classify(make_row(intro_status="NO_REPLY", last=30), NOW)
         assert (out.category, out.reason) == (o.FAILED, o.SILENT)

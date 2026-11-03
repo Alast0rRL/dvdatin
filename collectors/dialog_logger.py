@@ -15,6 +15,8 @@
   переписки): раз в ``SYNC_INTERVAL_SEC`` по ``SYNC_BATCH`` чатов, каждый не
   чаще ``SYNC_CONTACT_EVERY_SEC``. Заодно дозаводит старые матчи из
   ``match_responses`` (по @username, не больше ``RESOLVE_BATCH`` за проход).
+  Чат, где сообщения были, а история теперь пуста, помечается удалённым
+  (``dialog_contacts.chat_deleted_at``); новое сообщение снимает отметку.
 
 Текст переписки в лог (loguru / debug-консоль сайта) НЕ пишется — только в БД.
 Ошибки не ломают pipeline (всё в try/except).
@@ -323,8 +325,28 @@ class DialogLogger:
                 sent_by=self._history_sender(msg),
             ):
                 added += 1
+        if last_tm:
+            # Сообщения были: новых нет — проверим, не пуст ли чат целиком
+            # (удалён в Telegram → «Неудачные» на /dialogs).
+            deleted = await self._chat_is_empty(client, peer) if not messages else False
+            if deleted is not None:
+                await self._db.set_dialog_chat_deleted(
+                    account_session, user_id, deleted,
+                )
         await self._db.mark_dialog_synced(account_session, user_id)
         return added
+
+    @staticmethod
+    async def _chat_is_empty(client: Any, peer: Any) -> bool | None:
+        """В её чате не осталось ни одного сообщения. None — не удалось
+        проверить (отметку не трогаем)."""
+        try:
+            async for _msg in client.iter_messages(peer, limit=1):
+                return False
+        except Exception as e:
+            logger.debug(f"DialogLog: проверка пустого чата: {e}")
+            return None
+        return True
 
     @staticmethod
     async def _peer(client: Any, user_id: int, username: str) -> Any | None:

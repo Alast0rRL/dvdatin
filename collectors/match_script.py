@@ -316,13 +316,16 @@ class MatchScript:
         """(владелец писал после бота, её тексты после бота — новые первыми).
 
         Граница — последнее сообщение бота (``script_msg_id``), иначе время
-        ``script_at``. Служебные исходящие (закреп) не считаются.
+        ``script_at``. Служебные исходящие (закреп) не считаются. Пустой чат
+        (владелец удалил) — «владелец писал»: бот молчит.
         """
         last_id = int(row.get("script_msg_id") or 0)
         since = _parse_dt(row.get("script_at"))
         owner_wrote = False
+        seen = False
         texts: list[str] = []
         async for msg in client.iter_messages(peer, limit=SCAN_HISTORY):
+            seen = True
             msg_id = getattr(msg, "id", None)
             if last_id and isinstance(msg_id, int):
                 if msg_id <= last_id:
@@ -339,6 +342,10 @@ class MatchScript:
                     owner_wrote = True
                 continue
             texts.append(_msg_text(msg))
+        if not seen:
+            # Чат пуст, хотя бот в нём писал, — владелец удалил чат: бот
+            # молчит (как «пишет владелец»), иначе его фраза вернула бы чат.
+            return True, []
         return owner_wrote, texts
 
     def _pick(self, key: str | None) -> tuple[str, int]:

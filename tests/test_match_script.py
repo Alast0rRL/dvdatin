@@ -51,12 +51,18 @@ def make_script(db: object, **cfg: object) -> MatchScript:
     return MatchScript(MatchScriptConfig(**cfg), db)
 
 
+#: Служебное «закрепил» — исходящее с action, сценарий его не считает владельцем.
+PIN_SERVICE = SimpleNamespace(id=1, out=True, message="", action=object())
+
+
 def make_client(history: list | None = None) -> AsyncMock:
     client = AsyncMock()
     client.get_input_entity = AsyncMock(return_value=SimpleNamespace(user_id=UID))
     client.send_message = AsyncMock(return_value=SimpleNamespace(id=300))
     client.delete_dialog = AsyncMock()
-    items = history or []
+    # В её чате всегда есть хотя бы служебное «закрепил» — пустой чат значит
+    # «владелец удалил» (бот молчит), это проверяется отдельно.
+    items = history or [PIN_SERVICE]
     client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter(items))
     return client
 
@@ -325,6 +331,16 @@ class TestMatchScript:
         client.send_message.assert_not_called()
         assert row(db)["script_step"] == R.OWNER
         assert results[0][1] == R.OWNER
+
+    def test_deleted_chat_silences_bot(self, db: Database) -> None:
+        """Владелец удалил её чат (история пуста) — бот не пишет «АЛООО» /
+        «Рассказывайте» туда, чат не возвращается (владелец, 2026-11-03)."""
+        step_to(db, R.AFTER_PIN, script_at=ago(hours=25))
+        client = make_client()
+        client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter([]))
+        run(make_script(db).process(client, S, "AUTO"))
+        client.send_message.assert_not_called()
+        assert row(db)["script_step"] == R.OWNER
 
     def test_pin_service_message_is_not_owner(self, db: Database) -> None:
         step_to(db, R.AFTER_PIN)

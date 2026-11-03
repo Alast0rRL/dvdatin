@@ -175,6 +175,14 @@ def make_db(row: dict | None = None) -> MagicMock:
     return db
 
 
+#: Стикер-привет бота задолго до ``greeted_at`` — в её чате он есть всегда;
+#: пустой чат значит «владелец удалил» и проверяется отдельно.
+GREETING_STICKER = SimpleNamespace(
+    id=1, out=True, sticker=object(), message="",
+    date=datetime(2000, 1, 1, tzinfo=timezone.utc),
+)
+
+
 def make_client(sent: object = None) -> AsyncMock:
     client = AsyncMock()
     client.get_input_entity = AsyncMock(return_value=SimpleNamespace(user_id=77))
@@ -185,8 +193,7 @@ def make_client(sent: object = None) -> AsyncMock:
     client.pin_message = AsyncMock()
 
     async def iter_messages(*args, **kwargs):
-        return
-        yield
+        yield GREETING_STICKER
 
     client.iter_messages = iter_messages
     return client
@@ -445,6 +452,15 @@ class TestMatchIntro:
         client.forward_messages.assert_not_called()
         assert db.update_match_dialog.await_args.kwargs["status"] == OWNER_CHAT
 
+    def test_deleted_chat_cancels_intro(self) -> None:
+        """Её чат пуст (владелец удалил) — анкету не шлём, иначе чат вернётся."""
+        db = make_db()
+        client = make_client()
+        client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter([]))
+        status = run(make_intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == OWNER_CHAT
+        client.forward_messages.assert_not_called()
+
     def test_only_her_reply_after_greeting_sends(self) -> None:
         db = make_db()
         client = make_client()
@@ -552,8 +568,9 @@ class TestWakeUpAfterSticker:
     def _client(*history: SimpleNamespace) -> AsyncMock:
         client = make_client()
         client.send_message = AsyncMock(return_value=SimpleNamespace(id=500))
+        items = list(history) or [GREETING_STICKER]
         client.iter_messages = MagicMock(
-            side_effect=lambda *a, **k: async_iter(list(history)),
+            side_effect=lambda *a, **k: async_iter(items),
         )
         return client
 

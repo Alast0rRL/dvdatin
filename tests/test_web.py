@@ -2787,6 +2787,16 @@ class TestDialogsPage:
         you = client.get("/dialogs?cat=you").get_data(as_text=True)
         assert "Вера" in you and "Алиса" not in you
 
+    def test_deleted_chat_in_failed(self, client, sync_db) -> None:
+        """Сверка нашла чат пустым → «Неудачные», причина «чат удалён»."""
+        self._seed(sync_db)
+        _, _, db = sync_db
+        asyncio.get_event_loop().run_until_complete(
+            db.set_dialog_chat_deleted("dvai", 77, True))
+        _login(client)
+        html = client.get("/dialogs?cat=failed&reason=deleted").get_data(as_text=True)
+        assert "Алиса" in html and "чат удалён" in html
+
     def test_sort_and_bad_params(self, client, sync_db) -> None:
         self._seed(sync_db)
         _login(client)

@@ -1002,6 +1002,7 @@ class SyncDB:
     _DIALOG_LIST_SQL = """
         SELECT c.account_session, c.user_id, c.username, c.name, c.profile_id,
                c.matched_at, c.last_message_at, c.synced_at,
+               c.chat_deleted_at,
                md.status AS intro_status,
                md.script_step AS script_step,
                md.greeted_at AS greeted_at, md.wake_at AS wake_at,

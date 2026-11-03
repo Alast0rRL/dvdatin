@@ -35,7 +35,7 @@
 - спам-блок/FloodWait — не ошибка: срок сдвигается на паузу, повтор позже;
 - владелец сам написал ей после привета (наше исходящее новее привета) —
   анкету не шлём, статус OWNER_CHAT (прод 2026-10-29: анкета ушла посреди
-  его переписки);
+  его переписки); её чат пуст (владелец удалил чат) — тоже OWNER_CHAT;
 - ошибки не ломают pipeline (всё в try/except, лог ERROR).
 """
 
@@ -419,7 +419,9 @@ class MatchIntro:
         skew = timedelta(seconds=GREETING_STICKER_SKEW_SEC)
         # «АЛООО ПРОСЫПАЕМСЯ» бота — тоже не владелец.
         wake_id = int(row.get("wake_msg_id") or 0)
+        seen = False
         async for msg in client.iter_messages(peer, limit=OWNER_CHECK_HISTORY):
+            seen = True
             if wake_id and getattr(msg, "id", None) == wake_id:
                 continue
             date = getattr(msg, "date", None)
@@ -440,6 +442,11 @@ class MatchIntro:
                 f"({'стикер' if is_sticker else 'сообщение'}) в "
                 f"{date.isoformat()}, привет в {greeted.isoformat()}"
             )
+            return True
+        if not seen:
+            # Чат пуст, хотя стикер-привет ушёл — владелец удалил чат: бот
+            # молчит, иначе его сообщение вернуло бы чат (владелец, 2026-11-03).
+            logger.info("MatchIntro: её чат пуст (удалён) — бот молчит")
             return True
         return False
 

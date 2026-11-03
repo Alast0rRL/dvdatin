@@ -11,7 +11,8 @@
   (без «АЛООО ПРОСЫПАЕМСЯ», первый ответ быстрый), ``hard`` — со скрипом.
 * ``active`` — идёт: ждём её ответа или разговор живой.
 * ``failed`` — неудачные, с причиной (``reason``): молчит, затухла (тупик —
-  перестала отвечать), ты не ответил, удалён чат (грубость / «не пиши»).
+  перестала отвечать), ты не ответил, отшила (бот удалил чат: грубость /
+  «не пиши»), чат удалён в Telegram (сверка нашла его пустым).
 
 ``needs_you`` — отдельный флаг поверх итога: бот дальше не ведёт, а её
 сообщение без ответа (или бот не смог написать) — нужен владелец.
@@ -33,7 +34,8 @@ CATEGORIES: tuple[str, ...] = (GOOD, ACTIVE, FAILED)
 SILENT: str = "silent"        # так и не ответила
 FADED: str = "faded"          # ответила, потом перестала — тупик
 ABANDONED: str = "abandoned"  # её сообщение без ответа давно — не ответил ты
-REJECTED: str = "rejected"    # грубость / «не пиши» — чат удалён
+REJECTED: str = "rejected"    # грубость / «не пиши» — чат удалил бот
+DELETED: str = "deleted"      # чат удалён в Telegram (удалил ты)
 
 #: Она написала столько сообщений — знакомство состоялось.
 GOOD_HER_MESSAGES: int = 5
@@ -53,6 +55,7 @@ REASON_LABELS: dict[str, str] = {
     FADED: "затухла",
     ABANDONED: "не ответил ты",
     REJECTED: "отшила",
+    DELETED: "чат удалён",
 }
 
 REASON_HINTS: dict[str, str] = {
@@ -60,6 +63,7 @@ REASON_HINTS: dict[str, str] = {
     FADED: "ответила, потом перестала — тупик",
     ABANDONED: "её сообщение давно без ответа",
     REJECTED: "грубость или «не пиши» — чат удалён",
+    DELETED: "чат удалён в Telegram",
 }
 
 EASE_LABELS: dict[str, str] = {"easy": "легко", "hard": "со скрипом"}
@@ -134,6 +138,8 @@ def classify(row: dict[str, Any], now: datetime | None = None) -> DialogOutcome:
 
     if step == "deleted":
         return DialogOutcome(FAILED, reason=REJECTED)
+    if row.get("chat_deleted_at"):
+        return DialogOutcome(FAILED, reason=DELETED)
 
     if her == 0:
         if status == "NO_REPLY" or step == "stopped":
