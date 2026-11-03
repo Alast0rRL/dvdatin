@@ -58,9 +58,15 @@ class StreamControlMixin:
             await self._auto_engine.ensure_peer()
             # Одна выборка истории на все проверки кнопок (см. _recent_history).
             history = await self._recent_history()
-            # Карточка «Ты понравился…» — первым делом: поиск останавливается,
-            # пока владелец не разберёт лайки сам (никаких кнопок не жмём).
-            if await self._stop_on_match_card_if_needed(history):
+            # Карточка «Ты понравился…» — первым делом: бот сам жмёт
+            # «Показать» (``auto_show_likes``) или останавливает поиск.
+            if self._auto_show_likes():
+                if await self._show_liked_if_needed(history):
+                    await self._clear_stream_error()
+                    return True
+                if not self._auto_engine.enabled:
+                    return False  # вопрос без кнопки — встали до владельца
+            elif await self._stop_on_match_card_if_needed(history):
                 return False
             if await self._process_active_profile_if_any():
                 await self._clear_stream_error()
@@ -265,6 +271,11 @@ class StreamControlMixin:
                     # Медиа/стикер без текста — часть карточки анкеты,
                     # состояние чата не меняет.
                     continue
+                if self._is_liked_notice(msg):
+                    # «Кому-то понравилась… Заканчивай с вопросом выше» —
+                    # анкета выше всё ещё ждёт реакции, после неё Leo
+                    # покажет лайкнувшую.
+                    continue
                 if self._is_profile_text(msg):
                     if (
                         latest_action_id is not None
@@ -329,6 +340,10 @@ class StreamControlMixin:
         notice = any(f in low for f in MATCH_NOTICE_FRAGMENTS)
         if MATCH_CARD_FRAGMENT not in low and not notice:
             return False
+        if self._is_profile_text(msg):
+            # Её анкета с шапкой «Кому-то понравилась твоя анкета:» — это
+            # уже анкета для оценки, а не карточка-вопрос.
+            return False
         if (self._current_session(), getattr(msg, "id", None)) in self._match_ack:
             # Владелец нажал «Продолжить» на этой карточке — больше не стоп.
             return False
@@ -339,6 +354,83 @@ class StreamControlMixin:
         return any(
             self._is_match_show_button(t) for t in self._extract_button_texts(msg)
         )
+
+    def _auto_show_likes(self) -> bool:
+        """Жать «Показать» самим (``auto_actions.auto_show_likes``), а не стоп."""
+        auto_cfg = getattr(self._config, "auto_actions", None)
+        return getattr(auto_cfg, "auto_show_likes", True) is not False
+
+    def _match_show_button(self, msg: object) -> str | None:
+        """Текст кнопки «Показать» карточки лайка (None — кнопки нет)."""
+        return next(
+            (t for t in self._extract_button_texts(msg)
+             if self._is_match_show_button(t)),
+            None,
+        )
+
+    def _is_liked_question(self, msg: object) -> bool:
+        """Карточка-вопрос «показать её?» (ждёт ответа), а не уведомление."""
+        low = (getattr(msg, "text", "") or "").lower()
+        return MATCH_SHOW_FRAGMENT in low or self._match_show_button(msg) is not None
+
+    def _is_liked_notice(self, msg: object) -> bool:
+        """Уведомление «Кому-то понравилась…» без кнопки «Показать».
+
+        Только при ``auto_show_likes``: тогда оно ленту не держит — Leo сам
+        покажет лайкнувшую после реакции на текущую анкету.
+        """
+        if getattr(msg, "out", False) or not self._auto_show_likes():
+            return False
+        return self._is_match_card(msg) and not self._is_liked_question(msg)
+
+    async def _show_liked_if_needed(self, history: list | None = None) -> bool:
+        """Сам жмёт «Показать» на свежей карточке «Ты понравился N девушке…».
+
+        Владелец, 2026-11-03: бот не ждёт «Продолжить» — смотрит тех, кто
+        лайкнул, оценивает её анкету штатным pipeline (лайк → матч → привет и
+        сценарий), лента не встаёт. Карточка актуальна, только если после неё
+        мы ничего не отправляли; уведомление без кнопок пропускаем (Leo
+        покажет её сам). Карточка «занимается» в ``_match_ack`` до отправки —
+        параллельный проход не нажмёт второй раз. True — «Показать» нажато.
+        """
+        client = self._auto_engine.client
+        if client is None or not self._auto_engine.enabled:
+            return False
+        try:
+            if history is None:
+                history = await self._recent_history()
+            for msg in history:  # новые → старые
+                if getattr(msg, "out", False):
+                    return False  # после карточки уже ответили
+                if not self._is_match_card(msg):
+                    continue
+                button = self._match_show_button(msg)
+                if button is None:
+                    if self._is_liked_question(msg):
+                        # Вопрос «показать её?» без кнопки — жать нечего,
+                        # Leo ждёт ответа: как раньше, стоп до владельца.
+                        await self._stop_on_match_card(msg)
+                    return False  # уведомление без кнопок — лента идёт дальше
+                key = (self._current_session(), msg.id)
+                self._match_ack.add(key)
+                self._auto_engine.note_card(self._dvinchik_chat_id, msg.id)
+                logger.info(
+                    f"AutoAction: тебя лайкнули (msg={msg.id}) — жму «{button}»"
+                )
+                return await self._auto_engine.send_text(button)
+            return False
+        except Exception as e:
+            logger.error(f"AutoAction: не удалось нажать «Показать»: {e}")
+            return False
+
+    async def _on_match_card(self, msg: object | None = None) -> None:
+        """Карточка «Ты понравился…»: «Показать» сами или стоп (по настройке)."""
+        if self._auto_show_likes():
+            await self._show_liked_if_needed()
+        elif msg is not None:
+            await self._stop_on_match_card(msg)
+        else:
+            await self._stop_on_match_card_if_needed()
 
     async def _stop_on_match_card_if_needed(
         self, history: list | None = None,

@@ -32,6 +32,21 @@ PROFILE_RE = re.compile(
     re.DOTALL,
 )
 
+# Шапка анкеты той, кто лайкнула первой: после «Показать» Leo присылает
+# «Кому-то понравилась твоя анкета:\n\nКатя, 20, Москва – …» (бывает
+# «(и ещё N)»). Строка с «понравил»/«заинтересовал», кончающаяся двоеточием,
+# снимается перед PROFILE_RE — иначе карточка UNKNOWN и лента встаёт.
+# Уведомление «…посмотрим кто это» (без двоеточия) — не анкета.
+LIKED_HEADER_RE = re.compile(
+    r"^[^\n]*(?:понравил|заинтересовал)[^\n]*:[ \t]*\n+",
+    re.IGNORECASE,
+)
+
+
+def strip_liked_header(text: str) -> str:
+    """Текст анкеты без шапки «Кому-то понравилась твоя анкета:»."""
+    return LIKED_HEADER_RE.sub("", text, count=1)
+
 # Паттерн MATCH: "[Name](https://t.me/username)" или, если у девушки нет
 # @username, "[Name](tg://user?id=123)". Username — только настоящий
 # (буква + 4..32 символа [A-Za-z0-9_]): ссылки-приглашения в каналы
@@ -92,7 +107,7 @@ class DvinchikParser:
         if not stripped:
             return MessageType.SERVICE
 
-        if PROFILE_RE.match(stripped):
+        if PROFILE_RE.match(strip_liked_header(stripped)):
             return MessageType.PROFILE
 
         if MATCH_RE.search(stripped):
@@ -110,7 +125,7 @@ class DvinchikParser:
         source_chat_id: int = 0,
     ) -> ParsedProfile:
         """Извлекает данные анкеты из текста."""
-        match = PROFILE_RE.match(text.strip())
+        match = PROFILE_RE.match(strip_liked_header(text.strip()))
         if not match:
             return ParsedProfile(
                 description=text,

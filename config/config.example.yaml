@@ -105,6 +105,7 @@ auto_actions:
   interval_sec: 2.0
   notify_chat_id: 0
   notify_telegram: false   # true — снова писать владельцу в Telegram (анкеты, причины, ошибки)
+  auto_show_likes: true    # «Ты понравился N девушке» → бот сам жмёт «Показать» (false — стоп до «Продолжить»)
   notify_dislikes: true
 
   like:

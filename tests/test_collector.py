@@ -307,6 +307,7 @@ class TestCollectorActiveCard:
         стоящую в очереди анкету — устаревшая (не уходит).
         """
         collector, client, engine = self._collector()
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         engine.note_card(1234060895, 34647)  # анкета ещё ждёт реакции
         notify = AsyncMock(return_value=True)
         engine.notify_owner = notify
@@ -329,6 +330,7 @@ class TestCollectorActiveCard:
         и продолжил листать через «1 🚀».
         """
         collector, client, engine = self._collector()
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         engine.note_card(1234060895, 744850)  # анкета перед уведомлением
         engine.notify_owner = AsyncMock(return_value=True)
         event = make_event(
@@ -357,6 +359,7 @@ class TestCollectorActiveCard:
         узнал, нажал «1 🚀», и матч с Катей случился без владельца.
         """
         collector, client, engine = self._collector()
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         engine.note_card(1234060895, 42508)
         engine.notify_owner = AsyncMock(return_value=True)
         event = make_event(
@@ -377,6 +380,74 @@ class TestCollectorActiveCard:
         assert collector.mode is Mode.OBSERVE
         assert engine.is_stale_card(1234060895, 42508) is True
         client.send_message.assert_not_called()
+
+    def test_match_card_auto_show_keeps_search(self) -> None:
+        """auto_show_likes: карточка с кнопкой — новая активная, поиск идёт.
+
+        Queued 👎 на прошлую анкету не уходит (устарела), режим прежний,
+        владельцу ничего не пишем.
+        """
+        collector, client, engine = self._collector()
+        engine.note_card(1234060895, 34647)
+        engine.notify_owner = AsyncMock(return_value=True)
+        collector._show_liked_if_needed = AsyncMock(return_value=True)
+        event = self._match_event(client, 34648)
+        rows = []
+        for text in ("1 👍", "2 💤"):
+            btn, row = MagicMock(), MagicMock()
+            btn.text = text
+            row.buttons = [btn]
+            rows.append(row)
+        event.message.reply_markup = MagicMock()
+        event.message.reply_markup.rows = rows
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        assert collector.mode is Mode.SEMI_AUTO
+        assert engine.is_stale_card(1234060895, 34647) is True
+        engine.notify_owner.assert_not_awaited()
+
+    def test_match_question_without_button_still_stops(self) -> None:
+        """auto_show_likes: «показать её?» без кнопки — жать нечего, стоп."""
+        collector, client, engine = self._collector()
+        engine.notify_owner = AsyncMock(return_value=True)
+        event = self._match_event(client, 34648)
+        event.message.reply_markup = None
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        assert collector.mode is Mode.OBSERVE
+        client.send_message.assert_not_called()
+
+    def test_liked_notice_auto_show_keeps_card_active(self) -> None:
+        """auto_show_likes: «…Заканчивай с вопросом выше» — анкета выше не
+        устаревает (реакция на неё уходит), поиск не стоит."""
+        collector, client, engine = self._collector()
+        engine.note_card(1234060895, 744850)
+        engine.notify_owner = AsyncMock(return_value=True)
+        collector._show_liked_if_needed = AsyncMock(return_value=False)
+        event = make_event(
+            text=(
+                "Кому-то понравилась твоя анкета! Заканчивай с вопросом "
+                "выше и посмотрим кто это"
+            ),
+            msg_id=744851,
+            sender_id=1234060895,
+        )
+        event.message.out = False
+        event.client = client
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector._handle_new_message(event)
+            )
+
+        assert collector.mode is Mode.SEMI_AUTO
+        assert engine.is_stale_card(1234060895, 744850) is False
+        engine.notify_owner.assert_not_awaited()
 
     def test_resume_passes_notice_without_buttons(self) -> None:
         """«Продолжить» на уведомлении без кнопок не останавливает поиск снова."""
@@ -3259,6 +3330,7 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         card = f"Ты понравился {count} девушке, показать её?"
 
         async def iter_messages(*args, **kwargs):
@@ -3310,6 +3382,7 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         collector._db.get_state = AsyncMock(return_value="dvai_2:801")
 
         async def iter_messages(*args, **kwargs):
@@ -3332,6 +3405,7 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         collector._auto_engine.mode = Mode.AUTO
 
         async def iter_messages(*args, **kwargs):
@@ -3513,6 +3587,7 @@ class TestCollectorAutoActions:
         collector = self._make_collector(
             self._make_config(), None, auto_client, other_client
         )
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
 
         async def iter_messages(*args, **kwargs):
             yield self._iter_msg(
@@ -3532,6 +3607,94 @@ class TestCollectorAutoActions:
         assert ok is False
         auto_client.send_message.assert_not_called()
         assert collector.mode is Mode.OBSERVE
+
+    @pytest.mark.parametrize(
+        "buttons,expected",
+        [
+            (["1 👍", "2 💤"], "1 👍"),
+            (["1. Показать.", "2. Не хочу больше никого смотреть."], "1. Показать."),
+        ],
+    )
+    def test_start_stream_auto_shows_liked(self, buttons, expected) -> None:
+        """«Ты понравился N девушке» → бот сам жмёт «Показать», лента идёт.
+
+        Владелец, 2026-11-03: не ждать «Продолжить» — её анкету оценит
+        pipeline, лайк → матч → привет. Режим не меняется, уведомлений нет.
+        """
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 801, "Ты понравился 1 девушке, показать её?",
+                buttons=buttons,
+            )
+            yield self._iter_msg(auto_client, 800, "👎", out=True)
+
+        auto_client.iter_messages = iter_messages
+
+        ok, notify = self._run_stream_with_match_stop(collector, auto_client)
+        assert ok is True
+        auto_client.send_message.assert_called_once_with(1234060895, expected)
+        assert collector.mode is Mode.SEMI_AUTO
+        notify.assert_not_awaited()
+
+    def test_auto_show_pressed_once_per_card(self) -> None:
+        """Повторный проход по той же карточке «Показать» второй раз не жмёт."""
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+        card = self._iter_msg(
+            auto_client, 801, "Ты понравился 1 девушке, показать её?",
+            buttons=["1 👍", "2 💤"],
+        )
+        history = [card]
+        run = asyncio.get_event_loop().run_until_complete
+        assert run(collector._show_liked_if_needed(history)) is True
+        assert run(collector._show_liked_if_needed(history)) is False
+        auto_client.send_message.assert_called_once_with(1234060895, "1 👍")
+
+    def test_liked_notice_does_not_hide_active_profile(self) -> None:
+        """«Кому-то понравилась… Заканчивай с вопросом выше» — анкета выше
+        всё ещё активна: бот отвечает на неё, Leo потом покажет лайкнувшую."""
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+
+        async def iter_messages(*args, **kwargs):
+            yield self._iter_msg(
+                auto_client, 902,
+                "Кому-то понравилась твоя анкета! Заканчивай с вопросом выше "
+                "и посмотрим кто это",
+            )
+            yield self._iter_msg(auto_client, 901, "Катя, 18, Санкт-Петербург")
+
+        auto_client.iter_messages = iter_messages
+        collector._process_message = AsyncMock()
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            collector._process_active_profile_if_any()
+        )
+        assert ok is True
+        task = collector._process_message.await_args.args[0]
+        assert task.message_id == 901
+
+    def test_liked_profile_card_is_not_match_card(self) -> None:
+        """Её анкета с шапкой «Кому-то понравилась твоя анкета:» — анкета."""
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+        msg = self._iter_msg(
+            auto_client, 903,
+            "Кому-то понравилась твоя анкета:\n\nКатя, 18, Санкт-Петербург – привет",
+        )
+        assert collector._is_profile_text(msg) is True
+        assert collector._is_match_card(msg) is False
 
     def test_start_stream_main_menu_never_presses_other_buttons(self) -> None:
         """Меню без «1 🚀» — ничего не жмём (2/3/4 — Моя анкета/стоп/Premium)."""
@@ -4463,7 +4626,7 @@ class TestHistorySync:
         collector._db.save_raw_message.assert_not_called()
 
     def _semi_auto_collector(
-        self,
+        self, acc2: AsyncMock | None = None,
     ) -> tuple[DvinchikCollector, AsyncMock, AsyncMock]:
         cfg = make_config()
         data = cfg.model_dump()
@@ -4477,7 +4640,7 @@ class TestHistorySync:
         data["auto_actions"] = {
             "enabled": True, "account_session": "dvai_2", "interval_sec": 0.0,
         }
-        acc1, acc2 = AsyncMock(), AsyncMock()
+        acc1, acc2 = AsyncMock(), acc2 or AsyncMock()
         collector = DvinchikCollector([acc1, acc2], make_db_mock(), AppConfig(**data))
         collector._auto_engine.notify_owner = AsyncMock(return_value=True)
         return collector, acc1, acc2
@@ -4485,6 +4648,7 @@ class TestHistorySync:
     def test_missed_match_card_stops_search(self) -> None:
         """Карточку «Ты понравился…» пропустил хендлер → стоп при сверке."""
         collector, acc1, acc2 = self._semi_auto_collector()
+        collector._config.auto_actions.auto_show_likes = False  # режим «стоп»
         acc1.iter_messages = self._history()
         acc2.iter_messages = self._history(
             self._msg(34648, "Ты понравился 1 девушке, показать её?", age_sec=300),
@@ -4497,6 +4661,29 @@ class TestHistorySync:
 
         assert collector.mode is Mode.OBSERVE
         collector._auto_engine.notify_owner.assert_awaited_once()
+
+    def test_missed_match_card_auto_shows(self) -> None:
+        """auto_show_likes: пропущенная карточка → при сверке жмём «Показать»."""
+        collector, acc1, acc2 = self._semi_auto_collector(make_tg_client())
+        card = self._msg(34648, "Ты понравился 1 девушке, показать её?", age_sec=300)
+        btn = MagicMock()
+        btn.text = "1 👍"
+        row = MagicMock()
+        row.buttons = [btn]
+        card.reply_markup = MagicMock()
+        card.reply_markup.rows = [row]
+        acc1.iter_messages = self._history()
+        acc2.iter_messages = self._history(
+            card, self._msg(34647, "👎", age_sec=310, out=True),
+        )
+        with patch.object(AppConfig, "persist_mode"):
+            asyncio.get_event_loop().run_until_complete(
+                collector.sync_chat_history()
+            )
+
+        assert collector.mode is Mode.SEMI_AUTO
+        acc2.send_message.assert_called_once_with(1234060895, "1 👍")
+        collector._auto_engine.notify_owner.assert_not_awaited()
 
     def test_answered_match_card_in_sync_does_not_stop(self) -> None:
         """После карточки уже есть наш ответ — при сверке поиск не трогаем."""

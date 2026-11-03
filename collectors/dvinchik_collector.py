@@ -468,12 +468,23 @@ class DvinchikCollector(
                     ):
                         self._auto_engine.note_card(chat_id, msg.id)
                     elif not getattr(msg, "out", False) and self._is_match_card(msg):
-                        # «Ты понравился N девушке…» — стоп СРАЗУ, до очереди:
-                        # pipeline может отставать, и queued 👎 на прошлую
-                        # анкету ушёл бы после карточки (лента листалась
-                        # дальше). После стопа режим OBSERVE — задержка
-                        # следующих сообщений чата на уведомление не важна.
-                        await self._stop_on_match_card(msg)
+                        if (
+                            self._auto_show_likes()
+                            and self._match_show_button(msg) is not None
+                        ):
+                            # «Показать» нажмёт pipeline (_on_unknown). Карточка
+                            # — новая «активная»: queued 👎 на прошлую анкету
+                            # ушёл бы ответом на неё.
+                            self._auto_engine.note_card(chat_id, msg.id)
+                        elif self._is_liked_notice(msg):
+                            # «…Заканчивай с вопросом выше» — анкета выше ещё
+                            # ждёт реакции, Leo покажет лайкнувшую после неё.
+                            pass
+                        else:
+                            # Стоп СРАЗУ, до очереди: pipeline может отставать,
+                            # и queued 👎 на прошлую анкету ушёл бы после
+                            # карточки (лента листалась дальше).
+                            await self._stop_on_match_card(msg)
                 except Exception as e:
                     logger.error(f"AutoAction: отметка карточки не удалась: {e}")
 
@@ -947,8 +958,9 @@ class DvinchikCollector(
         try:
             texts = self._extract_button_texts(msg)
             if self._is_match_card(msg):
-                # «Ты понравился N девушке, показать её?» — стоп, решает владелец.
-                await self._stop_on_match_card_if_needed()
+                # «Ты понравился N девушке, показать её?» — «Показать» сами
+                # (auto_show_likes) или стоп до «Продолжить».
+                await self._on_match_card()
             elif any(VIEW_BUTTON_FRAGMENT in t for t in texts):
                 await self._press_view_button_if_needed()
             elif (
@@ -988,9 +1000,12 @@ class DvinchikCollector(
             logger.error(f"AutoAction: ошибка нажатия кнопки ленты (SERVICE): {e}")
 
     async def _continue_from_history(self) -> None:
-        """Одна выборка истории на все проверки: стоп на матче или дальше лента."""
+        """Одна выборка истории на все проверки: карточка лайка или дальше лента."""
         history = await self._recent_history()
-        if not await self._stop_on_match_card_if_needed(history):
+        if self._auto_show_likes():
+            if not await self._show_liked_if_needed(history):
+                await self._continue_stream_if_needed(history)
+        elif not await self._stop_on_match_card_if_needed(history):
             await self._continue_stream_if_needed(history)
 
     async def _handle_media_only(

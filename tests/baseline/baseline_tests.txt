@@ -226,6 +226,9 @@ tests/test_collector.py::TestCollectorActiveCard::test_like_rejection_marks_like
 tests/test_collector.py::TestCollectorActiveCard::test_match_card_stops_search_in_handler
 tests/test_collector.py::TestCollectorActiveCard::test_match_notice_without_buttons_stops_search
 tests/test_collector.py::TestCollectorActiveCard::test_interested_notice_stops_search
+tests/test_collector.py::TestCollectorActiveCard::test_match_card_auto_show_keeps_search
+tests/test_collector.py::TestCollectorActiveCard::test_match_question_without_button_still_stops
+tests/test_collector.py::TestCollectorActiveCard::test_liked_notice_auto_show_keeps_card_active
 tests/test_collector.py::TestCollectorActiveCard::test_resume_passes_notice_without_buttons
 tests/test_collector.py::TestCollectorActiveCard::test_match_card_from_other_account_does_not_stop
 tests/test_collector.py::TestCollectorActiveCard::test_like_rejection_on_other_account_keeps_executor_limit
@@ -352,6 +355,11 @@ tests/test_collector.py::TestCollectorAutoActions::test_resume_after_match_stop_
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_main_menu_presses_rocket
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_main_menu_already_pressed
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_match_card_wins_over_stale_menu
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_auto_shows_liked[buttons0-1 \U0001f44d]
+tests/test_collector.py::TestCollectorAutoActions::test_start_stream_auto_shows_liked[buttons1-1. \u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c.]
+tests/test_collector.py::TestCollectorAutoActions::test_auto_show_pressed_once_per_card
+tests/test_collector.py::TestCollectorAutoActions::test_liked_notice_does_not_hide_active_profile
+tests/test_collector.py::TestCollectorAutoActions::test_liked_profile_card_is_not_match_card
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_main_menu_never_presses_other_buttons
 tests/test_collector.py::TestCollectorAutoActions::test_start_stream_unrelated_card_does_not_stop
 tests/test_collector.py::TestCollectorAutoActions::test_match_show_button_text_not_counted_as_manual_message
@@ -391,6 +399,7 @@ tests/test_collector.py::TestCollectorSwitchAccount::test_switch_account_updates
 tests/test_collector.py::TestHistorySync::test_saves_missing_messages_per_account
 tests/test_collector.py::TestHistorySync::test_skips_fresh_and_empty_messages
 tests/test_collector.py::TestHistorySync::test_missed_match_card_stops_search
+tests/test_collector.py::TestHistorySync::test_missed_match_card_auto_shows
 tests/test_collector.py::TestHistorySync::test_answered_match_card_in_sync_does_not_stop
 tests/test_collector.py::TestHistorySync::test_duplicates_are_not_marked
 tests/test_collector.py::TestHistorySync::test_account_error_does_not_break_others
@@ -825,6 +834,9 @@ tests/test_parser.py::TestParseProfile::test_real_special_chars_name
 tests/test_parser.py::TestParseProfile::test_decor_prefix_with_comma
 tests/test_parser.py::TestParseProfile::test_city_with_district_is_profile[lizzzkkaaa, 19, \u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433, \u041c\u0443\u0440\u0438\u043d\u043e-\u0421\u0430\u043d\u043a\u0442-\u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433, \u041c\u0443\u0440\u0438\u043d\u043e]
 tests/test_parser.py::TestParseProfile::test_city_with_district_is_profile[\u0430\u043b\u0438\u043d\u043a\u0430, 18, \u0441\u043f\u0431, \u043b\u0430\u0434\u043e\u0436\u0441\u043a\u0430\u044f-\u0441\u043f\u0431, \u043b\u0430\u0434\u043e\u0436\u0441\u043a\u0430\u044f]
+tests/test_parser.py::TestParseProfile::test_liked_you_header_is_profile[\u041a\u043e\u043c\u0443-\u0442\u043e \u043f\u043e\u043d\u0440\u0430\u0432\u0438\u043b\u0430\u0441\u044c \u0442\u0432\u043e\u044f \u0430\u043d\u043a\u0435\u0442\u0430:]
+tests/test_parser.py::TestParseProfile::test_liked_you_header_is_profile[\u041a\u043e\u043c\u0443-\u0442\u043e \u043f\u043e\u043d\u0440\u0430\u0432\u0438\u043b\u0430\u0441\u044c \u0442\u0432\u043e\u044f \u0430\u043d\u043a\u0435\u0442\u0430 (\u0438 \u0435\u0449\u0451 2):]
+tests/test_parser.py::TestParseProfile::test_liked_notice_is_not_profile
 tests/test_parser.py::TestParseProfile::test_city_with_district_and_description
 tests/test_parser.py::TestParseProfile::test_real_simple_name
 tests/test_parser.py::TestParseProfile::test_cyrillic_name

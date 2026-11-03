@@ -125,6 +125,26 @@ class TestParseProfile:
         assert p.description == ""
         assert p.filter_result == FilterResult.FILTER_MATCH
 
+    @pytest.mark.parametrize("header", [
+        "Кому-то понравилась твоя анкета:",
+        "Кому-то понравилась твоя анкета (и ещё 2):",
+    ])
+    def test_liked_you_header_is_profile(
+        self, parser: DvinchikParser, header: str
+    ) -> None:
+        """После «Показать» анкета приходит с шапкой — это PROFILE, имя без шапки."""
+        text = f"{header}\n\nКатя, 18, Санкт-Петербург – люблю котов"
+        assert parser.classify(text) == MessageType.PROFILE
+        p = parser.parse_profile(text)
+        assert p.name == "Катя"
+        assert p.age == 18
+        assert p.description == "люблю котов"
+
+    def test_liked_notice_is_not_profile(self, parser: DvinchikParser) -> None:
+        """Уведомление «…посмотрим кто это» (без двоеточия) — не анкета."""
+        text = "Кому-то понравилась твоя анкета! Заканчивай с вопросом выше и посмотрим кто это"
+        assert parser.classify(text) != MessageType.PROFILE
+
     def test_city_with_district_and_description(self, parser: DvinchikParser) -> None:
         text = "Аня, 18, спб, Девяткино – люблю котиков, чай и книги"
         p = parser.parse_profile(text)

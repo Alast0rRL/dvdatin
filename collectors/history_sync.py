@@ -46,8 +46,8 @@ class HistorySyncMixin:
         for client in self._clients:
             account_session = self._session_for_client(client)
             token = _CURRENT_SESSION.set(account_session or None)
-            # Карточка «Ты понравился…», пропущенная живым хендлером, тоже
-            # должна остановить поиск — но только самая свежая и только если
+            # Карточка «Ты понравился…», пропущенная живым хендлером: «Показать»
+            # или стоп (auto_show_likes) — только самая свежая и только если
             # после неё мы ещё ничего не отправляли (иначе уже разобрана).
             watch_match = client is self._auto_engine.client
             try:
@@ -103,7 +103,7 @@ class HistorySyncMixin:
                     await self._db.mark_raw_processed(raw_id)
                     added += 1
                     if is_card:
-                        await self._stop_on_match_card(msg)
+                        await self._on_match_card(msg)
             except Exception as e:
                 logger.error(
                     f"Сверка истории чата ({account_session or '?'}) не удалась: {e}"
