@@ -842,6 +842,10 @@ tests/test_match_script.py::TestScriptNotice::test_bot_question
 tests/test_match_script.py::TestScriptNotice::test_owner_takeover_is_silent
 tests/test_match_script.py::TestScriptNotice::test_notice_has_no_her_text
 tests/test_match_script.py::TestDialogsLabel::test_script_step_shown_after_intro
+tests/test_match_script.py::TestClassify::test_kinds[\u041f\u043e\u043c\u0435\u0447\u0430\u0435\u0448\u044c \u0447\u0442\u043e\u0431 \u043d\u0435 \u0437\u0430\u0431\u044b\u0442\u044c \u0438\u043b\u0438 \u0447\u0435-asks_too_many]
+tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u043f\u043e\u043c\u0435\u0442\u0438\u043b?-asks_pin]
+tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u0447\u0435\u0433\u043e \u043f\u043e\u043c\u0435\u0447\u0430\u0435\u0448\u044c-asks_pin]
+tests/test_match_script.py::TestMatchScript::test_mark_not_to_forget_answered_convenient
 tests/test_parser.py::TestClassify::test_profiles[\u0441\u0430\u0448\u043a, 19, \u0441\u043f\u0431 \u2013 \u0437\u043d\u0430\u044e \u043b\u044e\u0431\u0432\u0438 \u043d\u0435 \u0431\u044b\u0432\u0430\u0435\u0442]
 tests/test_parser.py::TestClassify::test_profiles[\u041c\u0430\u0439\u044f, 18, \u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestClassify::test_profiles[*)))^, 18, \u0421\u0430\u043d\u043a\u0442 \u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433 \u2013 \u0412 \u043f\u043b\u0430\u043d\u0430\u0445]

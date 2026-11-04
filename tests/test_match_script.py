@@ -114,6 +114,9 @@ class TestClassify:
         ("О чём?", R.ABOUT_WHAT),
         ("а что рассказывать", R.ABOUT_WHAT),
         ("Слишком много с кем общаешься, решил чтобы не перепутать?", R.ASKS_TOO_MANY),
+        ("Помечаешь чтоб не забыть или че", R.ASKS_TOO_MANY),
+        ("зачем пометил?", R.ASKS_PIN),
+        ("а чего помечаешь", R.ASKS_PIN),
         ("я не дамочка", R.NOT_DAMOCHKA),
         ("Какая я тебе дамочка", R.NOT_DAMOCHKA),
         ("ты бот?", R.ASKS_BOT),
@@ -249,6 +252,13 @@ class TestMatchScript:
         client, _ = reply(db, make_script(db), "Почему ты это скинул мне")
         assert sent_text(client) == "Чтобы знать, с кем общаюсь"
         assert row(db)["script_variant"] == "pin_why:0"
+
+    def test_mark_not_to_forget_answered_convenient(self, db: Database) -> None:
+        """Прод 2026-11-04: «Помечаешь чтоб не забыть или че» → не «Рассказывайте»."""
+        step_to(db, R.AFTER_PIN)
+        client, _ = reply(db, make_script(db), "Помечаешь чтоб не забыть или че")
+        assert sent_text(client) == "Это так-то удобно"
+        assert row(db)["script_step"] == R.WAIT_MORE
 
     def test_too_many_then_convenient(self, db: Database) -> None:
         step_to(db, R.WAIT_MORE)
