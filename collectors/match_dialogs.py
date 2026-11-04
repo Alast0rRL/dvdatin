@@ -192,9 +192,27 @@ class MatchDialogsMixin:
                 return
             await self._notify_greeting(session, match, status, source=source)
             if status == "SENT":
+                await self._hide_greeted_chat(client, session, match)
                 await self._enroll_match_intro(
                     client, session, match, source=source, card=card,
                 )
+
+    async def _hide_greeted_chat(
+        self, client: object, session: str, match: ParsedMatch,
+    ) -> None:
+        """Стикер ушёл → её чат сразу в архив и без звука (владелец,
+        2026-11-04), не дожидаясь её ответа."""
+        folders = getattr(self, "_chat_folders", None)
+        if folders is None:
+            return
+        try:
+            await folders.hide_now(
+                client, session,
+                user_id=int(match.telegram_user_id or 0),
+                username=match.telegram_username or "",
+            )
+        except Exception as e:
+            logger.warning(f"Папки чатов: не спрятал чат {match.name}: {e}")
 
     async def _note_no_access(
         self, client: object, session: str, target: str, match: ParsedMatch,

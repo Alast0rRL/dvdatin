@@ -157,8 +157,10 @@ auto_actions:
       active: "Active"
       fifty: "50/50"
       auto: "Auto"
-      active_her_messages: 10      # Active: она написала столько…
-      active_owner_messages: 3     # …и ты столько
+      active_days: 3               # Active: она писала в 3+ разных дня…
+      silence_hours: 48            # …и молчит меньше 48 ч; дольше — 50/50
+      bot_wait_hours: 72           # Auto: свежий привет без ответа (или после «АЛООО»)
+      utc_offset_hours: 3          # местное время для подсчёта дней
       max_chats_per_folder: 100    # лимит Telegram (Premium — 200)
   # Сценарий знакомства (режим AUTO, канвас владельца 2026-11-02): молчит сутки
   # после стикера → «АЛООО ПРОСЫПАЕМСЯ» в 22:00, ещё сутки → бот молчит; после

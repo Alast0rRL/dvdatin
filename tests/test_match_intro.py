@@ -785,11 +785,21 @@ class TestCollectorIntro:
         assert call.args[1] == "dvai"
         assert call.kwargs == {"card_session": "dvai_2", "card_message_id": 900}
 
+    def test_greeting_sent_hides_chat_at_once(self) -> None:
+        """Стикер ушёл → чат сразу в архив и без звука (владелец, 2026-11-04)."""
+        collector, _, auto = self._collector()
+        collector._chat_folders.hide_now = AsyncMock(return_value=None)
+        run(collector._process_message(_Greeting._task(auto)))
+        call = collector._chat_folders.hide_now.await_args
+        assert call.args == (auto, "dvai_2")
+
     def test_greeting_not_sent_does_not_enroll(self) -> None:
         collector, _, auto = self._collector()
         collector._match_greeter.greet = AsyncMock(return_value="HAS_CHAT")
+        collector._chat_folders.hide_now = AsyncMock(return_value=None)
         run(collector._process_message(_Greeting._task(auto)))
         collector._match_intro.enroll.assert_not_called()
+        collector._chat_folders.hide_now.assert_not_called()
 
     def test_private_reply_goes_to_intro(self) -> None:
         collector, _, auto = self._collector()

@@ -224,9 +224,15 @@ class ChatFoldersConfig(BaseModel):
     active: str = "Active"
     fifty: str = "50/50"
     auto: str = "Auto"
-    #: Active: она написала столько сообщений, владелец — столько.
-    active_her_messages: int = 10
-    active_owner_messages: int = 3
+    #: Active: она писала в столько разных дней и молчит меньше
+    #: ``silence_hours``; молчит дольше (или не писала) — 50/50.
+    active_days: int = 3
+    silence_hours: float = 48.0
+    #: Auto: привет без ответа считается «бот ведёт» столько часов
+    #: (после «АЛООО» — до конца ожидания).
+    bot_wait_hours: float = 72.0
+    #: Местное время для подсчёта дней (Питер — +3).
+    utc_offset_hours: float = 3.0
     #: Лимит чатов в папке у Telegram (без Premium — 100, с Premium — 200).
     max_chats_per_folder: int = 100
 

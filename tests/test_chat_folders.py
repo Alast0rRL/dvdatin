@@ -1,6 +1,6 @@
 # Архив и папки Telegram для чатов девушек (владелец, 2026-11-04):
-# New — вышла из автоматики, Active — общение устоялось, 50/50 — не идёт,
-# Auto — ведёт бот. Все чаты — в архиве; перенёс сам — бот не трогает.
+# Auto — бот ведёт сейчас, Active — разговор идёт несколько дней, 50/50 —
+# молчит 48 ч+, New — остальное. Все чаты — в архиве; перенёс сам — не трогаем.
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     UpdateDialogFilterRequest,
@@ -23,7 +24,7 @@ from telethon.tl.types import (
 
 from app.config import ChatFoldersConfig
 from collectors.chat_folders import ARCHIVE_FOLDER, MAX_MOVES_PER_PASS, ChatFolders
-from collectors.match_intro import INTRO_SENT, NO_REPLY, OWNER_CHAT, SCHEDULED
+from collectors.match_intro import INTRO_SENT, OWNER_CHAT, SCHEDULED
 from database.database import Database
 from services import match_script_rules as R
 from services.chat_folders import ACTIVE, AUTO, FIFTY, NEW, folder_target
@@ -49,18 +50,25 @@ def db(tmp_path):
 
 
 def girl(
-    db: Database, uid: int, *, her: int = 0, owner: int = 0,
-    last_hours: float = 1.0, intro: dict | None = None,
+    db: Database, uid: int, *, her_days: int = 0, owner: int = 0,
+    last_hours: float = 1.0, bot: int = 1, intro: dict | None = None,
 ) -> None:
-    """Девушка-матч: контакт, сообщения (её / владельца), автопереписка."""
+    """Девушка-матч: контакт, сообщения (бот; она — по одному в день
+    ``her_days`` дней подряд, последнее ``last_hours`` назад; владелец)."""
     run(db.upsert_dialog_contact(
         S, uid, username=f"girl{uid}", name=f"G{uid}", matched_at=ago(200),
     ))
     msg_id = 1
-    for _ in range(her):
+    for _ in range(bot):
+        run(db.save_dialog_message(
+            S, uid, msg_id, is_outgoing=True, sent_by="bot",
+            message_date=ago(last_hours + 24 * her_days + 1),
+        ))
+        msg_id += 1
+    for day in range(her_days):
         run(db.save_dialog_message(
             S, uid, msg_id, is_outgoing=False, sent_by="her",
-            message_date=ago(last_hours + 0.5),
+            message_date=ago(last_hours + 24 * day),
         ))
         msg_id += 1
     for _ in range(owner):
@@ -91,6 +99,7 @@ class FakeTelegram:
         self.filters: list = [DialogFilterDefault(), *filters]
         self.updates: list[UpdateDialogFilterRequest] = []
         self.fail_update = False
+        self.muted: dict[int, bool] = {}
         self.client = AsyncMock(side_effect=self._call)
         self.client.get_input_entity = AsyncMock(side_effect=self._entity)
         self.client.edit_folder = AsyncMock(return_value=None)
@@ -111,6 +120,9 @@ class FakeTelegram:
             if req.filter is not None:
                 self.filters.append(req.filter)
             return True
+        if isinstance(req, UpdateNotifySettingsRequest):
+            self.muted[req.peer.peer.user_id] = req.settings.mute_until > 0
+            return True
         raise AssertionError(f"неожиданный запрос {req!r}")
 
     def members(self, title: str) -> set[int]:
@@ -126,62 +138,100 @@ def folders(db: Database, *, archive: bool = False, **cfg: object) -> ChatFolder
 
 
 class TestFolderTarget:
+    """Правило подобрано с владельцем 2026-11-04 на живых переписках."""
+
     def _row(self, **kw: object) -> dict:
-        base = {"her_count": 0, "owner_count": 0, "last_by": "",
-                "last_message_at": NOW.isoformat(), "matched_at": NOW.isoformat()}
+        base = {"total": 3, "her_days": 0, "last_her_at": None,
+                "greeted_at": NOW.isoformat()}
         base.update(kw)
         return base
 
+    @staticmethod
+    def _her(hours: float) -> str:
+        return (NOW - timedelta(hours=hours)).isoformat()
+
     @pytest.mark.parametrize("intro", [
-        {"intro_status": "WAITING_REPLY"},
         {"intro_status": SCHEDULED},
+        {"intro_status": INTRO_SENT, "script_step": R.AFTER_PIN},
         {"intro_status": INTRO_SENT, "script_step": R.TELL_ME},
-        {"intro_status": INTRO_SENT, "script_step": ""},
+        {"intro_status": INTRO_SENT, "script_step": R.WAKE_UP},
+        {"intro_status": "WAITING_REPLY"},
     ])
     def test_bot_leads_goes_to_auto(self, intro: dict) -> None:
         assert folder_target(self._row(**intro), bot_on=True, now=NOW) == AUTO
 
-    def test_bot_off_is_new(self) -> None:
-        row = self._row(intro_status=INTRO_SENT, script_step=R.TELL_ME)
-        assert folder_target(row, bot_on=False, now=NOW) == NEW
-
-    def test_handoff_is_new(self) -> None:
-        row = self._row(intro_status=INTRO_SENT, script_step=R.HANDOFF,
-                        her_count=3, last_by="her")
-        assert folder_target(row, bot_on=True, now=NOW) == NEW
-
-    def test_settled_talk_is_active(self) -> None:
-        row = self._row(intro_status=INTRO_SENT, script_step=R.HANDOFF,
-                        her_count=10, owner_count=3, last_by="owner")
+    def test_intro_before_script_is_not_auto(self) -> None:
+        """Анкета ушла до сценария (шаг пуст) — бот её не ведёт (прод: Дарья)."""
+        row = self._row(intro_status=INTRO_SENT, script_step="",
+                        her_days=7, last_her_at=self._her(3))
         assert folder_target(row, bot_on=True, now=NOW) == ACTIVE
 
-    def test_faded_is_fifty(self) -> None:
+    def test_old_greeting_is_not_auto(self) -> None:
+        """Привет недельной давности без ответа — бот уже ничего не делает."""
+        row = self._row(intro_status="WAITING_REPLY",
+                        greeted_at=(NOW - timedelta(days=6)).isoformat())
+        assert folder_target(row, bot_on=True, now=NOW) == FIFTY
+
+    def test_greeting_after_wake_up_is_auto(self) -> None:
+        row = self._row(intro_status="WAITING_REPLY", wake_at=self._her(10),
+                        greeted_at=(NOW - timedelta(days=4)).isoformat())
+        assert folder_target(row, bot_on=True, now=NOW) == AUTO
+
+    def test_bot_off_not_auto(self) -> None:
+        row = self._row(intro_status=INTRO_SENT, script_step=R.TELL_ME,
+                        her_days=1, last_her_at=self._her(2))
+        assert folder_target(row, bot_on=False, now=NOW) == NEW
+
+    def test_talk_for_days_is_active(self) -> None:
+        row = self._row(her_days=3, last_her_at=self._her(23))
+        assert folder_target(row, bot_on=True, now=NOW) == ACTIVE
+
+    def test_fresh_talk_is_new(self) -> None:
         row = self._row(intro_status=INTRO_SENT, script_step=R.HANDOFF,
-                        her_count=12, owner_count=5, last_by="owner",
-                        last_message_at=(NOW - timedelta(hours=80)).isoformat())
-        assert folder_target(row, bot_on=True, now=NOW) == FIFTY
+                        her_days=2, last_her_at=self._her(1))
+        assert folder_target(row, bot_on=True, now=NOW) == NEW
 
-    def test_stopped_is_fifty(self) -> None:
-        row = self._row(intro_status=INTRO_SENT, script_step=R.STOPPED, her_count=1)
-        assert folder_target(row, bot_on=True, now=NOW) == FIFTY
-
-    def test_old_no_reply_is_fifty(self) -> None:
-        assert folder_target(self._row(intro_status=NO_REPLY), bot_on=True, now=NOW) == FIFTY
+    @pytest.mark.parametrize("kw", [
+        {"her_days": 5, "last_her_at": (NOW - timedelta(hours=48)).isoformat()},
+        {"her_days": 0, "last_her_at": None},
+    ])
+    def test_silence_is_fifty(self, kw: dict) -> None:
+        assert folder_target(self._row(**kw), bot_on=True, now=NOW) == FIFTY
 
     @pytest.mark.parametrize("kw", [
         {"chat_deleted_at": "2026-11-04T10:00:00+00:00"},
         {"intro_status": INTRO_SENT, "script_step": R.DELETED},
+        {"total": 0},
     ])
-    def test_deleted_chat_in_no_folder(self, kw: dict) -> None:
+    def test_deleted_or_empty_chat_in_no_folder(self, kw: dict) -> None:
         assert folder_target(self._row(**kw), bot_on=True, now=NOW) is None
+
+
+class TestFolderRows:
+    def test_her_days_counted_in_local_time(self, db: Database) -> None:
+        """21:30 UTC = 00:30 по Питеру — уже следующий день."""
+        run(db.upsert_dialog_contact(S, 1, username="girl1", name="G1"))
+        for i, at in enumerate((
+            "2026-11-03T19:30:00+00:00", "2026-11-03T20:30:00+00:00",
+            "2026-11-03T21:30:00+00:00",
+        )):
+            run(db.save_dialog_message(
+                S, 1, i + 1, is_outgoing=False, sent_by="her", message_date=at,
+            ))
+        row = run(db.list_folder_dialogs(S, 3.0))[0]
+        assert row["her_days"] == 2
+        assert row["total"] == 3
+        assert row["last_her_at"] == "2026-11-03T21:30:00+00:00"
 
 
 class TestChatFolders:
     def test_creates_missing_folders_and_sorts(self, db: Database) -> None:
         girl(db, 1, intro={})                                        # ждёт ответа
-        girl(db, 2, her=3, intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
-        girl(db, 3, her=10, owner=3, intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
-        girl(db, 4, her=2, owner=2, last_hours=100)                  # затухла
+        girl(db, 2, her_days=1, intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
+        girl(db, 3, her_days=3, owner=3,
+             intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
+        girl(db, 4, her_days=2, owner=2, last_hours=100)             # затихла
+        girl(db, 5, bot=0)                                           # пустой чат
         tg = FakeTelegram()
         assert run(folders(db).sync(tg.client, S, bot_on=True)) == 4
         assert tg.members("Auto") == {1}
@@ -190,15 +240,15 @@ class TestChatFolders:
         assert tg.members("50/50") == {4}
 
     def test_existing_folder_found_by_title(self, db: Database) -> None:
-        girl(db, 2, her=1, intro={"status": OWNER_CHAT})
+        girl(db, 2, her_days=1, intro={"status": OWNER_CHAT})
         tg = FakeTelegram(folder(5, "new", 999))
         run(folders(db).sync(tg.client, S, bot_on=True))
         assert tg.members("new") == {999, 2}
         assert [u.id for u in tg.updates] == [5]
 
     def test_moves_between_folders_one_request_per_folder(self, db: Database) -> None:
-        girl(db, 1, intro={})
-        girl(db, 2, intro={})
+        girl(db, 1, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        girl(db, 2, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
         tg = FakeTelegram()
         f = folders(db)
         run(f.sync(tg.client, S, bot_on=True))
@@ -257,7 +307,6 @@ class TestChatFolders:
         run(db.set_dialog_chat_deleted(S, 1, True))
         run(f.sync(tg.client, S, bot_on=True))
         assert tg.members("Auto") == {2}
-        assert run(db.list_folder_dialogs(S))[1]["chat_folder"] in ("", AUTO)
 
     def test_failed_update_is_retried_not_manual(self, db: Database) -> None:
         girl(db, 1, intro={})
@@ -294,10 +343,62 @@ class TestChatFolders:
         assert tg.updates == []
 
 
+class TestSound:
+    """Звук — только Active и New; Auto и 50/50 без звука (владелец, 2026-11-04)."""
+
+    def test_sound_follows_folder(self, db: Database) -> None:
+        girl(db, 1, intro={})                                        # Auto
+        girl(db, 2, her_days=1, intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
+        girl(db, 3, her_days=3, owner=3)                             # Active
+        girl(db, 4, her_days=2, last_hours=100)                      # 50/50
+        tg = FakeTelegram()
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.muted == {1: True, 2: False, 3: False, 4: True}
+        tg.muted.clear()
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.muted == {}  # уже выставлено — повторно не шлём
+
+    def test_left_automation_gets_sound(self, db: Database) -> None:
+        girl(db, 1, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        tg = FakeTelegram()
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.muted == {1: True}
+        run(db.update_match_dialog(S, 1, script_step=R.HANDOFF))
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.members("New") == {1}
+        assert tg.muted == {1: False}
+
+    def test_manual_chat_sound_untouched(self, db: Database) -> None:
+        girl(db, 1, intro={})
+        tg = FakeTelegram(folder(5, "Active", 1))
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        assert tg.muted == {}
+
+    def test_hide_now_archives_and_mutes(self, db: Database) -> None:
+        """Сразу после стикера-привета, не дожидаясь её ответа."""
+        run(db.upsert_dialog_contact(S, 7, username="girl7", name="G7"))
+        tg = FakeTelegram()
+        run(folders(db, archive=True).hide_now(tg.client, S, username="girl7"))
+        tg.client.edit_folder.assert_awaited_once()
+        assert tg.client.edit_folder.await_args.args[1] == ARCHIVE_FOLDER
+        assert tg.muted == {7: True}
+        row = run(db.list_folder_dialogs(S))[0]
+        assert row["archived_at"] and row["notify_mark"] == "muted"
+
+    def test_hide_now_error_does_not_raise(self, db: Database) -> None:
+        tg = FakeTelegram()
+        tg.client.get_input_entity = AsyncMock(side_effect=ValueError("no peer"))
+        run(folders(db, archive=True).hide_now(tg.client, S, user_id=5))
+        tg.client.edit_folder.assert_not_awaited()
+
+
 class TestArchive:
     def test_every_chat_archived_once(self, db: Database) -> None:
         girl(db, 1, intro={})
-        girl(db, 2, her=10, owner=3, intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
+        girl(db, 2, her_days=3, owner=3,
+             intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
         tg = FakeTelegram()
         f = folders(db, archive=True, enabled=False)
         assert run(f.sync(tg.client, S, bot_on=True)) == 2

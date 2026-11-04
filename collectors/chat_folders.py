@@ -18,14 +18,20 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     UpdateDialogFilterRequest,
 )
-from telethon.tl.types import DialogFilter, TextWithEntities
+from telethon.tl.types import (
+    DialogFilter,
+    InputNotifyPeer,
+    InputPeerNotifySettings,
+    TextWithEntities,
+)
 
 from collectors.match_greeter import flood_pause_sec
-from services.chat_folders import FOLDERS, folder_target
+from services.chat_folders import AUTO, FIFTY, FOLDERS, folder_target
 from services.match_script_rules import DELETED
 
 if TYPE_CHECKING:
@@ -34,8 +40,15 @@ if TYPE_CHECKING:
 
 #: Папка Telegram «Архив».
 ARCHIVE_FOLDER: int = 1
-#: Сколько чатов класть в архив / в папки за проход (первый запуск — много).
+#: Сколько чатов класть в архив / в папки / глушить за проход.
 MAX_MOVES_PER_PASS: int = 15
+#: «Без звука навсегда» (максимум int32 — так делают клиенты Telegram).
+MUTE_FOREVER: int = 2**31 - 1
+#: Отметки звука в ``dialog_contacts.notify_mark``.
+MUTED: str = "muted"
+SOUND_ON: str = "on"
+#: Папки без уведомлений (владелец, 2026-11-04): звук — только Active и New.
+MUTED_FOLDERS: frozenset[str] = frozenset({AUTO, FIFTY})
 #: Номера пользовательских папок Telegram.
 _FILTER_IDS: range = range(2, 256)
 #: Флаги папки «по типу чатов»: хоть один — папка не пустая.
@@ -57,6 +70,14 @@ def _title(f: Any) -> str:
 def _peer_user(peer: Any) -> int | None:
     uid = getattr(peer, "user_id", None)
     return int(uid) if uid is not None else None
+
+
+async def set_muted(client: Any, peer: Any, muted: bool) -> None:
+    """Уведомления её чата: выкл навсегда / вкл."""
+    await client(UpdateNotifySettingsRequest(
+        peer=InputNotifyPeer(peer=peer),
+        settings=InputPeerNotifySettings(mute_until=MUTE_FOREVER if muted else 0),
+    ))
 
 
 def _drop_user(f: Any, user_id: int) -> None:
@@ -105,16 +126,85 @@ class ChatFolders:
         if not self.enabled or self._db is None or client is None:
             return 0
         try:
-            rows = await self._db.list_folder_dialogs(session)
+            rows = await self._db.list_folder_dialogs(
+                session, self._config.utc_offset_hours,
+            )
         except Exception as e:
             logger.error(f"Папки чатов: не прочитал переписки {session}: {e}")
             return 0
         moved = 0
+        targets: dict[int, str | None] = {}
         if self._config.enabled:
-            moved += await self._sync_folders(client, session, rows, bot_on)
+            moved += await self._sync_folders(client, session, rows, bot_on, targets)
+            await self._sync_sound(client, session, rows, targets)
         if self.archive:
             moved += await self._sync_archive(client, session, rows)
         return moved
+
+    async def hide_now(
+        self, client: Any, session: str, *, user_id: int = 0, username: str = "",
+    ) -> None:
+        """Сразу после стикера-привета: её чат — в архив и без звука
+        (владелец, 2026-11-04: не ждать её ответа). Ошибка — WARNING,
+        минутный проход доделает."""
+        if not self.enabled or self._db is None or client is None:
+            return
+        who: object = username or user_id
+        if not who:
+            return
+        try:
+            peer = await client.get_input_entity(who)
+        except Exception as e:
+            logger.warning(f"Папки чатов: не нашёл {who} на {session}: {e}")
+            return
+        uid = int(getattr(peer, "user_id", 0) or user_id or 0)
+        fields: dict[str, object] = {}
+        if self.archive:
+            try:
+                await client.edit_folder(peer, ARCHIVE_FOLDER)
+                fields["archived_at"] = _now()
+            except Exception as e:
+                logger.warning(f"Архив чатов: {who} на {session}: {e}")
+        if self._config.enabled:
+            try:
+                await set_muted(client, peer, True)
+                fields["notify_mark"] = MUTED
+            except Exception as e:
+                logger.warning(f"Звук чатов: {who} на {session}: {e}")
+        if fields and uid:
+            await self._db.update_dialog_contact(session, uid, **fields)
+        logger.info(f"Папки чатов: {who} на {session} — в архив и без звука сразу")
+
+    async def _sync_sound(
+        self, client: Any, session: str, rows: list[dict],
+        targets: dict[int, str | None],
+    ) -> None:
+        """Звук — только в Active и New; Auto и 50/50 — без звука. Чат,
+        который владелец перенёс сам, и чат вне папок не трогаем."""
+        changed = 0
+        for row in rows:
+            user_id = int(row["user_id"])
+            target = targets.get(user_id)
+            if target is None:
+                continue
+            want = MUTED if target in MUTED_FOLDERS else SOUND_ON
+            if (row.get("notify_mark") or "") == want:
+                continue
+            if changed >= MAX_MOVES_PER_PASS:
+                break
+            try:
+                peer = await client.get_input_entity(row.get("username") or user_id)
+                await set_muted(client, peer, want == MUTED)
+            except Exception as e:
+                if flood_pause_sec(e) is not None:
+                    logger.warning(f"Звук чатов: {session} FloodWait — позже")
+                    break
+                logger.warning(
+                    f"Звук чатов: {row.get('name') or user_id} на {session}: {e}"
+                )
+                continue
+            changed += 1
+            await self._db.update_dialog_contact(session, user_id, notify_mark=want)
 
     # ── Архив ────────────────────────────────────────────────────────
 
@@ -126,6 +216,8 @@ class ChatFolders:
         for row in rows:
             if row.get("archived_at") or row.get("chat_deleted_at"):
                 continue
+            if int(row.get("total") or 0) == 0:
+                continue  # пустой чат — в Telegram его нет
             if (row.get("script_step") or "") == DELETED:
                 continue
             if moved >= MAX_MOVES_PER_PASS:
@@ -163,6 +255,7 @@ class ChatFolders:
 
     async def _sync_folders(
         self, client: Any, session: str, rows: list[dict], bot_on: bool,
+        targets: dict[int, str | None],
     ) -> int:
         filters = await self._load_filters(client, session)
         if filters is None:
@@ -211,10 +304,12 @@ class ChatFolders:
                 continue
             target = folder_target(
                 row, bot_on=bot_on,
-                active_her_messages=cfg.active_her_messages,
-                active_owner_messages=cfg.active_owner_messages,
+                active_days=cfg.active_days,
+                silence_hours=cfg.silence_hours,
+                bot_wait_hours=cfg.bot_wait_hours,
                 now=now,
             )
+            targets[user_id] = target
             want = {target} if target else set()
             if actual == want:
                 if user_id in uncertain or stored != (target or ""):
