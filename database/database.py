@@ -269,8 +269,6 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- разных девушек с тем же «имя, возраст» — пересылаем именно эту карточку.
 -- wake_at / wake_msg_id: молчала сутки после стикера — бот написал «АЛООО
 -- ПРОСЫПАЕМСЯ» (когда и id); молчит ещё сутки → NO_REPLY.
--- archive_mark: не используется с 2026-11-04 (была метка архива чатов;
--- архив и папки теперь — dialog_contacts.archived_at / chat_folder).
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -294,7 +292,6 @@ CREATE TABLE IF NOT EXISTS match_dialogs (
     card_message_id INTEGER NOT NULL DEFAULT 0,
     wake_at TEXT NOT NULL DEFAULT '',
     wake_msg_id INTEGER NOT NULL DEFAULT 0,
-    archive_mark TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -524,7 +521,6 @@ class Database:
         "card_message_id": "INTEGER NOT NULL DEFAULT 0",
         "wake_at": "TEXT NOT NULL DEFAULT ''",
         "wake_msg_id": "INTEGER NOT NULL DEFAULT 0",
-        "archive_mark": "TEXT NOT NULL DEFAULT ''",
     }
 
     async def _ensure_match_dialogs_script_columns(self) -> None:
@@ -1410,26 +1406,6 @@ class Database:
         )
         return await cursor.fetchone() is not None
 
-    async def has_auto_action_for_message(
-        self, chat_id: int, telegram_message_id: int,
-        action: str = "LIKE",
-    ) -> bool:
-        """Идемпотентность по конкретной карточке (telegram_message_id) и виду
-        действия (LIKE / DISLIKE / MESSAGE).
-
-        Каждый вид действия (Decision != Action, §30): LIKE (❤️), DISLIKE (👎)
-        и MESSAGE («Берем)») независимы — на одну карточку может быть и LIKE,
-        и MESSAGE, но каждый вид — не более одного раза. Повторная карточка
-        той же личности (новый telegram_message_id) считается новой — реакция
-        отправляется снова.
-        """
-        cursor = await self._connection.execute(
-            "SELECT 1 FROM auto_actions_log "
-            "WHERE chat_id = ? AND telegram_message_id = ? AND action = ?",
-            (chat_id, telegram_message_id, action),
-        )
-        return await cursor.fetchone() is not None
-
     async def has_reaction_for_message(
         self, chat_id: int, telegram_message_id: int,
     ) -> bool:
@@ -1987,7 +1963,7 @@ class Database:
         "sent_at", "pinned", "error",
         "script_step", "script_at", "script_due_at", "script_pending",
         "script_msg_id", "script_variant", "card_session", "card_message_id",
-        "wake_at", "wake_msg_id", "archive_mark",
+        "wake_at", "wake_msg_id",
     })
 
     async def add_match_dialog(
@@ -2065,18 +2041,6 @@ class Database:
             WHERE account_session = ? AND status = ?
             ORDER BY greeted_at LIMIT ?""",
             (account_session or "", status, int(limit)),
-        )
-        rows = await cursor.fetchall()
-        return [self._row_to_dict(cursor, row) for row in rows]
-
-    async def list_all_match_dialogs(
-        self, account_session: str, limit: int = 500,
-    ) -> list[dict]:
-        """Все переписки аккаунта (новые первыми) — для архива чатов."""
-        cursor = await self._connection.execute(
-            """SELECT * FROM match_dialogs WHERE account_session = ?
-            ORDER BY greeted_at DESC LIMIT ?""",
-            (account_session or "", int(limit)),
         )
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
@@ -2952,21 +2916,6 @@ class Database:
         except Exception as e:
             logger.error(f"get_known_captchas: {e}")
             return []
-
-    async def get_captcha_by_id(self, row_id: int) -> dict | None:
-        """Одна запись captcha_memory по id (для веб-ответа на капчу)."""
-        try:
-            cursor = await self._connection.execute(
-                "SELECT * FROM captcha_memory WHERE id = ?",
-                (int(row_id),),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                return None
-            return self._row_to_dict(cursor, row)
-        except Exception as e:
-            logger.error(f"get_captcha_by_id: {e}")
-            return None
 
     async def set_captcha_answer(self, row_id: int, answer: str) -> bool:
         """Сохраняет ответ владельца на капчу (в этот раз уже известна)."""

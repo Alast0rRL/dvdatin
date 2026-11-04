@@ -109,14 +109,6 @@ class TestCaptchaMemoryDB:
         run(tmp_db.mark_captcha_used(SIGNATURE))
         assert run(tmp_db.get_known_captchas())[0]["used_count"] == 2
 
-    def test_get_captcha_by_id(self, tmp_db: Database) -> None:
-        run(tmp_db.record_pending_captcha(SIGNATURE, CAPTCHA_TEXT, BUTTONS))
-        row = run(tmp_db.get_pending_captchas())[0]
-        fetched = run(tmp_db.get_captcha_by_id(row["id"]))
-        assert fetched is not None
-        assert fetched["signature"] == SIGNATURE
-        assert run(tmp_db.get_captcha_by_id(999999)) is None
-
     def test_delete_captcha(self, tmp_db: Database) -> None:
         run(tmp_db.record_pending_captcha(SIGNATURE, CAPTCHA_TEXT, BUTTONS))
         captcha_id = run(tmp_db.get_pending_captchas())[0]["id"]

@@ -295,17 +295,6 @@ class AccountEnginesMixin:
         self.set_controls(target, scroll=False)
         return True
 
-    async def request_mode(
-        self, mode: Mode, session: str | None = None,
-    ) -> str | None:
-        """Меняет режим, если это разрешено; иначе возвращает причину отказа."""
-        reason = await self.mode_block_reason(mode, session)
-        if reason is not None:
-            logger.warning(f"Смена режима на {mode.value} отклонена: {reason}")
-            return reason
-        self.set_mode(mode, session)
-        return None
-
     def auto_engine(self, session: str | None = None) -> AutoActionEngine | None:
         """Движок авто-действий аккаунта (None — основной)."""
         return self._engines.get(self._resolve_session(session))

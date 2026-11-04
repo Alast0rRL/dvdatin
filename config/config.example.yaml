@@ -62,8 +62,6 @@ filters:
 # профиля: пороги решают, LIKE/REVIEW/DISLIKE. Правила признаков — в preferences.
 ai:
   decision:
-    like_threshold: 0.75       # score >= + positive factors → LIKE
-    review_threshold: 0.50     # score >= → REVIEW
     scoring_version: "deterministic-v2"
 
 # Stage 7 (SEMI_AUTO): авто-действия на анкетах (отправка ❤️/👎).

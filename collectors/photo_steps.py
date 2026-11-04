@@ -70,13 +70,8 @@ class PhotoStepsMixin:
             if isinstance(r, (bytes, bytearray)) and r
         ]
 
-    async def _backfill_photo_bytes(self, photos: list[dict]) -> list[bytes]:
-        """Байты фото для досчёта (см. ``_backfill_photo_items``)."""
-        got = await self._backfill_photo_items(photos)
-        return [got[ph["message_id"]] for ph in photos if ph["message_id"] in got]
-
     async def _backfill_photo_items(self, photos: list[dict]) -> dict[int, bytes]:
-        """``{message_id: байты}``: фото из кэша media/; нет в кэше — скачиваем
+        """Фото для досчёта эмбеддингов: ``{message_id: байты}``: фото из кэша media/; нет в кэше — скачиваем
         аккаунтом-получателем и кладём в кэш (тогда и на /rate они откроются
         сразу)."""
         from web.photos import _cache_filename  # noqa: PLC0415 — общая схема имён кэша

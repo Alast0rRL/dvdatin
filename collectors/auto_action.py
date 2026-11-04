@@ -341,38 +341,6 @@ class AutoActionEngine:
             f"до {until}. Дизлайки (👎) продолжаю слать."
         )
 
-    def swap_client(
-        self,
-        client: TelegramClient | None,
-        notify_client: TelegramClient | None = None,
-        account_session: str | None = None,
-    ) -> None:
-        """Меняет аккаунт-исполнитель действий на лету (Веб-панель).
-
-        Сбрасывает кэш peer (у каждого аккаунта свой access_hash чата Leo)
-        и состояние rate-limiter. Оставшиеся цепочки LIKE_AND_MESSAGE
-        не обнуляются: они привязаны к chat_id и валидны на любом аккаунте.
-        """
-        self._client = client
-        if account_session is not None:
-            if account_session != self._account_session:
-                # Лимит ❤️ у аккаунтов свой — состояние нового подгрузим из БД.
-                self._likes_exhausted_until = 0.0
-                self._like_limit_loaded = False
-            self._account_session = account_session
-        self._peer = None
-        self._notify_user_id = None
-        self._last_action_at = 0.0
-        self._last_composer_send_at = 0.0
-        self._actions.clear()
-        # Номера карточек у разных аккаунтов одного чата лежат в РАЗНЫХ
-        # пространствах (прод: dvai_2 — 25xxx, dvai — 726xxx) → после смены
-        # аккаунта сравнивать не с чем, указатель сбрасываем.
-        self._latest_card.clear()
-        if notify_client is not None:
-            self._notify_client = notify_client
-        logger.info(f"AutoAction: аккаунт-исполнитель сменён (client={client is not None})")
-
     @property
     def mode_label(self) -> str:
         return self._mode.value

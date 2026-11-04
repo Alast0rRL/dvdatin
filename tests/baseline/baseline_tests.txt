@@ -104,7 +104,6 @@ tests/test_auto_action.py::TestAutoActionStaleCard::test_current_card_still_reac
 tests/test_auto_action.py::TestAutoActionStaleCard::test_stale_like_message_chain_not_started
 tests/test_auto_action.py::TestAutoActionStaleCard::test_unknown_card_is_not_stale
 tests/test_auto_action.py::TestAutoActionStaleCard::test_note_card_is_monotonic
-tests/test_auto_action.py::TestAutoActionStaleCard::test_swap_client_resets_card_pointer
 tests/test_auto_action.py::TestAutoActionStaleCard::test_deferred_reaction_dropped_when_card_gone
 tests/test_auto_action.py::TestAutoActionStaleCard::test_deferred_reaction_skipped_when_card_already_logged
 tests/test_auto_action.py::TestAutoActionStaleCard::test_direct_action_clears_deferred_copy
@@ -183,7 +182,7 @@ tests/test_auto_action.py::TestLikeAndMessageChain::test_stale_chain_dropped_and
 tests/test_auto_action.py::TestLikeAndMessageChain::test_deferred_kept_while_composer_still_open
 tests/test_auto_action.py::TestLikeAndMessageChain::test_deferred_flush_skipped_when_disabled
 tests/test_auto_action.py::TestAutoActionLikeLimit::test_limit_key_is_per_account
-tests/test_auto_action.py::TestAutoActionLikeLimit::test_swap_account_drops_foreign_limit
+tests/test_auto_action.py::TestAutoActionLikeLimit::test_other_account_ignores_foreign_limit
 tests/test_auto_action.py::TestAutoActionLikeLimit::test_like_limit_blocks_like
 tests/test_auto_action.py::TestAutoActionLikeLimit::test_like_limit_allows_dislike
 tests/test_auto_action.py::TestAutoActionLikeLimit::test_expired_limit_does_not_block
@@ -193,7 +192,6 @@ tests/test_auto_action.py::TestAutoActionLikeLimit::test_handle_rejection_notifi
 tests/test_auto_action.py::TestAutoActionLikeLimit::test_handle_rejection_aborts_chain
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_successful_action_creates_one_log_and_updates_status
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_repeat_show_of_same_profile_gets_another_action
-tests/test_auto_action_audit.py::TestAutoActionAudit::test_like_and_message_are_independent_actions
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_failed_telegram_action_has_no_log
 tests/test_auto_action_audit.py::TestAutoActionAudit::test_migration_adds_log_to_existing_database
 tests/test_captcha_memory.py::TestCaptchaSignature::test_lowercases_and_collapses_whitespace
@@ -203,7 +201,6 @@ tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_pending_refresh_keeps_pe
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_set_answer_and_solve
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_pending_does_not_overwrite_learned_answer
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_mark_captcha_used_increments
-tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_get_captcha_by_id
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_delete_captcha
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_schema_idempotent_and_legacy_friendly
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_clear_all_data_includes_captcha_memory
@@ -493,8 +490,6 @@ tests/test_decision.py::TestDecisionSignals::test_multiple_positive_features
 tests/test_decision.py::TestDecisionSignals::test_no_features_not_zero_score
 tests/test_decision.py::TestDecisionSignals::test_hard_negative_overrides_positive
 tests/test_decision.py::TestDecisionSignals::test_filter_reject_overrides_positive_features
-tests/test_decision.py::TestDecisionConfig::test_configurable_thresholds
-tests/test_decision.py::TestDecisionConfig::test_high_like_threshold_needs_more_features
 tests/test_decision.py::TestDecisionDB::test_decision_history
 tests/test_decision.py::TestDecisionDB::test_scoring_version_is_deterministic
 tests/test_decision.py::TestDecisionDB::test_default_scoring_version
@@ -1089,7 +1084,6 @@ tests/test_web.py::TestLogin::test_login_success
 tests/test_web.py::TestLogin::test_login_wrong_password
 tests/test_web.py::TestLogin::test_protected_route_redirects
 tests/test_web.py::TestLogin::test_protected_settings_redirects
-tests/test_web.py::TestLogin::test_protected_profile_redirects
 tests/test_web.py::TestLogin::test_logout
 tests/test_web.py::TestLogin::test_no_secrets_in_config
 tests/test_web.py::TestAppShell::test_root_renders_app
@@ -1124,7 +1118,6 @@ tests/test_web.py::TestQuickAction::test_quick_action_non_review
 tests/test_web.py::TestQuickAction::test_quick_action_invalid
 tests/test_web.py::TestQuickAction::test_quick_action_sends_reaction
 tests/test_web.py::TestQuickAction::test_quick_action_returns_disabled_without_engine
-tests/test_web.py::TestProfileInFeed::test_profile_page_redirects
 tests/test_web.py::TestProfileInFeed::test_feed_has_no_action_buttons
 tests/test_web.py::TestProfileInFeed::test_review_action_like_saves_human_decision
 tests/test_web.py::TestProfileInFeed::test_review_action_rejected_for_non_review

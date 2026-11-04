@@ -21,11 +21,7 @@ from services.profile_service import ProfileService
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
-def make_config(
-    like_threshold: float = 0.75,
-    review_threshold: float = 0.50,
-    scoring_version: str = "deterministic-v2",
-) -> AppConfig:
+def make_config(scoring_version: str = "deterministic-v2") -> AppConfig:
     return AppConfig(**{
         "telegram": {"api_id": 123, "api_hash": "abc"},
         "filters": {
@@ -35,8 +31,6 @@ def make_config(
         "ai": {
             "enabled": True,
             "decision": {
-                "like_threshold": like_threshold,
-                "review_threshold": review_threshold,
                 "scoring_version": scoring_version,
             },
         },
@@ -233,7 +227,6 @@ class TestDecisionSignals:
         ))
         result = run(decision.evaluate(prof_id))
         assert result.decision == AIDecision.LIKE
-        assert result.combined_score >= config.ai.decision.like_threshold
 
     def test_no_features_not_zero_score(self, tmp_db: Database) -> None:
         """Отсутствие признаков → score = base_score (0.5), REVIEW."""
@@ -266,31 +259,6 @@ class TestDecisionSignals:
         result = run(decision.evaluate(prof_id))
         assert result.decision == AIDecision.DISLIKE
         assert "FILTER_REJECTED" in result.reasons
-
-
-# ── CONFIGURABLE thresholds ──────────────────────────────────────────
-
-class TestDecisionConfig:
-    def test_configurable_thresholds(self, tmp_db: Database) -> None:
-        """Низкий like_threshold → положительные признаки дают LIKE."""
-        config = make_config(like_threshold=0.50, review_threshold=0.40)
-        decision = build_stack(tmp_db, config)
-        prof_id = run(insert_profile(
-            tmp_db, 12, description="Люблю аниме"
-        ))
-        result = run(decision.evaluate(prof_id))
-        assert result.decision == AIDecision.LIKE
-
-    def test_high_like_threshold_needs_more_features(self, tmp_db: Database) -> None:
-        """Решение LIKE не зависит от like_threshold: информативная и чистая → LIKE."""
-        config = make_config(like_threshold=0.99)
-        decision = build_stack(tmp_db, config)
-        prof_id = run(insert_profile(
-            tmp_db, 13, description="Люблю аниме"
-        ))
-        result = run(decision.evaluate(prof_id))
-        # Один известный признак → информативная и чистая → LIKE
-        assert result.decision == AIDecision.LIKE
 
 
 # ── DATABASE / versions ──────────────────────────────────────────────

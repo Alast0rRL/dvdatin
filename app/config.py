@@ -608,35 +608,9 @@ class PhotoTasteConfig(BaseModel):
 
 
 class DecisionConfig(BaseModel):
-    """Настройки Decision Engine.
+    """Версия детерминированного скоринга (пишется в каждое решение)."""
 
-    Пороги используются для детерминированного scoring:
-    - like_threshold: score >= → LIKE (при наличии positive factors).
-    - review_threshold: score >= → REVIEW (иначе тоже REVIEW — DISLIKE только по hard-negative).
-    """
-
-    like_threshold: float = 0.75
-    review_threshold: float = 0.50
     scoring_version: str = "deterministic-v2"
-
-    @field_validator("like_threshold", "review_threshold")
-    @classmethod
-    def threshold_in_range(cls, v: float) -> float:
-        if not (0.0 <= v <= 1.0):
-            msg = "Порог должен быть от 0.0 до 1.0"
-            raise ValueError(msg)
-        return v
-
-    @model_validator(mode="after")
-    def validate_thresholds_order(self) -> DecisionConfig:
-        """review_threshold должен быть строго меньше like_threshold."""
-        if self.review_threshold >= self.like_threshold:
-            msg = (
-                f"review_threshold ({self.review_threshold}) должен быть "
-                f"строго меньше like_threshold ({self.like_threshold})"
-            )
-            raise ValueError(msg)
-        return self
 
 
 class AIConfig(BaseModel):

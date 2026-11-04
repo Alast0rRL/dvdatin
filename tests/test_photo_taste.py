@@ -486,11 +486,11 @@ class TestBackfillLoop:
             cached = photos_mod._cache_filename(1, 7, "dvai")
             cached.parent.mkdir(parents=True)
             cached.write_bytes(b"cached")
-            out = run(col._backfill_photo_bytes([
+            out = run(col._backfill_photo_items([
                 {"profile_id": 1, "message_id": 7, "chat_id": 1, "account_session": "dvai"},
                 {"profile_id": 1, "message_id": 8, "chat_id": 1, "account_session": "dvai"},
             ]))
-            assert out == [b"cached", b"downloaded"]
+            assert out == {7: b"cached", 8: b"downloaded"}
             # Скачанное легло в кэш — /rate откроет сразу.
             assert photos_mod._cache_filename(1, 8, "dvai").read_bytes() == b"downloaded"
         client.get_messages.assert_awaited_once_with(1, ids=[8])

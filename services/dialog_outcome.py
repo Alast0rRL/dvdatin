@@ -28,8 +28,6 @@ GOOD: str = "good"
 ACTIVE: str = "active"
 FAILED: str = "failed"
 
-CATEGORIES: tuple[str, ...] = (GOOD, ACTIVE, FAILED)
-
 #: Причины неудачи.
 SILENT: str = "silent"        # так и не ответила
 FADED: str = "faded"          # ответила, потом перестала — тупик

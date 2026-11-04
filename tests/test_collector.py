@@ -60,7 +60,6 @@ def make_db_mock() -> Database:
     db = AsyncMock(spec=Database)
     db.save_raw_message = AsyncMock(return_value=1)
     db.has_auto_action = AsyncMock(return_value=False)
-    db.has_auto_action_for_message = AsyncMock(return_value=False)
     db.has_reaction_for_message = AsyncMock(return_value=False)
     db.was_profile_matched = AsyncMock(return_value=False)
     db.record_auto_action = AsyncMock()
@@ -3524,13 +3523,10 @@ class TestCollectorAutoActions:
         self._limit_state(collector, _time.time() + 3600)
         run = asyncio.get_event_loop().run_until_complete
 
-        with patch.object(AppConfig, "persist_mode") as persist:
-            for mode in (Mode.SEMI_AUTO, Mode.AUTO):
-                reason = run(collector.request_mode(mode))
-                assert reason is not None and "Лимит ❤️" in reason
-                assert collector.mode is Mode.OBSERVE
-            persist.assert_not_called()
-            assert run(collector.request_mode(Mode.OBSERVE)) is None
+        for mode in (Mode.SEMI_AUTO, Mode.AUTO):
+            reason = run(collector.mode_block_reason(mode))
+            assert reason is not None and "Лимит ❤️" in reason
+        assert run(collector.mode_block_reason(Mode.OBSERVE)) is None
 
     def test_mode_allowed_after_like_limit_reset(self) -> None:
         """Срок лимита прошёл → режим включается."""
@@ -3540,12 +3536,10 @@ class TestCollectorAutoActions:
         )
         collector._auto_engine.mode = Mode.OBSERVE
         self._limit_state(collector, _time.time() - 60)
-        with patch.object(AppConfig, "persist_mode"):
-            reason = asyncio.get_event_loop().run_until_complete(
-                collector.request_mode(Mode.AUTO)
-            )
+        reason = asyncio.get_event_loop().run_until_complete(
+            collector.mode_block_reason(Mode.AUTO)
+        )
         assert reason is None
-        assert collector.mode is Mode.AUTO
 
     def test_resume_after_match_stop_blocked_by_like_limit(self) -> None:
         """«Продолжить» при исчерпанном лимите: остаёмся в OBSERVE, ничего не жмём."""

@@ -109,14 +109,12 @@ def create_app(web_config: WebConfig | None = None) -> Flask:
     from web.blueprints.chat import chat_bp
     from web.blueprints.dashboard import dashboard_bp
     from web.blueprints.photos import photos_bp
-    from web.blueprints.profiles import profiles_bp
     from web.blueprints.dialogs import dialogs_bp
     from web.blueprints.rate import rate_bp
     from web.blueprints.settings import settings_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
-    app.register_blueprint(profiles_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(photos_bp)
     app.register_blueprint(chat_bp)

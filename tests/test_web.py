@@ -231,11 +231,6 @@ class TestLogin:
         assert resp.status_code == 302
         assert "/login" in resp.headers.get("Location", "")
 
-    def test_protected_profile_redirects(self, client) -> None:
-        resp = client.get("/profiles/1")
-        assert resp.status_code == 302
-        assert "/login" in resp.headers.get("Location", "")
-
     def test_logout(self, client) -> None:
         _login(client)
         with client.session_transaction() as sess:
@@ -359,7 +354,7 @@ class TestAppShell:
     def test_legacy_pages_redirect_to_app(self, client) -> None:
         """Старые страницы ведут на главный экран (без 404)."""
         _login(client)
-        for path in ("/dashboard", "/settings", "/profiles/1", "/profiles/2/action"):
+        for path in ("/dashboard", "/settings"):
             resp = client.get(path)
             assert resp.status_code == 302, path
             loc = resp.headers["Location"]
@@ -702,12 +697,7 @@ class TestQuickAction:
 # ── Анкета в ленте (отдельной страницы больше нет) ────────────────
 
 class TestProfileInFeed:
-    """Анкеты живут в ленте; /profiles/<id> — редирект на главный экран."""
-
-    def test_profile_page_redirects(self, client) -> None:
-        _login(client)
-        resp = client.get("/profiles/1")
-        assert resp.status_code == 302
+    """Анкеты живут в ленте (отдельной страницы анкеты нет)."""
 
     def test_feed_has_no_action_buttons(self, client) -> None:
         """Лента — дублирование чата: карточек с ❤️/👎 больше нет.

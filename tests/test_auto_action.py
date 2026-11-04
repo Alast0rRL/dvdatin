@@ -411,13 +411,6 @@ class TestAutoActionStaleCard:
         assert e.is_stale_card(1234060895, 200) is True
         assert e.is_stale_card(1234060895, 300) is False
 
-    def test_swap_client_resets_card_pointer(self) -> None:
-        """У аккаунтов номера карточек в разных пространствах — сбрасываем."""
-        e = make_engine()
-        e.note_card(1234060895, 726751)
-        e.swap_client(make_client())
-        assert e.is_stale_card(1234060895, 300) is False
-
     def test_deferred_reaction_dropped_when_card_gone(self) -> None:
         """Отложенная реакция на устаревшую карточку не отправляется."""
         client = make_client()
@@ -969,7 +962,7 @@ class TestAutoActionIdempotency:
     """TEST GAP #13: same profile + new telegram_message_id → action allowed.
 
     Идемпотентность по telegram_message_id обеспечивается на уровне collector
-    (has_auto_action_for_message в БД), а не в движке. Движок НЕ блокирует
+    (has_reaction_for_message в БД), а не в движке. Движок НЕ блокирует
     повторные действия по profile_id — это позволяет ленте Leo не замирать
     при повторных показах одного и того же человека.
     """
@@ -1693,9 +1686,9 @@ class TestAutoActionLikeLimit:
         asyncio.get_event_loop().run_until_complete(e.mark_likes_exhausted())
         assert db.set_state.await_args.args[0] == f"{LIKE_LIMIT_STATE_KEY}:dvai_2"
 
-    def test_swap_account_drops_foreign_limit(self) -> None:
-        """Регресс (прод 2026-10-21): после переключения на dvai лайки
-        не шли, потому что лимит dvai_2 был общим ключом на оба аккаунта."""
+    def test_other_account_ignores_foreign_limit(self) -> None:
+        """Регресс (прод 2026-10-21): лайки на dvai не шли, потому что лимит
+        dvai_2 был общим ключом на оба аккаунта."""
         states = {f"{LIKE_LIMIT_STATE_KEY}:dvai_2": str(time.time() + 3600)}
         db = self._make_db()
         db.get_state = AsyncMock(side_effect=lambda k: states.get(k))
@@ -1706,9 +1699,9 @@ class TestAutoActionLikeLimit:
             e.maybe_act(AIDecision.LIKE, message_id=900, informative=True)
         ) == "LIKE_LIMIT"
 
-        e.swap_client(make_client(), account_session="dvai")
+        other = make_engine(client=make_client(), db=db, account_session="dvai")
         assert loop.run_until_complete(
-            e.maybe_act(AIDecision.LIKE, message_id=901, informative=True)
+            other.maybe_act(AIDecision.LIKE, message_id=901, informative=True)
         ) == "LIKE"
 
     def test_like_limit_blocks_like(self) -> None:

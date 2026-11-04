@@ -132,7 +132,6 @@ class TestCollectorDecisionIntegration:
         client = AsyncMock()
         db = AsyncMock(spec=Database)
         db.save_raw_message = AsyncMock(return_value=1)
-        db.has_auto_action_for_message = AsyncMock(return_value=False)
         db.has_reaction_for_message = AsyncMock(return_value=False)
 
         config = make_config()
@@ -160,7 +159,6 @@ class TestCollectorDecisionIntegration:
         client = AsyncMock()
         db = AsyncMock(spec=Database)
         db.save_raw_message = AsyncMock(return_value=1)
-        db.has_auto_action_for_message = AsyncMock(return_value=False)
         db.has_reaction_for_message = AsyncMock(return_value=False)
 
         config = make_config()
@@ -206,7 +204,6 @@ class TestCollectorDecisionIntegration:
         client = AsyncMock()
         db = AsyncMock(spec=Database)
         db.save_raw_message = AsyncMock(return_value=1)
-        db.has_auto_action_for_message = AsyncMock(return_value=False)
         db.has_reaction_for_message = AsyncMock(return_value=False)
 
         config = make_config()
@@ -284,7 +281,6 @@ class TestCollectorDecisionIntegration:
         client = AsyncMock()
         db = AsyncMock(spec=Database)
         db.save_raw_message = AsyncMock(return_value=1)
-        db.has_auto_action_for_message = AsyncMock(return_value=False)
         db.has_reaction_for_message = AsyncMock(return_value=False)
 
         config = make_config()
