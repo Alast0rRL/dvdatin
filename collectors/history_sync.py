@@ -124,6 +124,10 @@ class HistorySyncMixin:
                 await self.sync_chat_history()
             except Exception as e:
                 logger.error(f"Сверка истории чата: {e}")
+            try:
+                await self.check_liked_cards()
+            except Exception as e:
+                logger.error(f"Проверка карточек лайка: {e}")
             await self.retry_match_greetings()
             await self.run_match_intros()
             await self.sync_dialogs()

@@ -826,14 +826,24 @@ class AutoActionEngine:
         )
         return False
 
-    async def send_text(self, text: str) -> bool:
+    @property
+    def can_press(self) -> bool:
+        """Кнопку Leo можно нажать и при выключенном «Скроллинге».
+
+        Нужно для показа лайкнувших при «Авто» (владелец, 2026-11-04):
+        режим ленты не важен, только общий выключатель и клиент.
+        """
+        return bool(self._config.enabled) and self._client is not None
+
+    async def send_text(self, text: str, *, any_mode: bool = False) -> bool:
         """Отправляет произвольный текст в чат (нажатие reply-кнопки Leo).
 
         Используется для кнопки «🚀 Смотреть анкеты»: Leo при исчерпании ленты
         шлёт промо-сообщение с кнопкой, нажатие продолжает поток. Нажатие
-        reply-кнопки = отправка её текста обычным сообщением.
+        reply-кнопки = отправка её текста обычным сообщением. ``any_mode`` —
+        нажать и при выключенном «Скроллинге» (показ лайкнувших при «Авто»).
         """
-        if not self.enabled:
+        if not (self.enabled or (any_mode and self.can_press)):
             return False
         await self._send(text)
         logger.info(f"AutoAction: нажата кнопка {text!r} на chat={self._chat_id}")

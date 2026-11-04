@@ -960,6 +960,10 @@ class DvinchikCollector(
         if self._stats:
             self._stats.record_unknown()
         if not self._is_auto_receiver(msg, task.chat_id):
+            if self._is_liked_receiver(msg, task.chat_id) and self._is_match_card(msg):
+                # «Скроллинг» выкл, «Авто» вкл — лайкнувших смотрим сами,
+                # ленту не трогаем (владелец, 2026-11-04).
+                await self._show_liked_if_needed()
             return
         try:
             texts = self._extract_button_texts(msg)

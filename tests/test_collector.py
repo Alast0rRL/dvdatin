@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from tests.mocks import make_tg_client
+from tests.mocks import async_iter, make_tg_client
 
 import pytest
 
@@ -3725,6 +3725,122 @@ class TestCollectorAutoActions:
         assert ok is True
         task = collector._process_message.await_args.args[0]
         assert task.message_id == 901
+
+    def _liked_only(self, auto: bool = True) -> tuple:
+        """Коллектор: «Скроллинг» выкл, «Авто» вкл/выкл (прод 2026-11-04)."""
+        auto_client = make_tg_client()
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock()
+        )
+        with patch.object(AppConfig, "persist_mode"):
+            collector.set_controls(None, scroll=False, auto=auto)
+        assert collector._auto_engine.enabled is False
+        return collector, auto_client
+
+    def test_auto_without_scroll_shows_liked(self) -> None:
+        """«Скроллинг» выкл (лимит ❤️), «Авто» вкл → «Показать» жмём сами.
+
+        Прод 2026-11-04 (dvai msg=754930): «Ты понравился 2 девушкам» висело
+        без ответа — лимит ❤️ выключил скроллинг, а с ним и показ лайкнувших.
+        Leo на «1 👍» сразу даёт матч, лимит не мешает.
+        """
+        collector, auto_client = self._liked_only()
+        card = self._iter_msg(
+            auto_client, 754930, "Ты понравился 2 девушкам, показать их?",
+            buttons=["1 👍", "2 💤"],
+        )
+        run = asyncio.get_event_loop().run_until_complete
+        assert run(collector._show_liked_if_needed([card])) is True
+        auto_client.send_message.assert_called_once_with(1234060895, "1 👍")
+        assert collector.controls_for(None).scroll is False
+
+    def test_no_auto_no_scroll_does_not_show_liked(self) -> None:
+        """Оба переключателя выкл — бот ничего не жмёт."""
+        collector, auto_client = self._liked_only(auto=False)
+        card = self._iter_msg(
+            auto_client, 754930, "Ты понравился 2 девушкам, показать их?",
+            buttons=["1 👍", "2 💤"],
+        )
+        run = asyncio.get_event_loop().run_until_complete
+        assert run(collector._show_liked_if_needed([card])) is False
+        auto_client.send_message.assert_not_called()
+
+    def test_liked_notice_under_like_limit_presses_main_menu(self) -> None:
+        """«Заканчивай с вопросом выше», а выше — «Слишком много ❤️» →
+        «Главное меню» (Leo сразу покажет её и даст матч), один раз.
+
+        Прод 2026-11-04 (dvai msg=754929) и 2026-10-31 (dvai_2 msg=43350 —
+        так сделал владелец руками).
+        """
+        collector, auto_client = self._liked_only()
+        history = [
+            self._iter_msg(
+                auto_client, 754929,
+                "Кому-то понравилась твоя анкета! Заканчивай с вопросом выше "
+                "и посмотрим кто это",
+            ),
+            self._iter_msg(
+                auto_client, 754928,
+                "Слишком много ❤️ за сегодня. Перейди на Premium и получи "
+                "больше ❤️!",
+                buttons=["Активируй Premium — будь в топе ⭐️", "Главное меню"],
+            ),
+            self._iter_msg(auto_client, 754927, "Берем)", out=True),
+        ]
+        run = asyncio.get_event_loop().run_until_complete
+        assert run(collector._show_liked_if_needed(history)) is True
+        assert run(collector._show_liked_if_needed(history)) is False
+        auto_client.send_message.assert_called_once_with(
+            1234060895, "Главное меню"
+        )
+
+    def test_liked_notice_under_profile_does_not_press_menu(self) -> None:
+        """Выше уведомления — анкета: ей ответит лента, меню не жмём."""
+        collector, auto_client = self._liked_only()
+        history = [
+            self._iter_msg(
+                auto_client, 902,
+                "Кому-то понравилась твоя анкета! Заканчивай с вопросом выше "
+                "и посмотрим кто это",
+            ),
+            self._iter_msg(auto_client, 901, "Катя, 18, Санкт-Петербург"),
+        ]
+        run = asyncio.get_event_loop().run_until_complete
+        assert run(collector._show_liked_if_needed(history)) is False
+        auto_client.send_message.assert_not_called()
+
+    def test_check_liked_cards_in_background(self) -> None:
+        """Фоновая проверка находит карточку, пришедшую до включения «Авто»."""
+        collector, auto_client = self._liked_only()
+        card = self._iter_msg(
+            auto_client, 754930, "Ты понравился 2 девушкам, показать их?",
+            buttons=["1 👍", "2 💤"],
+        )
+        auto_client.iter_messages = MagicMock(
+            side_effect=lambda *a, **k: async_iter([card])
+        )
+        asyncio.get_event_loop().run_until_complete(collector.check_liked_cards())
+        auto_client.send_message.assert_called_once_with(1234060895, "1 👍")
+
+    def test_menu_not_pressed_without_scroll(self) -> None:
+        """После матча меню «1 🚀» при выключенном «Скроллинге» не жмём."""
+        collector, auto_client = self._liked_only()
+        menu = self._iter_msg(
+            auto_client, 753705,
+            "1. Смотреть анкеты. 2. Моя анкета. 3. Я больше не хочу никого искать.",
+            buttons=["1 🚀", "2", "3"],
+        )
+        auto_client.iter_messages = MagicMock(
+            side_effect=lambda *a, **k: async_iter([menu])
+        )
+        task = RawTask(
+            chat_id=1234060895, message_id=753705, sender_id=1234060895,
+            sender_username="", sender_name="", text=menu.text,
+            media_type="", entities_json="[]", reply_markup_json="[]",
+            reply_to=None, received_at="now", msg_date="now", msg=menu, raw_id=1,
+        )
+        asyncio.get_event_loop().run_until_complete(collector._on_unknown(task))
+        auto_client.send_message.assert_not_called()
 
     def test_liked_profile_card_is_not_match_card(self) -> None:
         """Её анкета с шапкой «Кому-то понравилась твоя анкета:» — анкета."""

@@ -21,6 +21,7 @@ from collectors.leo_markers import (
     MATCH_SHOW_SKIP_FRAGMENT,
     MATCH_SHOW_ALT_FRAGMENT,
     MATCH_SHOW_SKIP_ALT_FRAGMENT,
+    LIKE_LIMIT_MENU_FRAGMENT,
 )
 from collectors.raw_worker import RawTask
 from core.types import Mode
@@ -383,6 +384,60 @@ class StreamControlMixin:
             return False
         return self._is_match_card(msg) and not self._is_liked_question(msg)
 
+    def _liked_only_mode(self) -> bool:
+        """«Скроллинг» выкл, «Авто» вкл — бот смотрит только тех, кто лайкнул.
+
+        Владелец, 2026-11-04: лимит ❤️ выключил скроллинг, а «Ты понравился
+        N девушкам» висело без ответа. При «Авто» бот сам жмёт «Показать»
+        (Leo сразу даёт матч, лимит ❤️ не мешает) и «Главное меню» на
+        «Слишком много ❤️», когда ждёт лайкнувшая; ленту не листает.
+        """
+        engine = self._auto_engine
+        if engine.enabled or not engine.can_press or not self._auto_show_likes():
+            return False
+        return self.auto_for(self._current_session())
+
+    def _is_liked_receiver(self, msg: object, chat_id: int | None = None) -> bool:
+        """Как ``_is_auto_receiver``, но для режима «только лайкнувшие»."""
+        if msg is None or not self._liked_only_mode():
+            return False
+        if chat_id is not None and chat_id != self._dvinchik_chat_id:
+            return False
+        return getattr(msg, "client", None) is self._auto_engine.client
+
+    async def check_liked_cards(self) -> None:
+        """Фоновая проверка (раз в минуту): аккаунты в режиме «только лайкнувшие».
+
+        Карточка или уведомление могли прийти, пока бот был выключен, или
+        «Авто» включили позже — живой хендлер их уже не увидит.
+        """
+        for session in self.account_sessions():
+            with self._session_scope(session):
+                if self._liked_only_mode():
+                    await self._show_liked_if_needed()
+
+    def _limit_menu_button(self, history: list, notice_index: int) -> str | None:
+        """«Главное меню» на «Слишком много ❤️» прямо над уведомлением.
+
+        «Вопрос выше» у уведомления «Кому-то понравилась…» — отказ Leo по
+        лимиту ❤️ с кнопкой «Главное меню»: без ответа Leo лайкнувшую не
+        покажет. Другой «вопрос выше» (анкета) — None: ответит лента.
+        """
+        for msg in history[notice_index + 1:]:  # от уведомления к старым
+            if getattr(msg, "out", False):
+                return None
+            text = getattr(msg, "text", "") or ""
+            if not text.strip():
+                continue
+            if not self._parser.is_like_rejection(text):
+                return None
+            return next(
+                (t for t in self._extract_button_texts(msg)
+                 if LIKE_LIMIT_MENU_FRAGMENT in t.lower()),
+                None,
+            )
+        return None
+
     async def _show_liked_if_needed(self, history: list | None = None) -> bool:
         """Сам жмёт «Показать» на свежей карточке «Ты понравился N девушке…».
 
@@ -390,34 +445,48 @@ class StreamControlMixin:
         лайкнул, оценивает её анкету штатным pipeline (лайк → матч → привет и
         сценарий), лента не встаёт. Карточка актуальна, только если после неё
         мы ничего не отправляли; уведомление без кнопок пропускаем (Leo
-        покажет её сам). Карточка «занимается» в ``_match_ack`` до отправки —
-        параллельный проход не нажмёт второй раз. True — «Показать» нажато.
+        покажет её сам), но если «вопрос выше» — «Слишком много ❤️», жмём
+        «Главное меню» (иначе Leo ждёт). Работает и при выключенном
+        «Скроллинге», если включено «Авто» (``_liked_only_mode``). Карточка
+        «занимается» в ``_match_ack`` до отправки — параллельный проход не
+        нажмёт второй раз. True — кнопка нажата.
         """
         client = self._auto_engine.client
-        if client is None or not self._auto_engine.enabled:
+        liked_only = self._liked_only_mode()
+        if client is None or not (self._auto_engine.enabled or liked_only):
             return False
         try:
             if history is None:
                 history = await self._recent_history()
-            for msg in history:  # новые → старые
+            for index, msg in enumerate(history):  # новые → старые
                 if getattr(msg, "out", False):
                     return False  # после карточки уже ответили
                 if not self._is_match_card(msg):
                     continue
                 button = self._match_show_button(msg)
+                key = (self._current_session(), msg.id)
                 if button is None:
                     if self._is_liked_question(msg):
-                        # Вопрос «показать её?» без кнопки — жать нечего,
-                        # Leo ждёт ответа: как раньше, стоп до владельца.
-                        await self._stop_on_match_card(msg)
-                    return False  # уведомление без кнопок — лента идёт дальше
-                key = (self._current_session(), msg.id)
+                        if not liked_only:
+                            # Вопрос «показать её?» без кнопки — жать нечего,
+                            # Leo ждёт ответа: как раньше, стоп до владельца.
+                            await self._stop_on_match_card(msg)
+                        return False
+                    menu = self._limit_menu_button(history, index)
+                    if menu is None:
+                        return False  # уведомление без кнопок — лента идёт дальше
+                    self._match_ack.add(key)
+                    logger.info(
+                        f"AutoAction: тебя лайкнули (msg={msg.id}), выше лимит "
+                        f"❤️ — жму «{menu}», Leo покажет её"
+                    )
+                    return await self._auto_engine.send_text(menu, any_mode=True)
                 self._match_ack.add(key)
                 self._auto_engine.note_card(self._dvinchik_chat_id, msg.id)
                 logger.info(
                     f"AutoAction: тебя лайкнули (msg={msg.id}) — жму «{button}»"
                 )
-                return await self._auto_engine.send_text(button)
+                return await self._auto_engine.send_text(button, any_mode=True)
             return False
         except Exception as e:
             logger.error(f"AutoAction: не удалось нажать «Показать»: {e}")
