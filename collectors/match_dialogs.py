@@ -79,13 +79,18 @@ class MatchDialogsMixin:
                 await self._note_no_access(client, session, target, match)
                 return
             if target_client is not None:
+                # Карточку матча — сейчас, пока она «текущая» в чате аккаунта
+                # матча: за паузу привета он листает дальше, и поиск позже
+                # находил чужую анкету → NO_PROFILE (прод 2026-11-03: Софья,
+                # геля, килая).
+                card = await self._match_card_now(session, match)
                 delay = float(self.REDIRECT_GREET_DELAY_SEC)
                 if delay > 0:
                     # Не держим очередь сообщений: привет — отдельной задачей.
                     t = asyncio.get_running_loop().create_task(
                         self._greet_redirected(
                             task, client, session, target, target_client,
-                            match, delay,
+                            match, delay, card=card,
                         )
                     )
                     pending = getattr(self, "_redirect_greet_tasks", None)
@@ -96,6 +101,7 @@ class MatchDialogsMixin:
                     return
                 await self._greet_redirected(
                     task, client, session, target, target_client, match, 0.0,
+                    card=card,
                 )
                 return
         await self._greet_from(task, client, session, match, source="")
@@ -103,6 +109,7 @@ class MatchDialogsMixin:
     async def _greet_redirected(
         self, task: RawTask, own_client: object, own: str, target: str,
         target_client: object, match: ParsedMatch, delay: float,
+        *, card: tuple[int | None, int] | None = None,
     ) -> None:
         """Привет с аккаунта-цели — только если она не пишет на аккаунт матча.
 
@@ -122,10 +129,26 @@ class MatchDialogsMixin:
                     await self._track_dialog(own_client, own, match)
                 return
             await self._greet_from(
-                task, target_client, target, match, source=own,
+                task, target_client, target, match, source=own, card=card,
             )
         except Exception as e:
             logger.error(f"MatchGreeting: привет {match.name} с {target}: {e}")
+
+    async def _match_card_now(
+        self, session: str, match: ParsedMatch,
+    ) -> tuple[int | None, int] | None:
+        """(profile_id, id карточки) матча в чате Leo аккаунта ``session``
+        в момент уведомления о матче; сбой — None (поиск при записи)."""
+        try:
+            found = await self._db.find_match_card(
+                match.name, self._dvinchik_chat_id, session,
+            )
+        except Exception as e:
+            logger.warning(f"MatchIntro: карточка {match.name} при матче: {e}")
+            return None
+        if isinstance(found, tuple) and len(found) == 2:
+            return found
+        return None
 
     async def _has_main_chat(self, client: object, match: ParsedMatch) -> bool:
         """Есть ли сообщения в её чате на аккаунте матча (сбой чтения — нет)."""
@@ -143,14 +166,17 @@ class MatchDialogsMixin:
 
     async def _greet_from(
         self, task: RawTask, client: object, session: str, match: ParsedMatch,
-        *, source: str,
+        *, source: str, card: tuple[int | None, int] | None = None,
     ) -> None:
         """Стикер-привет с аккаунта ``session`` (``source`` — аккаунт матча
         при перенаправлении)."""
         scope = self._session_scope(session) if source else nullcontext()
         with scope:
             # Реестр переписок — ДО привета: стикер бота сразу ляжет в журнал.
-            await self._track_dialog(client, session, match, source=source)
+            await self._track_dialog(
+                client, session, match, source=source,
+                profile_id=card[0] if card and card[0] is not None else None,
+            )
             try:
                 # Своё сообщение Leo — ключ к девушке без @username; с чужого
                 # аккаунта (перенаправление) оно не годится.
@@ -167,7 +193,7 @@ class MatchDialogsMixin:
             await self._notify_greeting(session, match, status, source=source)
             if status == "SENT":
                 await self._enroll_match_intro(
-                    client, session, match, source=source,
+                    client, session, match, source=source, card=card,
                 )
 
     async def _note_no_access(
@@ -199,7 +225,7 @@ class MatchDialogsMixin:
 
     async def _track_dialog(
         self, client: object, session: str, match: ParsedMatch, *,
-        source: str = "",
+        source: str = "", profile_id: int | None = None,
     ) -> None:
         """Матч → девушка в журнале переписок (каждый матч, любой режим).
 
@@ -209,9 +235,10 @@ class MatchDialogsMixin:
         if not self._dialog_log.enabled:
             return
         try:
-            profile_id = await self._db.find_match_profile(
-                match.name, self._dvinchik_chat_id, source or session,
-            )
+            if profile_id is None:
+                profile_id = await self._db.find_match_profile(
+                    match.name, self._dvinchik_chat_id, source or session,
+                )
             await self._dialog_log.track(client, session, match, profile_id)
         except Exception as e:
             logger.error(f"DialogLog: не завёл переписку {match.name}: {e}")
@@ -230,19 +257,24 @@ class MatchDialogsMixin:
     async def _enroll_match_intro(
         self, client: object, session: str, match: ParsedMatch, *,
         use_context: bool = True, source: str = "",
+        card: tuple[int | None, int] | None = None,
     ) -> None:
         """Привет ушёл → ждём её ответа (автопереписка, ``match_intro``).
 
         ``source`` — аккаунт матча при перенаправлении (анкета — в его ленте).
+        ``card`` — (profile_id, id карточки), найденные в момент матча.
         """
         try:
             # Карточка — из ленты аккаунта матча: под одним profile_id бывают
             # разные девушки с тем же «имя, возраст» (прод 2026-10-30).
             card_session = source or session
-            profile_id, card_id = await self._db.find_match_card(
-                match.name, self._dvinchik_chat_id, card_session,
-                use_context=use_context,
-            )
+            if card is not None and card[1]:
+                profile_id, card_id = card
+            else:
+                profile_id, card_id = await self._db.find_match_card(
+                    match.name, self._dvinchik_chat_id, card_session,
+                    use_context=use_context,
+                )
             await self._match_intro.enroll(
                 client, session, match, profile_id,
                 card_session=card_session if card_id else "",

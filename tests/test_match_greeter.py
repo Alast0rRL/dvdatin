@@ -447,6 +447,33 @@ class TestCollectorGreetsOnMatch:
         args = collector._match_greeter.greet.await_args.args
         assert args[0] is other and args[1] == "dvai"
 
+    def test_redirect_card_taken_at_match_time(self) -> None:
+        """Прод 2026-11-03 (Софья, геля, килая): за паузу привета аккаунт матча
+        листает дальше, «текущая» карточка уже чужая → NO_PROFILE. Карточку
+        берём в момент матча."""
+        collector, other, auto = self._collector(
+            "SEMI_AUTO", redirects={"dvai_2": "dvai"},
+        )
+        collector.REDIRECT_GREET_DELAY_SEC = 0.01
+        collector._engines["dvai"].notify_owner = AsyncMock(return_value=True)
+        # Сразу после матча — её карточка 900; позже текущая карточка чужая.
+        greet = collector._match_greeter.greet
+        collector._db.find_match_card = AsyncMock(
+            side_effect=lambda *a, **k: (None, 0) if greet.await_count else (3, 900)
+        )
+        collector._match_intro.enroll = AsyncMock(return_value=True)
+
+        async def go() -> None:
+            await collector._process_message(self._task(auto))
+            await asyncio.sleep(0.05)
+
+        run(go())
+        collector._db.find_match_card.assert_awaited_once()
+        assert collector._db.find_match_card.await_args.args[2] == "dvai_2"
+        args = collector._match_intro.enroll.await_args
+        assert args.args[1] == "dvai" and args.args[3] == 3
+        assert args.kwargs == {"card_session": "dvai_2", "card_message_id": 900}
+
     def test_set_redirect_live(self) -> None:
         collector, _, _ = self._collector("SEMI_AUTO")
         assert collector.redirect_for("dvai_2") == ""
