@@ -735,6 +735,7 @@ tests/test_match_intro.py::TestMatchDialogDb::test_card_ids_last_showing_of_acco
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_profile_by_context
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_returns_card_of_match
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_ignores_markup_around_name
+tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_blank_profile_name
 tests/test_match_intro.py::TestMatchDialogDb::test_find_match_card_on_repeat_showing
 tests/test_match_intro.py::TestMatchDialogDb::test_was_profile_matched
 tests/test_match_intro.py::TestMatchDialogDb::test_has_reaction_for_message_sees_dislike

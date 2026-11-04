@@ -34,6 +34,15 @@ def match_name_key(name: str | None) -> str:
     """
     return (name or "").strip(_NAME_EDGE_CHARS).casefold()
 
+
+def is_blank_profile_name(name: str | None) -> bool:
+    """В анкете нет имени: ни одной буквы/цифры (карточка «, 18, Город»).
+
+    Тогда Leo в ссылке матча пишет её @username, и сравнивать нечего (прод
+    2026-11-04, @Naslixxx: анкета «,» → NO_PROFILE, анкета не ушла).
+    """
+    return not any(ch.isalnum() for ch in (name or ""))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS raw_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2409,7 +2418,12 @@ class Database:
                         "SELECT name FROM profiles WHERE id = ?", (pid,)
                     )
                     row = await cursor.fetchone()
-                    if row and match_name_key(row[0]) == needle:
+                    # Без имени в анкете — доверяем текущей карточке: MATCH
+                    # пришёл сразу за ней, а в ссылке Leo её @username.
+                    if row and (
+                        match_name_key(row[0]) == needle
+                        or is_blank_profile_name(row[0])
+                    ):
                         return pid, int(ctx or 0)
             except Exception as e:
                 logger.warning(f"find_match_profile(context): {e}")

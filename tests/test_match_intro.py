@@ -121,6 +121,18 @@ class TestMatchDialogDb:
         run(db.set_chat_profile_context(LEO, 1000, "dvai_2"))
         assert run(db.find_match_card("miss.E,", LEO, "dvai_2")) == (pid, 1000)
 
+    def test_find_match_card_blank_profile_name(self, db: Database) -> None:
+        """Прод 2026-11-04, @Naslixxx: карточка «, 18, Санкт Петербург» (имени
+        нет), в ссылке матча — её @username → берём текущую карточку."""
+        pid = run(_profile(db, ",", 1000, "dvai_2", []))
+        run(db.set_chat_profile_context(LEO, 1000, "dvai_2"))
+        assert run(db.find_match_card("Naslixxx", LEO, "dvai_2")) == (pid, 1000)
+        # Имя в анкете есть и не совпало — карточку не берём.
+        other = run(_profile(db, "Роза", 1100, "dvai_2", []))
+        run(db.set_chat_profile_context(LEO, 1100, "dvai_2"))
+        assert run(db.find_match_card("Naslixxx", LEO, "dvai_2"))[1] == 0
+        assert other
+
     def test_find_match_card_on_repeat_showing(self, db: Database) -> None:
         """Матч на ПОВТОРНОМ показе анкеты — карточка тоже находится.
 
