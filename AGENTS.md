@@ -8,7 +8,7 @@
 # Run the app
 python main.py
 
-# Run all tests (~1183 total, no linter/formatter configured)
+# Run all tests (~1188 total, no linter/formatter configured)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -76,7 +76,7 @@ python -m pytest tests/test_ai.py -v
 - **Владелец пишет сам — бот молчит**: перед отправкой анкеты проверка её чата; наше исходящее новее привета → `OWNER_CHAT`, анкету не шлём. Свой стикер-привет бота (исходящий стикер в первые `GREETING_STICKER_SKEW_SEC` = 60 с после `greeted_at`) владельцем не считается: дата Telegram бывает на секунду позже часов сервера (прод 2026-11-02). Тесты: `test_owner_chatting_cancels_intro`, `test_own_sticker_dated_after_greeting_is_not_owner`.
 - **Автопереписка — только то, что попросил владелец** (стикер-привет, её анкета + закреп, сценарий `match_script` по его схеме). Новых шагов и фраз не добавлять без явной команды; концы веток и ответы не по сценарию — передача владельцу. Тест: `test_her_story_goes_to_owner`.
 - **Тайминги сценария — по канвасу владельца** («Знакомство для бота», 2026-11-02): молчит 24 ч после стикера или «Рассказывайте» → «АЛООО ПРОСЫПАЕМСЯ» только в 22:00–24:00 по местному времени, ещё 24 ч → бот больше не пишет (`NO_REPLY` / `stopped`); после анкеты — 24 ч до «Рассказывайте». «АЛООО» бота не считается сообщением владельца. Она написала первой (до стикера) — это ответ. Тесты: `TestWakeUpAfterSticker`, `test_wake_up_after_tell_me_silence`, `test_give_up_after_wake_up`, `test_she_wrote_first_counts_as_reply`.
-- **Сценарий: «зачем закрепил?» → «Чтобы знать, с кем общаюсь»**, не «Пусть лежит здесь» (`ASKS_PIN` важнее `ASKS_WHAT`; владелец, 2026-11-03). Тесты: `test_pin_question_answered_not_card_here`, `test_pin_question_beats_generic_what`.
+- **Сценарий: «зачем закрепил?» / «почему ты это скинул?» → «Чтобы знать, с кем общаюсь»**, не «Пусть лежит здесь» (`ASKS_PIN` — «закреп», «скинул», «отправил», «прислал», «переслал»; важнее `ASKS_WHAT`; владелец, 2026-11-03 / 2026-11-04). Тесты: `test_pin_question_answered_not_card_here`, `test_why_sent_answered_not_card_here`, `test_pin_question_beats_generic_what`.
 - **Удалённый чат — бот молчит, на сайте «Неудачные»** (владелец, 2026-11-03): её история пуста (нет даже стикера-привета / «закрепил») → сценарий `owner`, анкета/«АЛООО» — `OWNER_CHAT`; сверка журнала ставит `dialog_contacts.chat_deleted_at` (только если сообщения были, новое снимает) → причина `deleted`. Тесты: `test_deleted_chat_silences_bot`, `test_deleted_chat_cancels_intro`, `test_sync_marks_deleted_chat_and_clears_on_new_message`, `test_deleted_chat_is_failed`.
 - **Сценарий: бот не отрицает, что он бот** — «ты бот?» → передача владельцу без ответа. Тест: `test_asks_bot_hands_off_without_lying`.
 - **Сценарий: «не пиши» / прямое оскорбление → чат удаляется сразу у обоих** (`delete_for_both`), бытовой мат не по адресу — не грубость. Тесты: `test_go_away_deletes_chat_at_once`, `TestClassify`.
@@ -137,7 +137,7 @@ python -m pytest tests/test_ai.py -v
 - **Temp DB fixtures**: `tmp_path` creates a fresh SQLite per test.
 - **Mocks**: `unittest.mock.AsyncMock` / `MagicMock` for Telegram client and DB. Telegram client — `tests/mocks.py::make_tg_client()` (sync Telethon methods `iter_dialogs`/`add_event_handler` are `MagicMock`, `send_message` returns a `MagicMock`); for `iter_messages` use `MagicMock(side_effect=lambda *a, **k: async_iter([...]))`, never a bare `AsyncMock`.
 - **No unawaited coroutines**: `pytest.ini` has `filterwarnings = error::RuntimeWarning` + `error::pytest.PytestUnraisableExceptionWarning` — a forgotten `await` or an `AsyncMock` on a sync method fails the test.
-- Current counts (2026-11-03): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (203), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (33), test_dialog_outcome (18), test_error_reporter (8), test_filter (26), test_friends (15), test_manual_review (13), test_match_greeter (36), test_match_intro (57), test_match_script (83), test_parser (69), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (177) → **1183 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
+- Current counts (2026-11-04): test_action_policy (11), test_ai (10), test_analysis_export (10), test_analytics (17), test_audit (31), test_auto_action (114), test_auto_action_audit (5), test_captcha_memory (11), test_collector (203), test_control_bot (19), test_decision (23), test_deterministic_scoring (84), test_dialog_logger (33), test_dialog_outcome (18), test_error_reporter (8), test_filter (26), test_friends (15), test_manual_review (13), test_match_greeter (36), test_match_intro (57), test_match_script (88), test_parser (69), test_photo_taste (44), test_photo_vice (13), test_preferences (26), test_profile (27), test_web (177) → **1188 total**. Reset the exact counts from the real file (`tests/baseline/baseline_tests.txt`) when editing them; the summary here is indicative.
 
 ## Deploy Rule (IMPORTANT)
 

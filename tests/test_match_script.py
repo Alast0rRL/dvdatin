@@ -100,7 +100,11 @@ def sent_text(client: AsyncMock) -> str | None:
 class TestClassify:
     @pytest.mark.parametrize("text,kind", [
         ("Что это?", R.ASKS_WHAT),
-        ("зачем ты мне мою анкету скинул", R.ASKS_WHAT),
+        ("зачем ты мне мою анкету скинул", R.ASKS_PIN),
+        ("Почему ты это скинул мне", R.ASKS_PIN),
+        ("зачем отправил", R.ASKS_PIN),
+        ("а чего ты мне это прислал", R.ASKS_PIN),
+        ("я тебе фото скинула", R.OTHER),  # её «скинула» — не вопрос про анкету
         ("а нахрена", R.ASKS_WHAT),
         ("А для чего закрепил?", R.ASKS_PIN),
         ("зачем закрепил мою анкету", R.ASKS_PIN),
@@ -238,6 +242,13 @@ class TestMatchScript:
         got = row(db)
         assert got["script_step"] == R.WAIT_MORE
         assert got["script_variant"] == "pin_why:0"
+
+    def test_why_sent_answered_not_card_here(self, db: Database) -> None:
+        """Прод 2026-11-03: «Почему ты это скинул мне» → не «Пусть лежит здесь»."""
+        step_to(db, R.AFTER_PIN)
+        client, _ = reply(db, make_script(db), "Почему ты это скинул мне")
+        assert sent_text(client) == "Чтобы знать, с кем общаюсь"
+        assert row(db)["script_variant"] == "pin_why:0"
 
     def test_too_many_then_convenient(self, db: Database) -> None:
         step_to(db, R.WAIT_MORE)

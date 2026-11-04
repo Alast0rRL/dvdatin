@@ -743,7 +743,11 @@ tests/test_match_intro.py::TestCollectorIntro::test_leo_chat_is_not_a_reply
 tests/test_match_intro.py::TestCollectorIntro::test_run_notifies_owner_on_sent
 tests/test_match_intro.py::TestCollectorIntro::test_run_notifies_owner_when_card_missing
 tests/test_match_script.py::TestClassify::test_kinds[\u0427\u0442\u043e \u044d\u0442\u043e?-asks_what]
-tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u0442\u044b \u043c\u043d\u0435 \u043c\u043e\u044e \u0430\u043d\u043a\u0435\u0442\u0443 \u0441\u043a\u0438\u043d\u0443\u043b-asks_what]
+tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u0442\u044b \u043c\u043d\u0435 \u043c\u043e\u044e \u0430\u043d\u043a\u0435\u0442\u0443 \u0441\u043a\u0438\u043d\u0443\u043b-asks_pin]
+tests/test_match_script.py::TestClassify::test_kinds[\u041f\u043e\u0447\u0435\u043c\u0443 \u0442\u044b \u044d\u0442\u043e \u0441\u043a\u0438\u043d\u0443\u043b \u043c\u043d\u0435-asks_pin]
+tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043b-asks_pin]
+tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u0447\u0435\u0433\u043e \u0442\u044b \u043c\u043d\u0435 \u044d\u0442\u043e \u043f\u0440\u0438\u0441\u043b\u0430\u043b-asks_pin]
+tests/test_match_script.py::TestClassify::test_kinds[\u044f \u0442\u0435\u0431\u0435 \u0444\u043e\u0442\u043e \u0441\u043a\u0438\u043d\u0443\u043b\u0430-other]
 tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u043d\u0430\u0445\u0440\u0435\u043d\u0430-asks_what]
 tests/test_match_script.py::TestClassify::test_kinds[\u0410 \u0434\u043b\u044f \u0447\u0435\u0433\u043e \u0437\u0430\u043a\u0440\u0435\u043f\u0438\u043b?-asks_pin]
 tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u0437\u0430\u043a\u0440\u0435\u043f\u0438\u043b \u043c\u043e\u044e \u0430\u043d\u043a\u0435\u0442\u0443-asks_pin]
@@ -790,6 +794,7 @@ tests/test_match_script.py::TestScriptDb::test_list_only_active_intro_sent
 tests/test_match_script.py::TestMatchScript::test_start_after_intro
 tests/test_match_script.py::TestMatchScript::test_asks_what_card_here
 tests/test_match_script.py::TestMatchScript::test_pin_question_answered_not_card_here
+tests/test_match_script.py::TestMatchScript::test_why_sent_answered_not_card_here
 tests/test_match_script.py::TestMatchScript::test_too_many_then_convenient
 tests/test_match_script.py::TestMatchScript::test_reply_waits_for_delay
 tests/test_match_script.py::TestMatchScript::test_silence_day_tell_me
