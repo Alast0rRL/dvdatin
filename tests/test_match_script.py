@@ -228,7 +228,7 @@ class TestMatchScript:
     def test_asks_what_card_here(self, db: Database) -> None:
         step_to(db, R.AFTER_PIN)
         client, results = reply(db, make_script(db), "Что это?")
-        assert sent_text(client) == "Пусть лежит здесь"
+        assert sent_text(client) == "Это твоя анкета из Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов"
         got = row(db)
         assert got["script_step"] == R.WAIT_MORE
         assert got["script_msg_id"] == 300 and got["script_pending"] == ""
@@ -241,7 +241,7 @@ class TestMatchScript:
         script = make_script(db)
         assert run(script.note_message(S, UID, "Ну да, я", "AUTO"))
         client, _ = reply(db, script, "А для чего закрепил?")
-        assert sent_text(client) == "Чтобы знать, с кем общаюсь"
+        assert sent_text(client) == "Это твоя анкета из Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов"
         got = row(db)
         assert got["script_step"] == R.WAIT_MORE
         assert got["script_variant"] == "pin_why:0"
@@ -250,7 +250,7 @@ class TestMatchScript:
         """Прод 2026-11-03: «Почему ты это скинул мне» → не «Пусть лежит здесь»."""
         step_to(db, R.AFTER_PIN)
         client, _ = reply(db, make_script(db), "Почему ты это скинул мне")
-        assert sent_text(client) == "Чтобы знать, с кем общаюсь"
+        assert sent_text(client) == "Это твоя анкета из Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов"
         assert row(db)["script_variant"] == "pin_why:0"
 
     def test_mark_not_to_forget_answered_convenient(self, db: Database) -> None:
@@ -368,14 +368,14 @@ class TestMatchScript:
         client = make_client([her(102, "что это"), mine(101, action=object()),
                               mine(100)])
         reply(db, make_script(db), "что это", client)
-        assert sent_text(client) == "Пусть лежит здесь"
+        assert sent_text(client) == "Это твоя анкета из Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов"
 
     def test_missed_reply_found_on_silence(self, db: Database) -> None:
         """Ответила, пока бот лежал: по таймеру — ответ на её вопрос."""
         step_to(db, R.AFTER_PIN, script_at=ago(hours=25))
         client = make_client([her(101, "зачем это"), mine(100)])
         run(make_script(db).process(client, S, "AUTO"))
-        assert sent_text(client) == "Пусть лежит здесь"
+        assert sent_text(client) == "Это твоя анкета из Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов"
 
     def test_wake_up_after_tell_me_silence(self, db: Database) -> None:
         """Молчит сутки после «Рассказывайте» → «АЛООО ПРОСЫПАЕМСЯ»."""
