@@ -7,8 +7,9 @@
   «АЛООО») и «Авто» аккаунта включено;
 * ``active`` — **Active**: разговор активно идёт несколько дней — она писала
   в ``active_days``+ разных дней и молчит меньше ``silence_hours``;
-* ``fifty``  — **50/50**: переписка не идёт — она молчит ``silence_hours``+
-  или так и не написала;
+* ``fifty``  — **50/50**: переписка не идёт — она молчит ``silence_hours``+,
+  так и не написала, или последнее сообщение наше (владелец / бот) и она не
+  отвечает ``unanswered_hours``+;
 * ``new``    — **New**: всё остальное (вышла из автоматики, старые переписки
   владельца — ещё не устоялось и не затихло).
 
@@ -66,6 +67,7 @@ def folder_target(
     bot_on: bool,
     active_days: int = 3,
     silence_hours: float = 48.0,
+    unanswered_hours: float = 24.0,
     bot_wait_hours: float = 72.0,
     now: datetime | None = None,
 ) -> str | None:
@@ -74,6 +76,7 @@ def folder_target(
     ``row`` — сводка (``Database.list_folder_dialogs``): ``intro_status``,
     ``script_step``, ``greeted_at``, ``wake_at``, ``total`` (сообщений в
     чате), ``her_days`` (разных дней, когда она писала), ``last_her_at``,
+    ``last_by`` + ``last_msg_at`` (кто и когда писал последним),
     ``chat_deleted_at``. ``bot_on`` — «Авто» аккаунта.
     """
     now = now or datetime.now(timezone.utc)
@@ -85,6 +88,14 @@ def folder_target(
         return AUTO
     last_her = parse_time(row.get("last_her_at"))
     if last_her is None or now - last_her >= timedelta(hours=silence_hours):
+        return FIFTY
+    # Последнее слово наше (владелец / бот), она не отвечает сутки — не идёт
+    # (прод 2026-11-04: Рина Грейс — «Йооу» без ответа лежало в New).
+    last_msg = parse_time(row.get("last_msg_at"))
+    if (
+        (row.get("last_by") or "") in ("owner", "bot") and last_msg is not None
+        and now - last_msg >= timedelta(hours=unanswered_hours)
+    ):
         return FIFTY
     if int(row.get("her_days") or 0) >= active_days:
         return ACTIVE

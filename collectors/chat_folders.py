@@ -100,10 +100,14 @@ class ChatFolders:
         config: ChatFoldersConfig,
         *,
         archive: bool = True,
+        delete_silent: bool = False,
     ) -> None:
         self._db = db
         self._config = config
         self.archive = archive
+        #: Молчит и после «АЛООО» (``NO_REPLY``, ни одного её сообщения) —
+        #: чат удаляется у владельца, и старые тоже (владелец, 2026-11-04).
+        self.delete_silent = delete_silent
         #: Чаты, у которых прошлое перемещение не дошло (сбой запроса):
         #: их состояние не сверяем с «владелец перенёс сам», просто чиним.
         self._uncertain: dict[str, set[int]] = {}
@@ -133,6 +137,8 @@ class ChatFolders:
             logger.error(f"Папки чатов: не прочитал переписки {session}: {e}")
             return 0
         moved = 0
+        if self.delete_silent:
+            await self._delete_silent(client, session, rows)
         targets: dict[int, str | None] = {}
         if self._config.enabled:
             moved += await self._sync_folders(client, session, rows, bot_on, targets)
@@ -140,6 +146,40 @@ class ChatFolders:
         if self.archive:
             moved += await self._sync_archive(client, session, rows)
         return moved
+
+    async def _delete_silent(
+        self, client: Any, session: str, rows: list[dict],
+    ) -> None:
+        """Молчит и после «АЛООО» — чат удаляется только у владельца, в т.ч.
+        замолчавшие до 2026-11-04 (прод: Guangxi лежала в 50/50)."""
+        deleted = 0
+        for row in rows:
+            if (row.get("intro_status") or "") != "NO_REPLY":
+                continue
+            if int(row.get("her_count") or 0) or row.get("chat_deleted_at"):
+                continue
+            if int(row.get("total") or 0) == 0 or int(row.get("folder_manual") or 0):
+                continue
+            if deleted >= MAX_MOVES_PER_PASS:
+                break
+            user_id = int(row["user_id"])
+            name = row.get("name") or user_id
+            try:
+                peer = await client.get_input_entity(row.get("username") or user_id)
+                await client.delete_dialog(peer, revoke=False)
+            except Exception as e:
+                if flood_pause_sec(e) is not None:
+                    logger.warning(f"Папки чатов: {session} FloodWait — позже")
+                    break
+                logger.warning(f"Папки чатов: не удалил чат {name} на {session}: {e}")
+                continue
+            deleted += 1
+            await self._db.set_dialog_chat_deleted(session, user_id, True)
+            row["chat_deleted_at"] = _now()  # в этом же проходе — вон из папок
+            logger.info(
+                f"Папки чатов: {name} на {session} молчит и после «АЛООО» — "
+                "чат удалён у тебя"
+            )
 
     async def hide_now(
         self, client: Any, session: str, *, user_id: int = 0, username: str = "",
@@ -291,7 +331,19 @@ class ChatFolders:
                 continue
             stored = str(row.get("chat_folder") or "")
             expected = {stored} if stored else set()
-            if user_id not in uncertain and actual != expected:
+            target = folder_target(
+                row, bot_on=bot_on,
+                active_days=cfg.active_days,
+                silence_hours=cfg.silence_hours,
+                unanswered_hours=cfg.unanswered_hours,
+                bot_wait_hours=cfg.bot_wait_hours,
+                now=now,
+            )
+            # Пропал из папок, а ему и не место в них (удалённый / пустой чат
+            # Telegram сам выкидывает из папок) — это не перенос владельца
+            # (прод 2026-11-04: Альбина, Алина).
+            pruned = not actual and target is None
+            if user_id not in uncertain and actual != expected and not pruned:
                 # Чат не там, где его оставил бот, — перенёс владелец.
                 where = min(actual) if actual else ""
                 logger.info(
@@ -302,13 +354,6 @@ class ChatFolders:
                     session, user_id, folder_manual=1, chat_folder=where,
                 )
                 continue
-            target = folder_target(
-                row, bot_on=bot_on,
-                active_days=cfg.active_days,
-                silence_hours=cfg.silence_hours,
-                bot_wait_hours=cfg.bot_wait_hours,
-                now=now,
-            )
             targets[user_id] = target
             want = {target} if target else set()
             if actual == want:

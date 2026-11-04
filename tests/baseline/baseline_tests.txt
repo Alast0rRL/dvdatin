@@ -218,6 +218,8 @@ tests/test_chat_folders.py::TestFolderTarget::test_greeting_after_wake_up_is_aut
 tests/test_chat_folders.py::TestFolderTarget::test_bot_off_not_auto
 tests/test_chat_folders.py::TestFolderTarget::test_talk_for_days_is_active
 tests/test_chat_folders.py::TestFolderTarget::test_fresh_talk_is_new
+tests/test_chat_folders.py::TestFolderTarget::test_our_last_word_unanswered_a_day_is_fifty
+tests/test_chat_folders.py::TestFolderTarget::test_our_fresh_last_word_stays
 tests/test_chat_folders.py::TestFolderTarget::test_silence_is_fifty[kw0]
 tests/test_chat_folders.py::TestFolderTarget::test_silence_is_fifty[kw1]
 tests/test_chat_folders.py::TestFolderTarget::test_deleted_or_empty_chat_in_no_folder[kw0]
@@ -231,10 +233,14 @@ tests/test_chat_folders.py::TestChatFolders::test_same_state_no_requests
 tests/test_chat_folders.py::TestChatFolders::test_owner_move_is_respected
 tests/test_chat_folders.py::TestChatFolders::test_chat_already_in_owner_folder_is_manual
 tests/test_chat_folders.py::TestChatFolders::test_deleted_chat_removed_from_folder
+tests/test_chat_folders.py::TestChatFolders::test_deleted_chat_pruned_by_telegram_is_not_manual
 tests/test_chat_folders.py::TestChatFolders::test_failed_update_is_retried_not_manual
 tests/test_chat_folders.py::TestChatFolders::test_full_folder_skips_new_chats
 tests/test_chat_folders.py::TestChatFolders::test_friends_not_in_folders
 tests/test_chat_folders.py::TestChatFolders::test_folders_switched_off
+tests/test_chat_folders.py::TestDeleteSilent::test_old_no_reply_chat_deleted_and_out_of_folders
+tests/test_chat_folders.py::TestDeleteSilent::test_she_wrote_not_deleted
+tests/test_chat_folders.py::TestDeleteSilent::test_switched_off_not_deleted
 tests/test_chat_folders.py::TestSound::test_sound_follows_folder
 tests/test_chat_folders.py::TestSound::test_left_automation_gets_sound
 tests/test_chat_folders.py::TestSound::test_manual_chat_sound_untouched

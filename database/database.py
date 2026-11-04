@@ -2279,6 +2279,9 @@ class Database:
                    (SELECT MAX(m.message_date) FROM dialog_messages m
                      WHERE m.account_session = c.account_session
                        AND m.user_id = c.user_id AND m.sent_by = 'her') AS last_her_at,
+                   (SELECT MAX(m.message_date) FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id) AS last_msg_at,
                    c.matched_at, c.last_message_at, c.chat_deleted_at,
                    c.archived_at, c.chat_folder, c.folder_manual, c.notify_mark,
                    md.status AS intro_status, md.script_step AS script_step,

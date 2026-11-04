@@ -203,6 +203,7 @@ class DvinchikCollector(
         self._chat_folders = ChatFolders(
             db, config.auto_actions.match_intro.folders,
             archive=bool(config.auto_actions.match_intro.archive_bot_chats),
+            delete_silent=bool(config.auto_actions.match_script.delete_silent_chat),
         )
         # После анкеты — сценарий знакомства по схеме владельца (AUTO).
         self._match_script = MatchScript(config.auto_actions.match_script, db)

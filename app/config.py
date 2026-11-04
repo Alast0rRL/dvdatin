@@ -228,6 +228,8 @@ class ChatFoldersConfig(BaseModel):
     #: ``silence_hours``; молчит дольше (или не писала) — 50/50.
     active_days: int = 3
     silence_hours: float = 48.0
+    #: Последнее сообщение наше, она не отвечает столько часов → 50/50.
+    unanswered_hours: float = 24.0
     #: Auto: привет без ответа считается «бот ведёт» столько часов
     #: (после «АЛООО» — до конца ожидания).
     bot_wait_hours: float = 72.0

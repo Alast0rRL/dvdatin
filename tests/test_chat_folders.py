@@ -133,8 +133,13 @@ class FakeTelegram:
         return set()
 
 
-def folders(db: Database, *, archive: bool = False, **cfg: object) -> ChatFolders:
-    return ChatFolders(db, ChatFoldersConfig(**cfg), archive=archive)
+def folders(
+    db: Database, *, archive: bool = False, delete_silent: bool = False,
+    **cfg: object,
+) -> ChatFolders:
+    return ChatFolders(
+        db, ChatFoldersConfig(**cfg), archive=archive, delete_silent=delete_silent,
+    )
 
 
 class TestFolderTarget:
@@ -189,6 +194,17 @@ class TestFolderTarget:
     def test_fresh_talk_is_new(self) -> None:
         row = self._row(intro_status=INTRO_SENT, script_step=R.HANDOFF,
                         her_days=2, last_her_at=self._her(1))
+        assert folder_target(row, bot_on=True, now=NOW) == NEW
+
+    def test_our_last_word_unanswered_a_day_is_fifty(self) -> None:
+        """Прод 2026-11-04, Рина Грейс: «Йооу» владельца сутки без ответа."""
+        row = self._row(her_days=1, last_her_at=self._her(40),
+                        last_by="owner", last_msg_at=self._her(24))
+        assert folder_target(row, bot_on=True, now=NOW) == FIFTY
+
+    def test_our_fresh_last_word_stays(self) -> None:
+        row = self._row(her_days=1, last_her_at=self._her(20),
+                        last_by="owner", last_msg_at=self._her(19))
         assert folder_target(row, bot_on=True, now=NOW) == NEW
 
     @pytest.mark.parametrize("kw", [
@@ -308,6 +324,20 @@ class TestChatFolders:
         run(f.sync(tg.client, S, bot_on=True))
         assert tg.members("Auto") == {2}
 
+    def test_deleted_chat_pruned_by_telegram_is_not_manual(self, db: Database) -> None:
+        """Telegram сам выкинул удалённый чат из папки — не «перенёс владелец»."""
+        girl(db, 1, intro={})
+        girl(db, 2, intro={})
+        tg = FakeTelegram()
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        run(db.set_dialog_chat_deleted(S, 1, True))
+        auto = next(x for x in tg.filters if getattr(x, "id", 0) and x.title.text == "Auto")
+        auto.include_peers = [p for p in auto.include_peers if p.user_id != 1]
+        run(f.sync(tg.client, S, bot_on=True))
+        row = next(r for r in run(db.list_folder_dialogs(S)) if r["user_id"] == 1)
+        assert row["folder_manual"] == 0 and row["chat_folder"] == ""
+
     def test_failed_update_is_retried_not_manual(self, db: Database) -> None:
         girl(db, 1, intro={})
         tg = FakeTelegram()
@@ -341,6 +371,35 @@ class TestChatFolders:
         tg = FakeTelegram()
         run(folders(db, enabled=False).sync(tg.client, S, bot_on=True))
         assert tg.updates == []
+
+
+class TestDeleteSilent:
+    """Молчит и после «АЛООО» — чат удаляется у владельца, и старые тоже
+    (прод 2026-11-04: Guangxi лежала в 50/50)."""
+
+    def test_old_no_reply_chat_deleted_and_out_of_folders(self, db: Database) -> None:
+        girl(db, 1, bot=2, intro={"status": "NO_REPLY"})
+        tg = FakeTelegram()
+        tg.client.delete_dialog = AsyncMock(return_value=None)
+        run(folders(db, delete_silent=True).sync(tg.client, S, bot_on=True))
+        tg.client.delete_dialog.assert_awaited_once()
+        assert tg.client.delete_dialog.await_args.kwargs == {"revoke": False}
+        assert run(db.list_folder_dialogs(S))[0]["chat_deleted_at"]
+        assert tg.members("50/50") == set()
+
+    def test_she_wrote_not_deleted(self, db: Database) -> None:
+        girl(db, 1, her_days=1, last_hours=100, intro={"status": "NO_REPLY"})
+        tg = FakeTelegram()
+        tg.client.delete_dialog = AsyncMock(return_value=None)
+        run(folders(db, delete_silent=True).sync(tg.client, S, bot_on=True))
+        tg.client.delete_dialog.assert_not_called()
+
+    def test_switched_off_not_deleted(self, db: Database) -> None:
+        girl(db, 1, bot=2, intro={"status": "NO_REPLY"})
+        tg = FakeTelegram()
+        tg.client.delete_dialog = AsyncMock(return_value=None)
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        tg.client.delete_dialog.assert_not_called()
 
 
 class TestSound:
