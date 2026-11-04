@@ -231,6 +231,10 @@ class MatchIntroConfig(BaseModel):
     #: отправке ей N заменяется случайным числом из [min, max] (владелец,
     #: 2026-11-04: «накрутить лайки»). Пусто — шапка как у Leo.
     liked_count: list[int] = [20, 30]
+    #: Чаты, которые ведёт бот (привет, анкета, сценарий) или где она
+    #: замолчала, — в архиве Telegram; переписка у владельца — из архива
+    #: (владелец, 2026-11-04; ``collectors/chat_archive.py``).
+    archive_bot_chats: bool = True
 
 
 class MatchScriptTexts(BaseModel):

@@ -207,6 +207,30 @@ tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_get_captcha_by_id
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_delete_captcha
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_schema_idempotent_and_legacy_friendly
 tests/test_captcha_memory.py::TestCaptchaMemoryDB::test_clear_all_data_includes_captcha_memory
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row0]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row1]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row2]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row3]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row4]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row5]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_leads_archived[row6]
+tests/test_chat_archive.py::TestArchiveTarget::test_bot_off_leaves_chat_for_owner
+tests/test_chat_archive.py::TestArchiveTarget::test_silent_girl_archived[row0]
+tests/test_chat_archive.py::TestArchiveTarget::test_silent_girl_archived[row1]
+tests/test_chat_archive.py::TestArchiveTarget::test_silent_girl_archived[row2]
+tests/test_chat_archive.py::TestArchiveTarget::test_needs_owner_unarchived[row0]
+tests/test_chat_archive.py::TestArchiveTarget::test_needs_owner_unarchived[row1]
+tests/test_chat_archive.py::TestArchiveTarget::test_needs_owner_unarchived[row2]
+tests/test_chat_archive.py::TestArchiveTarget::test_needs_owner_unarchived[row3]
+tests/test_chat_archive.py::TestArchiveTarget::test_needs_owner_unarchived[row4]
+tests/test_chat_archive.py::TestArchiveTarget::test_deleted_chat_untouched
+tests/test_chat_archive.py::TestChatArchiver::test_bot_chat_archived_handoff_unarchived
+tests/test_chat_archive.py::TestChatArchiver::test_same_state_not_moved_twice
+tests/test_chat_archive.py::TestChatArchiver::test_bot_answer_archives_again
+tests/test_chat_archive.py::TestChatArchiver::test_handoff_takes_chat_out
+tests/test_chat_archive.py::TestChatArchiver::test_error_marks_and_does_not_retry
+tests/test_chat_archive.py::TestChatArchiver::test_moves_capped_per_pass
+tests/test_chat_archive.py::TestChatArchiver::test_disabled_does_nothing
 tests/test_collector.py::TestDedup::test_unknown_not_known
 tests/test_collector.py::TestDedup::test_mark_then_known
 tests/test_collector.py::TestDedup::test_different_ids
@@ -769,6 +793,9 @@ tests/test_match_script.py::TestClassify::test_kinds[\u0447\u0442\u043e?-about_w
 tests/test_match_script.py::TestClassify::test_kinds[\u041e \u0447\u0451\u043c?-about_what]
 tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u0447\u0442\u043e \u0440\u0430\u0441\u0441\u043a\u0430\u0437\u044b\u0432\u0430\u0442\u044c-about_what]
 tests/test_match_script.py::TestClassify::test_kinds[\u0421\u043b\u0438\u0448\u043a\u043e\u043c \u043c\u043d\u043e\u0433\u043e \u0441 \u043a\u0435\u043c \u043e\u0431\u0449\u0430\u0435\u0448\u044c\u0441\u044f, \u0440\u0435\u0448\u0438\u043b \u0447\u0442\u043e\u0431\u044b \u043d\u0435 \u043f\u0435\u0440\u0435\u043f\u0443\u0442\u0430\u0442\u044c?-asks_too_many]
+tests/test_match_script.py::TestClassify::test_kinds[\u041f\u043e\u043c\u0435\u0447\u0430\u0435\u0448\u044c \u0447\u0442\u043e\u0431 \u043d\u0435 \u0437\u0430\u0431\u044b\u0442\u044c \u0438\u043b\u0438 \u0447\u0435-asks_too_many]
+tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u043f\u043e\u043c\u0435\u0442\u0438\u043b?-asks_pin]
+tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u0447\u0435\u0433\u043e \u043f\u043e\u043c\u0435\u0447\u0430\u0435\u0448\u044c-asks_pin]
 tests/test_match_script.py::TestClassify::test_kinds[\u044f \u043d\u0435 \u0434\u0430\u043c\u043e\u0447\u043a\u0430-not_damochka]
 tests/test_match_script.py::TestClassify::test_kinds[\u041a\u0430\u043a\u0430\u044f \u044f \u0442\u0435\u0431\u0435 \u0434\u0430\u043c\u043e\u0447\u043a\u0430-not_damochka]
 tests/test_match_script.py::TestClassify::test_kinds[\u0442\u044b \u0431\u043e\u0442?-asks_bot]
@@ -807,6 +834,7 @@ tests/test_match_script.py::TestMatchScript::test_start_after_intro
 tests/test_match_script.py::TestMatchScript::test_asks_what_card_here
 tests/test_match_script.py::TestMatchScript::test_pin_question_answered_not_card_here
 tests/test_match_script.py::TestMatchScript::test_why_sent_answered_not_card_here
+tests/test_match_script.py::TestMatchScript::test_mark_not_to_forget_answered_convenient
 tests/test_match_script.py::TestMatchScript::test_too_many_then_convenient
 tests/test_match_script.py::TestMatchScript::test_reply_waits_for_delay
 tests/test_match_script.py::TestMatchScript::test_silence_day_tell_me
@@ -842,10 +870,6 @@ tests/test_match_script.py::TestScriptNotice::test_bot_question
 tests/test_match_script.py::TestScriptNotice::test_owner_takeover_is_silent
 tests/test_match_script.py::TestScriptNotice::test_notice_has_no_her_text
 tests/test_match_script.py::TestDialogsLabel::test_script_step_shown_after_intro
-tests/test_match_script.py::TestClassify::test_kinds[\u041f\u043e\u043c\u0435\u0447\u0430\u0435\u0448\u044c \u0447\u0442\u043e\u0431 \u043d\u0435 \u0437\u0430\u0431\u044b\u0442\u044c \u0438\u043b\u0438 \u0447\u0435-asks_too_many]
-tests/test_match_script.py::TestClassify::test_kinds[\u0437\u0430\u0447\u0435\u043c \u043f\u043e\u043c\u0435\u0442\u0438\u043b?-asks_pin]
-tests/test_match_script.py::TestClassify::test_kinds[\u0430 \u0447\u0435\u0433\u043e \u043f\u043e\u043c\u0435\u0447\u0430\u0435\u0448\u044c-asks_pin]
-tests/test_match_script.py::TestMatchScript::test_mark_not_to_forget_answered_convenient
 tests/test_parser.py::TestClassify::test_profiles[\u0441\u0430\u0448\u043a, 19, \u0441\u043f\u0431 \u2013 \u0437\u043d\u0430\u044e \u043b\u044e\u0431\u0432\u0438 \u043d\u0435 \u0431\u044b\u0432\u0430\u0435\u0442]
 tests/test_parser.py::TestClassify::test_profiles[\u041c\u0430\u0439\u044f, 18, \u0441\u0430\u043d\u043a\u0442 \u043f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433]
 tests/test_parser.py::TestClassify::test_profiles[*)))^, 18, \u0421\u0430\u043d\u043a\u0442 \u041f\u0435\u0442\u0435\u0440\u0431\u0443\u0440\u0433 \u2013 \u0412 \u043f\u043b\u0430\u043d\u0430\u0445]

@@ -243,6 +243,20 @@ class MatchDialogsMixin:
         except Exception as e:
             logger.error(f"DialogLog: не завёл переписку {match.name}: {e}")
 
+    async def sync_chat_archive(self) -> None:
+        """Чаты, которые ведёт бот, — в архив; переписка у владельца — из
+        архива (``collectors/chat_archive.py``, владелец 2026-11-04)."""
+        archiver = getattr(self, "_chat_archiver", None)
+        if archiver is None or not archiver.enabled:
+            return
+        for client, session in zip(self._clients, self._client_sessions):
+            with self._session_scope(session):
+                bot_on = self._match_intro.allowed_in(self._dialog_mode(session))
+                try:
+                    await archiver.sync(client, session, bot_on)
+                except Exception as e:
+                    logger.error(f"Архив чатов: проход {session}: {e}")
+
     async def sync_dialogs(self) -> None:
         """Сверка журнала переписок с историей Telegram (по аккаунтам)."""
         if not (self._dialog_log.enabled and self._dialog_sync):

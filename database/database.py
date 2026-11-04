@@ -256,6 +256,8 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- разных девушек с тем же «имя, возраст» — пересылаем именно эту карточку.
 -- wake_at / wake_msg_id: молчала сутки после стикера — бот написал «АЛООО
 -- ПРОСЫПАЕМСЯ» (когда и id); молчит ещё сутки → NO_REPLY.
+-- archive_mark: чат в архиве Telegram, пока его ведёт бот
+-- (collectors/chat_archive.py) — метка последнего перемещения.
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -279,6 +281,7 @@ CREATE TABLE IF NOT EXISTS match_dialogs (
     card_message_id INTEGER NOT NULL DEFAULT 0,
     wake_at TEXT NOT NULL DEFAULT '',
     wake_msg_id INTEGER NOT NULL DEFAULT 0,
+    archive_mark TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -501,6 +504,7 @@ class Database:
         "card_message_id": "INTEGER NOT NULL DEFAULT 0",
         "wake_at": "TEXT NOT NULL DEFAULT ''",
         "wake_msg_id": "INTEGER NOT NULL DEFAULT 0",
+        "archive_mark": "TEXT NOT NULL DEFAULT ''",
     }
 
     async def _ensure_match_dialogs_script_columns(self) -> None:
@@ -1952,7 +1956,7 @@ class Database:
         "sent_at", "pinned", "error",
         "script_step", "script_at", "script_due_at", "script_pending",
         "script_msg_id", "script_variant", "card_session", "card_message_id",
-        "wake_at", "wake_msg_id",
+        "wake_at", "wake_msg_id", "archive_mark",
     })
 
     async def add_match_dialog(
@@ -2030,6 +2034,18 @@ class Database:
             WHERE account_session = ? AND status = ?
             ORDER BY greeted_at LIMIT ?""",
             (account_session or "", status, int(limit)),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
+
+    async def list_all_match_dialogs(
+        self, account_session: str, limit: int = 500,
+    ) -> list[dict]:
+        """Все переписки аккаунта (новые первыми) — для архива чатов."""
+        cursor = await self._connection.execute(
+            """SELECT * FROM match_dialogs WHERE account_session = ?
+            ORDER BY greeted_at DESC LIMIT ?""",
+            (account_session or "", int(limit)),
         )
         rows = await cursor.fetchall()
         return [self._row_to_dict(cursor, row) for row in rows]
