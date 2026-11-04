@@ -130,7 +130,7 @@ class HistorySyncMixin:
                 logger.error(f"Проверка карточек лайка: {e}")
             await self.retry_match_greetings()
             await self.run_match_intros()
-            await self.sync_chat_archive()
+            await self.sync_chat_folders()
             await self.sync_dialogs()
 
     async def recover_backlog(self, batch_size: int = 200) -> int:

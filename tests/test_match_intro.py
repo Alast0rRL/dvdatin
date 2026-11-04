@@ -688,6 +688,25 @@ class TestWakeUpAfterSticker:
         assert self._row(db)["status"] == NO_REPLY
         assert [st for _, st in results] == [NO_REPLY]
 
+    def test_silent_after_wake_up_deletes_chat_for_owner(self, db: Database) -> None:
+        """Молчит и после «АЛООО» — чат удаляется только у владельца
+        (владелец, 2026-11-04), на сайте — «чат удалён»."""
+        run(db.upsert_dialog_contact(self.S, self.UID, username="rosa", name="Роза"))
+        self._waiting(db, _ago(50), wake_at=_ago(25).isoformat(), wake_msg_id=500)
+        client = self._client(SimpleNamespace(id=500, out=True, date=_ago(25)))
+        run(self._intro(db).process(client, self.S, "AUTO"))
+        client.delete_dialog.assert_awaited_once()
+        assert client.delete_dialog.await_args.kwargs == {"revoke": False}
+        contacts = run(db.list_folder_dialogs(self.S))
+        assert contacts[0]["chat_deleted_at"]
+
+    def test_silent_chat_kept_when_switched_off(self, db: Database) -> None:
+        self._waiting(db, _ago(50), wake_at=_ago(25).isoformat(), wake_msg_id=500)
+        client = self._client(SimpleNamespace(id=500, out=True, date=_ago(25)))
+        run(self._intro(db, delete_silent_chat=False).process(client, self.S, "AUTO"))
+        assert self._row(db)["status"] == NO_REPLY
+        client.delete_dialog.assert_not_called()
+
     def test_missed_reply_schedules_intro_instead(self, db: Database) -> None:
         self._waiting(db, _ago(25))
         reply_at = _ago(0.1)

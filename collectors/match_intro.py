@@ -653,6 +653,23 @@ class MatchIntro:
             first = greeted
         return first
 
+    async def _delete_silent_chat(
+        self, client: Any, peer: Any, account_session: str, user_id: int,
+        name: str,
+    ) -> None:
+        """Молчит и после «АЛООО» — чат удаляется только у владельца
+        (владелец, 2026-11-04); на сайте — «Неудачные · чат удалён»."""
+        try:
+            await client.delete_dialog(peer, revoke=False)
+        except Exception as e:
+            logger.warning(f"MatchIntro: не удалил чат {name}: {e}")
+            return
+        logger.info(f"MatchIntro: {name} молчит и после «АЛООО» — чат удалён у тебя")
+        try:
+            await self._db.set_dialog_chat_deleted(account_session, user_id, True)
+        except Exception as e:
+            logger.warning(f"MatchIntro: не отметил удалённый чат {name}: {e}")
+
     async def _wake_silent(
         self, client: Any, account_session: str, mode: str,
     ) -> list[tuple[dict, str]]:
@@ -717,6 +734,10 @@ class MatchIntro:
                     )
                     await self._update(account_session, user_id, status=NO_REPLY)
                     results.append((row, NO_REPLY))
+                    if cfg.delete_silent_chat:
+                        await self._delete_silent_chat(
+                            client, peer, account_session, user_id, name,
+                        )
                     continue
                 sent = await client.send_message(peer, texts[0])
             except Exception as e:

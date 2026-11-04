@@ -256,8 +256,8 @@ CREATE TABLE IF NOT EXISTS app_state (
 -- разных девушек с тем же «имя, возраст» — пересылаем именно эту карточку.
 -- wake_at / wake_msg_id: молчала сутки после стикера — бот написал «АЛООО
 -- ПРОСЫПАЕМСЯ» (когда и id); молчит ещё сутки → NO_REPLY.
--- archive_mark: чат в архиве Telegram, пока его ведёт бот
--- (collectors/chat_archive.py) — метка последнего перемещения.
+-- archive_mark: не используется с 2026-11-04 (была метка архива чатов;
+-- архив и папки теперь — dialog_contacts.archived_at / chat_folder).
 CREATE TABLE IF NOT EXISTS match_dialogs (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -295,6 +295,10 @@ CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
 -- chat_deleted_at — сверка нашла её чат пустым, хотя сообщения были (чат
 -- удалён в Telegram; кто удалил — Telegram не говорит); новое сообщение
 -- в чате снимает отметку.
+-- archived_at — бот положил её чат в архив Telegram (один раз; вынул владелец —
+-- обратно не кладём). chat_folder — папка, куда её положил бот (new | active |
+-- fifty | auto, '' — ни в одной); folder_manual = 1 — владелец перенёс чат
+-- сам, бот его больше не двигает (collectors/chat_folders.py).
 CREATE TABLE IF NOT EXISTS dialog_contacts (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -305,6 +309,9 @@ CREATE TABLE IF NOT EXISTS dialog_contacts (
     last_message_at TEXT,
     synced_at TEXT,
     chat_deleted_at TEXT,
+    archived_at TEXT NOT NULL DEFAULT '',
+    chat_folder TEXT NOT NULL DEFAULT '',
+    folder_manual INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -522,18 +529,29 @@ class Database:
             except Exception as e:
                 logger.warning(f"match_dialogs.{col}: {e}")
 
+    #: Колонки dialog_contacts, добавленные после первой версии.
+    _DIALOG_CONTACTS_COLUMNS: dict[str, str] = {
+        "chat_deleted_at": "TEXT",
+        # Архив и папки Telegram (владелец, 2026-11-04).
+        "archived_at": "TEXT NOT NULL DEFAULT ''",
+        "chat_folder": "TEXT NOT NULL DEFAULT ''",
+        "folder_manual": "INTEGER NOT NULL DEFAULT 0",
+    }
+
     async def _ensure_dialog_contacts_deleted_column(self) -> None:
-        """Добавляет dialog_contacts.chat_deleted_at (идемпотентно)."""
+        """Добавляет поздние колонки dialog_contacts (идемпотентно)."""
         cols = await self._connection.execute("PRAGMA table_info(dialog_contacts)")
-        if "chat_deleted_at" in {row[1] for row in await cols.fetchall()}:
-            return
-        try:
-            await self._connection.execute(
-                "ALTER TABLE dialog_contacts ADD COLUMN chat_deleted_at TEXT"
-            )
-            await self._connection.commit()
-        except Exception as e:
-            logger.warning(f"dialog_contacts.chat_deleted_at: {e}")
+        names = {row[1] for row in await cols.fetchall()}
+        for col, decl in self._DIALOG_CONTACTS_COLUMNS.items():
+            if col in names:
+                continue
+            try:
+                await self._connection.execute(
+                    f"ALTER TABLE dialog_contacts ADD COLUMN {col} {decl}"
+                )
+                await self._connection.commit()
+            except Exception as e:
+                logger.warning(f"dialog_contacts.{col}: {e}")
 
     async def _backfill_dialog_contacts(self) -> None:
         """Переносит девушек из match_dialogs в dialog_contacts (идемпотентно)."""
@@ -2234,6 +2252,70 @@ class Database:
         except Exception as e:
             await self._connection.rollback()
             logger.warning(f"mark_dialog_synced: {e}")
+
+    async def list_folder_dialogs(self, account_session: str) -> list[dict]:
+        """Девушки аккаунта со сводкой переписки — для папок и архива
+        Telegram (``collectors/chat_folders.py``). Кенты не входят."""
+        cursor = await self._connection.execute(
+            """SELECT c.account_session, c.user_id, c.username, c.name,
+                   c.matched_at, c.last_message_at, c.chat_deleted_at,
+                   c.archived_at, c.chat_folder, c.folder_manual,
+                   md.status AS intro_status, md.script_step AS script_step,
+                   md.greeted_at AS greeted_at, md.wake_at AS wake_at,
+                   (SELECT COUNT(*) FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id AND m.sent_by = 'her') AS her_count,
+                   (SELECT COUNT(*) FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id AND m.sent_by = 'owner') AS owner_count,
+                   (SELECT MIN(m.message_date) FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id AND m.sent_by = 'her') AS first_her_at,
+                   (SELECT m.sent_by FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id
+                     ORDER BY m.message_date DESC, m.telegram_message_id DESC
+                     LIMIT 1) AS last_by
+            FROM dialog_contacts c
+            LEFT JOIN match_dialogs md
+              ON md.account_session = c.account_session AND md.user_id = c.user_id
+            WHERE c.account_session = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM profiles pf
+                  WHERE pf.id = c.profile_id AND pf.audience = 'friends'
+              )
+            ORDER BY COALESCE(c.last_message_at, c.matched_at) DESC""",
+            (account_session or "",),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_dict(cursor, row) for row in rows]
+
+    #: Поля dialog_contacts, которые меняет update_dialog_contact.
+    _DIALOG_CONTACT_FIELDS: frozenset[str] = frozenset({
+        "archived_at", "chat_folder", "folder_manual",
+    })
+
+    async def update_dialog_contact(
+        self, account_session: str, user_id: int, **fields: object,
+    ) -> None:
+        """Обновляет папку / архив её чата (только _DIALOG_CONTACT_FIELDS)."""
+        bad = set(fields) - self._DIALOG_CONTACT_FIELDS
+        if bad:
+            msg = f"update_dialog_contact: неизвестные поля {sorted(bad)}"
+            raise ValueError(msg)
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        try:
+            await self._connection.execute(
+                f"UPDATE dialog_contacts SET {cols} "
+                "WHERE account_session = ? AND user_id = ?",
+                (*fields.values(), account_session or "", int(user_id)),
+            )
+            await self._connection.commit()
+        except Exception as e:
+            await self._connection.rollback()
+            logger.warning(f"update_dialog_contact: {e}")
 
     async def set_dialog_chat_deleted(
         self, account_session: str, user_id: int, deleted: bool,

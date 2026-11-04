@@ -23,7 +23,7 @@ from collectors.history_sync import HistorySyncMixin
 from collectors.leo_navigation import LeoNavigationMixin
 from collectors.match_dialogs import MatchDialogsMixin
 from collectors.match_greeter import MatchGreeter
-from collectors.chat_archive import ChatArchiver
+from collectors.chat_folders import ChatFolders
 from collectors.match_intro import MatchIntro
 from collectors.match_script import MatchScript
 from collectors.outgoing import OutgoingMixin
@@ -198,9 +198,11 @@ class DvinchikCollector(
         self._match_intro.client_for = (
             lambda session: self._clients_for_session(session)[0]
         )
-        # Чаты, которые ведёт бот, — в архиве Telegram (владелец, 2026-11-04).
-        self._chat_archiver = ChatArchiver(
-            db, enabled=bool(config.auto_actions.match_intro.archive_bot_chats),
+        # Чаты девушек — в архиве Telegram, общение — через папки New /
+        # Active / 50/50 / Auto (владелец, 2026-11-04).
+        self._chat_folders = ChatFolders(
+            db, config.auto_actions.match_intro.folders,
+            archive=bool(config.auto_actions.match_intro.archive_bot_chats),
         )
         # После анкеты — сценарий знакомства по схеме владельца (AUTO).
         self._match_script = MatchScript(config.auto_actions.match_script, db)

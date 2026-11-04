@@ -209,6 +209,28 @@ class MatchGreetingConfig(BaseModel):
     sticker_index: int = -1
 
 
+class ChatFoldersConfig(BaseModel):
+    """Папки Telegram для чатов девушек (владелец, 2026-11-04).
+
+    New — вышла из автоматики, Active — общение устоялось, 50/50 — не идёт,
+    но удалять жалко, Auto — ведёт бот. Бот ищет папки по названию (нет —
+    создаёт), раскладывает чаты по ``services/chat_folders.py``; чат, который
+    владелец перенёс сам, больше не трогает.
+    """
+
+    enabled: bool = True
+    #: Названия папок (до 12 символов — лимит Telegram).
+    new: str = "New"
+    active: str = "Active"
+    fifty: str = "50/50"
+    auto: str = "Auto"
+    #: Active: она написала столько сообщений, владелец — столько.
+    active_her_messages: int = 10
+    active_owner_messages: int = 3
+    #: Лимит чатов в папке у Telegram (без Premium — 100, с Premium — 200).
+    max_chats_per_folder: int = 100
+
+
 class MatchIntroConfig(BaseModel):
     """Начало знакомства после ответа девушки (автопереписка, режим AUTO).
 
@@ -231,10 +253,11 @@ class MatchIntroConfig(BaseModel):
     #: отправке ей N заменяется случайным числом из [min, max] (владелец,
     #: 2026-11-04: «накрутить лайки»). Пусто — шапка как у Leo.
     liked_count: list[int] = [20, 30]
-    #: Чаты, которые ведёт бот (привет, анкета, сценарий) или где она
-    #: замолчала, — в архиве Telegram; переписка у владельца — из архива
-    #: (владелец, 2026-11-04; ``collectors/chat_archive.py``).
+    #: Все чаты девушек — в архиве Telegram (один раз на чат; вынул сам —
+    #: бот обратно не кладёт), общение — через папки ``folders``
+    #: (владелец, 2026-11-04; ``collectors/chat_folders.py``).
     archive_bot_chats: bool = True
+    folders: ChatFoldersConfig = ChatFoldersConfig()
 
 
 class MatchScriptTexts(BaseModel):
@@ -286,6 +309,9 @@ class MatchScriptConfig(BaseModel):
     utc_offset_hours: float = 3.0
     #: Удалять чат и у неё (revoke). По умолчанию — у обоих (2026-10-30).
     delete_for_both: bool = True
+    #: Молчит и после «АЛООО» на стикер-привет → чат удаляется только у
+    #: владельца (владелец, 2026-11-04).
+    delete_silent_chat: bool = True
     texts: MatchScriptTexts = MatchScriptTexts()
 
 
