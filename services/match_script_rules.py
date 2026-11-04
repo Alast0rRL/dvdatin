@@ -20,6 +20,9 @@ ASKS_TOO_MANY: str = "asks_too_many"
 ASKS_PIN: str = "asks_pin"        # «а зачем закрепил?» / «почему скинул?»
 ASKS_WHAT: str = "asks_what"      # «что это / зачем» про анкету
 ABOUT_WHAT: str = "about_what"    # «о чём? / что?»
+#: Её собственный вопрос, правилам незнакомый («ну вы любите розы?») — нужен
+#: живой ответ: бот молчит, переписка владельцу (владелец, 2026-11-04).
+HER_QUESTION: str = "her_question"
 OTHER: str = "other"
 
 #: Шаги сценария (``match_dialogs.script_step``).
@@ -40,10 +43,13 @@ STOP_KINDS: frozenset[str] = frozenset({GO_AWAY, RUDE})
 
 #: Важность вида: при нескольких её сообщениях подряд побеждает важнейший.
 _PRIORITY: dict[str, int] = {
-    GO_AWAY: 5, RUDE: 5, ASKS_BOT: 4,
+    GO_AWAY: 6, RUDE: 6, ASKS_BOT: 5,
     # Вопрос про закреп важнее общего «зачем»: «Ну да, я» + «А для чего
     # закрепил?» — ответ про закреп, не «Пусть лежит здесь» (владелец, 2026-11-03).
-    ASKS_PIN: 3,
+    ASKS_PIN: 4,
+    # Её свой вопрос важнее переспроса: «а че» + «ну вы любите розы?» — не
+    # «О себе конечно», а владельцу (прод 2026-11-04, @Pivo2007).
+    HER_QUESTION: 3,
     NOT_DAMOCHKA: 2, ASKS_TOO_MANY: 2, ASKS_WHAT: 2, ABOUT_WHAT: 2,
     OTHER: 1,
 }
@@ -120,6 +126,8 @@ def classify(text: str) -> str:
             return kind
     if _BARE_QUESTION.match(norm):
         return ABOUT_WHAT
+    if "?" in norm:
+        return HER_QUESTION
     return OTHER
 
 
@@ -150,7 +158,7 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
     """
     if kind in STOP_KINDS:
         return None, DELETED
-    if kind == ASKS_BOT:
+    if kind in (ASKS_BOT, HER_QUESTION):
         return None, HANDOFF
     if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_PIN:
         return "pin_why", WAIT_MORE

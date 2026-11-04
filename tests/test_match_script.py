@@ -143,6 +143,36 @@ class TestClassify:
         assert R.strongest([R.ASKS_PIN, R.ASKS_WHAT]) == R.ASKS_PIN
 
 
+class TestHerQuestion:
+    """Её свой вопрос — бот молчит, переписка владельцу (прод 2026-11-04,
+    @Pivo2007: «а че» + «ну вы любите розы?» → бот ответил «О себе конечно»)."""
+
+    def test_unknown_question_is_her_question(self) -> None:
+        assert R.classify("ну вы любите розы?") == R.HER_QUESTION
+        assert R.classify("ну вы любите розы") == R.OTHER
+
+    @pytest.mark.parametrize("text,kind", [
+        ("?", R.ABOUT_WHAT), ("а че", R.ABOUT_WHAT), ("о чём?", R.ABOUT_WHAT),
+        ("что это?", R.ASKS_WHAT), ("а для чего закрепил?", R.ASKS_PIN),
+        ("ты бот?", R.ASKS_BOT),
+    ])
+    def test_known_questions_keep_their_kind(self, text: str, kind: str) -> None:
+        assert R.classify(text) == kind
+
+    def test_her_question_beats_reask(self) -> None:
+        kinds = [R.classify("а че"), R.classify("ну вы любите розы?")]
+        kind = R.strongest(kinds)
+        assert kind == R.HER_QUESTION
+        assert R.decide(R.TELL_ME, kind) == (None, R.HANDOFF)
+
+    def test_pin_question_beats_her_question(self) -> None:
+        assert R.strongest([R.ASKS_PIN, R.HER_QUESTION]) == R.ASKS_PIN
+
+    @pytest.mark.parametrize("step", list(R.ACTIVE_STEPS))
+    def test_her_question_hands_off_on_any_step(self, step: str) -> None:
+        assert R.decide(step, R.HER_QUESTION) == (None, R.HANDOFF)
+
+
 class TestDecide:
     @pytest.mark.parametrize("step,kind,expected", [
         (R.AFTER_PIN, R.ASKS_WHAT, ("card_here", R.WAIT_MORE)),
