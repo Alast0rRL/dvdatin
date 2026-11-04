@@ -200,8 +200,8 @@ class MatchDialogsMixin:
     async def _hide_greeted_chat(
         self, client: object, session: str, match: ParsedMatch,
     ) -> None:
-        """Стикер ушёл → её чат сразу в архив и без звука (владелец,
-        2026-11-04), не дожидаясь её ответа."""
+        """Стикер ушёл → её чат сразу в архив (владелец, 2026-11-04), не
+        дожидаясь её ответа."""
         folders = getattr(self, "_chat_folders", None)
         if folders is None:
             return

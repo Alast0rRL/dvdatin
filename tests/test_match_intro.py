@@ -793,7 +793,7 @@ class TestCollectorIntro:
         assert call.kwargs == {"card_session": "dvai_2", "card_message_id": 900}
 
     def test_greeting_sent_hides_chat_at_once(self) -> None:
-        """Стикер ушёл → чат сразу в архив и без звука (владелец, 2026-11-04)."""
+        """Стикер ушёл → чат сразу в архив (владелец, 2026-11-04)."""
         collector, _, auto = self._collector()
         collector._chat_folders.hide_now = AsyncMock(return_value=None)
         run(collector._process_message(_Greeting._task(auto)))

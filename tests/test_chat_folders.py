@@ -99,7 +99,6 @@ class FakeTelegram:
         self.filters: list = [DialogFilterDefault(), *filters]
         self.updates: list[UpdateDialogFilterRequest] = []
         self.fail_update = False
-        self.muted: dict[int, bool] = {}
         self.client = AsyncMock(side_effect=self._call)
         self.client.get_input_entity = AsyncMock(side_effect=self._entity)
         self.client.edit_folder = AsyncMock(return_value=None)
@@ -119,9 +118,6 @@ class FakeTelegram:
             self.filters = [f for f in self.filters if getattr(f, "id", None) != req.id]
             if req.filter is not None:
                 self.filters.append(req.filter)
-            return True
-        if isinstance(req, UpdateNotifySettingsRequest):
-            self.muted[req.peer.peer.user_id] = req.settings.mute_until > 0
             return True
         raise AssertionError(f"неожиданный запрос {req!r}")
 
@@ -402,49 +398,39 @@ class TestDeleteSilent:
         tg.client.delete_dialog.assert_not_called()
 
 
-class TestSound:
-    """Звук — только Active и New; Auto и 50/50 без звука (владелец, 2026-11-04)."""
+class TestHideNow:
+    """Сразу после стикера-привета её чат — в архив, не дожидаясь ответа.
+    Звук бот не трогает — уведомления владелец включает сам (2026-11-04)."""
 
-    def test_sound_follows_folder(self, db: Database) -> None:
-        girl(db, 1, intro={})                                        # Auto
-        girl(db, 2, her_days=1, intro={"status": INTRO_SENT, "script_step": R.HANDOFF})
-        girl(db, 3, her_days=3, owner=3)                             # Active
-        girl(db, 4, her_days=2, last_hours=100)                      # 50/50
-        tg = FakeTelegram()
-        f = folders(db)
-        run(f.sync(tg.client, S, bot_on=True))
-        assert tg.muted == {1: True, 2: False, 3: False, 4: True}
-        tg.muted.clear()
-        run(f.sync(tg.client, S, bot_on=True))
-        assert tg.muted == {}  # уже выставлено — повторно не шлём
+    @staticmethod
+    def _notify_requests(tg: FakeTelegram) -> list:
+        return [
+            c.args[0] for c in tg.client.await_args_list
+            if isinstance(c.args[0], UpdateNotifySettingsRequest)
+        ]
 
-    def test_left_automation_gets_sound(self, db: Database) -> None:
-        girl(db, 1, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
-        tg = FakeTelegram()
-        f = folders(db)
-        run(f.sync(tg.client, S, bot_on=True))
-        assert tg.muted == {1: True}
-        run(db.update_match_dialog(S, 1, script_step=R.HANDOFF))
-        run(f.sync(tg.client, S, bot_on=True))
-        assert tg.members("New") == {1}
-        assert tg.muted == {1: False}
-
-    def test_manual_chat_sound_untouched(self, db: Database) -> None:
-        girl(db, 1, intro={})
-        tg = FakeTelegram(folder(5, "Active", 1))
-        run(folders(db).sync(tg.client, S, bot_on=True))
-        assert tg.muted == {}
-
-    def test_hide_now_archives_and_mutes(self, db: Database) -> None:
-        """Сразу после стикера-привета, не дожидаясь её ответа."""
+    def test_hide_now_archives(self, db: Database) -> None:
         run(db.upsert_dialog_contact(S, 7, username="girl7", name="G7"))
         tg = FakeTelegram()
         run(folders(db, archive=True).hide_now(tg.client, S, username="girl7"))
         tg.client.edit_folder.assert_awaited_once()
         assert tg.client.edit_folder.await_args.args[1] == ARCHIVE_FOLDER
-        assert tg.muted == {7: True}
-        row = run(db.list_folder_dialogs(S))[0]
-        assert row["archived_at"] and row["notify_mark"] == "muted"
+        assert run(db.list_folder_dialogs(S))[0]["archived_at"]
+        assert self._notify_requests(tg) == []
+
+    def test_bot_never_touches_sound(self, db: Database) -> None:
+        girl(db, 1, intro={})                                        # Auto
+        girl(db, 2, her_days=3, owner=3)                             # Active
+        girl(db, 3, her_days=2, last_hours=100)                      # 50/50
+        tg = FakeTelegram()
+        run(folders(db, archive=True).sync(tg.client, S, bot_on=True))
+        assert tg.members("Auto") == {1}
+        assert self._notify_requests(tg) == []
+
+    def test_hide_now_without_archive_does_nothing(self, db: Database) -> None:
+        tg = FakeTelegram()
+        run(folders(db).hide_now(tg.client, S, username="girl7"))
+        tg.client.get_input_entity.assert_not_called()
 
     def test_hide_now_error_does_not_raise(self, db: Database) -> None:
         tg = FakeTelegram()

@@ -311,9 +311,7 @@ CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
 -- archived_at — бот положил её чат в архив Telegram (один раз; вынул владелец —
 -- обратно не кладём). chat_folder — папка, куда её положил бот (new | active |
 -- fifty | auto, '' — ни в одной); folder_manual = 1 — владелец перенёс чат
--- сам, бот его больше не двигает (collectors/chat_folders.py). notify_mark —
--- звук её чата, выставленный ботом: muted (Auto, 50/50, сразу после привета)
--- | on (Active, New) | '' — ещё не трогал.
+-- сам, бот его больше не двигает (collectors/chat_folders.py).
 CREATE TABLE IF NOT EXISTS dialog_contacts (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -327,7 +325,6 @@ CREATE TABLE IF NOT EXISTS dialog_contacts (
     archived_at TEXT NOT NULL DEFAULT '',
     chat_folder TEXT NOT NULL DEFAULT '',
     folder_manual INTEGER NOT NULL DEFAULT 0,
-    notify_mark TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -552,7 +549,6 @@ class Database:
         "archived_at": "TEXT NOT NULL DEFAULT ''",
         "chat_folder": "TEXT NOT NULL DEFAULT ''",
         "folder_manual": "INTEGER NOT NULL DEFAULT 0",
-        "notify_mark": "TEXT NOT NULL DEFAULT ''",
     }
 
     async def _ensure_dialog_contacts_deleted_column(self) -> None:
@@ -2296,7 +2292,7 @@ class Database:
                      WHERE m.account_session = c.account_session
                        AND m.user_id = c.user_id) AS last_msg_at,
                    c.matched_at, c.last_message_at, c.chat_deleted_at,
-                   c.archived_at, c.chat_folder, c.folder_manual, c.notify_mark,
+                   c.archived_at, c.chat_folder, c.folder_manual,
                    md.status AS intro_status, md.script_step AS script_step,
                    md.greeted_at AS greeted_at, md.wake_at AS wake_at,
                    (SELECT COUNT(*) FROM dialog_messages m
@@ -2329,7 +2325,7 @@ class Database:
 
     #: Поля dialog_contacts, которые меняет update_dialog_contact.
     _DIALOG_CONTACT_FIELDS: frozenset[str] = frozenset({
-        "archived_at", "chat_folder", "folder_manual", "notify_mark",
+        "archived_at", "chat_folder", "folder_manual",
     })
 
     async def update_dialog_contact(

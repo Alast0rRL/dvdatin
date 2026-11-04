@@ -241,11 +241,10 @@ tests/test_chat_folders.py::TestChatFolders::test_folders_switched_off
 tests/test_chat_folders.py::TestDeleteSilent::test_old_no_reply_chat_deleted_and_out_of_folders
 tests/test_chat_folders.py::TestDeleteSilent::test_she_wrote_not_deleted
 tests/test_chat_folders.py::TestDeleteSilent::test_switched_off_not_deleted
-tests/test_chat_folders.py::TestSound::test_sound_follows_folder
-tests/test_chat_folders.py::TestSound::test_left_automation_gets_sound
-tests/test_chat_folders.py::TestSound::test_manual_chat_sound_untouched
-tests/test_chat_folders.py::TestSound::test_hide_now_archives_and_mutes
-tests/test_chat_folders.py::TestSound::test_hide_now_error_does_not_raise
+tests/test_chat_folders.py::TestHideNow::test_hide_now_archives
+tests/test_chat_folders.py::TestHideNow::test_bot_never_touches_sound
+tests/test_chat_folders.py::TestHideNow::test_hide_now_without_archive_does_nothing
+tests/test_chat_folders.py::TestHideNow::test_hide_now_error_does_not_raise
 tests/test_chat_folders.py::TestArchive::test_every_chat_archived_once
 tests/test_chat_folders.py::TestArchive::test_deleted_chat_not_archived
 tests/test_chat_folders.py::TestArchive::test_archive_error_not_retried
