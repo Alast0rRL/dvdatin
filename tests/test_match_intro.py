@@ -114,6 +114,13 @@ class TestMatchDialogDb:
             "Роза", LEO, "dvai_2", use_context=False,
         ))[1] == 0
 
+    def test_find_match_card_ignores_markup_around_name(self, db: Database) -> None:
+        """Прод 2026-11-04, @Pivo2007: анкета «_miss.E,», в ссылке матча Leo
+        «miss.E,» (подчёркивание съедено как курсив) — анкета не ушла."""
+        pid = run(_profile(db, "_miss.E,", 1000, "dvai_2", []))
+        run(db.set_chat_profile_context(LEO, 1000, "dvai_2"))
+        assert run(db.find_match_card("miss.E,", LEO, "dvai_2")) == (pid, 1000)
+
     def test_find_match_card_on_repeat_showing(self, db: Database) -> None:
         """Матч на ПОВТОРНОМ показе анкеты — карточка тоже находится.
 

@@ -21,6 +21,19 @@ DB_PATH = DB_DIR / "database.db"
 _RAW_SAVE_MAX_RETRIES = 3
 _RAW_SAVE_BACKOFF_BASE = 0.05
 
+#: Символы разметки по краям имени, которые Leo съедает в ссылке матча.
+_NAME_EDGE_CHARS = " \t\n_*~`"
+
+
+def match_name_key(name: str | None) -> str:
+    """Ключ сравнения имени из уведомления о матче с именем анкеты.
+
+    Регистр не важен; разметка по краям не важна: анкета «_miss.E,», а в
+    ссылке матча Leo «[miss.E,](…)» — подчёркивание ушло как курсив (прод
+    2026-11-04: анкета ей не ушла, NO_PROFILE).
+    """
+    return (name or "").strip(_NAME_EDGE_CHARS).casefold()
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS raw_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1558,7 +1571,7 @@ class Database:
         (авто-журнал ∪ ручные sent_messages). None если профиль
         с таким именем ещё не лайкался.
         """
-        needle = (name or "").strip().lower()
+        needle = match_name_key(name)
         if not needle:
             return None
         try:
@@ -1578,7 +1591,7 @@ class Database:
             logger.warning(f"resolve_profile_by_name: {e}")
             return None
         for rid, rname, _last in rows:
-            if (rname or "").strip().lower() == needle:
+            if match_name_key(rname) == needle:
                 return rid
         return None
 
@@ -2423,7 +2436,7 @@ class Database:
         Иначе — по имени среди лайкнутых, карточка неизвестна (0): под одной
         записью profiles бывают разные девушки с тем же «имя, возраст».
         """
-        needle = (name or "").strip().lower()
+        needle = match_name_key(name)
         if use_context:
             try:
                 ctx = await self.get_chat_profile_context(chat_id, account_session)
@@ -2436,7 +2449,7 @@ class Database:
                         "SELECT name FROM profiles WHERE id = ?", (pid,)
                     )
                     row = await cursor.fetchone()
-                    if row and (row[0] or "").strip().lower() == needle:
+                    if row and match_name_key(row[0]) == needle:
                         return pid, int(ctx or 0)
             except Exception as e:
                 logger.warning(f"find_match_profile(context): {e}")
