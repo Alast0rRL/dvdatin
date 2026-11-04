@@ -41,7 +41,10 @@
 
 from __future__ import annotations
 
+import copy
 import io
+import random
+import re
 from datetime import datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -96,7 +99,51 @@ EARLY_REPLY_SEC: float = 24 * 3600.0
 #: срока не шлём (иначе на запуске его получили бы все старые матчи).
 WAKE_UP_LATE_HOURS: float = 24.0
 
+#: Шапка карточки той, кто лайкнула первой: «Кому-то понравилась твоя
+#: анкета (и ещё 31):» — бывает без пробела перед скобкой и без счётчика.
+LIKED_HEAD_RE = re.compile(
+    r"^(?P<head>[^\n]*понравилась твоя анкета)"
+    r"(?:(?P<pre>\s*\(и\s+[её]щ[её]\s+)(?P<num>\d+)\))?"
+    r"(?P<tail>[^\n]*)",
+    re.IGNORECASE,
+)
 
+
+def boost_liked_count(
+    text: str, entities: list | None, lo: int, hi: int,
+) -> tuple[str, list | None] | None:
+    """Шапка «понравилась твоя анкета (и ещё N)» → N случайное из [lo, hi].
+
+    Без счётчика («…анкета:») — дописывает « (и ещё N)». Нет шапки — None.
+    Сущности форматирования после правки сдвигаются (шапка — символы BMP,
+    так что сдвиг в символах = сдвиг в UTF-16).
+    """
+    m = LIKED_HEAD_RE.match(text or "")
+    if m is None:
+        return None
+    count = str(random.randint(lo, hi))
+    if m.group("num") is not None:
+        start, end = m.span("num")
+        new = count
+    else:
+        tail = m.group("tail").strip()
+        if tail and not tail.startswith(":"):
+            return None  # уведомление «…анкета! посмотрим кто», не карточка
+        start = end = m.end("head")
+        new = f" (и ещё {count})"
+    delta = len(new) - (end - start)
+    out = text[:start] + new + text[end:]
+    if not entities or not delta:
+        return out, entities
+    shifted = []
+    for e in entities:
+        e = copy.copy(e)
+        if e.offset >= end:
+            e.offset += delta
+        elif e.offset + e.length > start:
+            e.length += delta
+        shifted.append(e)
+    return out, shifted
 
 
 def _now() -> datetime:
@@ -297,8 +344,16 @@ class MatchIntro:
             if src_client is not None:
                 sent = await self._send_copy(client, peer, src_client, ids)
             else:
-                from_peer: Any = self._leo_chat_id
-                sent = await client.forward_messages(peer, ids, from_peer=from_peer)
+                own = await self._liked_card_messages(client, ids)
+                if own is not None:
+                    # Шапка «понравилась твоя анкета (и ещё N)»: пересылку не
+                    # изменить — копия со своим N (владелец, 2026-11-04).
+                    sent = await self._send_copy(client, peer, client, ids, msgs=own)
+                else:
+                    from_peer: Any = self._leo_chat_id
+                    sent = await client.forward_messages(
+                        peer, ids, from_peer=from_peer,
+                    )
         except Exception as e:
             pause = flood_pause_sec(e)
             if pause is not None:
@@ -356,18 +411,52 @@ class MatchIntro:
         )
         return INTRO_SENT
 
+    def _liked_range(self) -> tuple[int, int] | None:
+        rng = list(getattr(self._config, "liked_count", None) or [])
+        if len(rng) != 2:
+            return None
+        lo, hi = sorted(int(x) for x in rng)
+        return lo, hi
+
+    async def _liked_card_messages(
+        self, client: Any, ids: list[int],
+    ) -> list | None:
+        """Сообщения карточки, если в подписи шапка «понравилась твоя анкета»
+        (её надо править — значит копия), иначе None (обычная пересылка).
+        Сбой чтения — None: анкета уйдёт пересылкой, как раньше."""
+        if self._liked_range() is None:
+            return None
+        try:
+            msgs = await client.get_messages(self._leo_chat_id, ids=ids)
+        except Exception as e:
+            logger.warning(f"MatchIntro: не прочитал карточку для шапки: {e}")
+            return None
+        if not isinstance(msgs, list):
+            msgs = [msgs]
+        for m in msgs:
+            text = getattr(m, "message", None)
+            if isinstance(text, str) and (
+                boost_liked_count(text, None, 1, 1) is not None
+            ):
+                return msgs
+        return None
+
     async def _send_copy(
         self, client: Any, peer: Any, src_client: Any, ids: list[int],
+        msgs: list | None = None,
     ) -> Any:
         """Копия карточки из чата Leo аккаунта ``src_client``: фото/видео
         скачиваются в память, ``client`` шлёт их ей одним альбомом с текстом
-        анкеты (как у Leo — подпись на первом файле)."""
-        msgs = await src_client.get_messages(self._leo_chat_id, ids=ids)
+        анкеты (как у Leo — подпись на первом файле). Шапка «понравилась
+        твоя анкета (и ещё N)» — со случайным N (``liked_count``)."""
+        if msgs is None:
+            msgs = await src_client.get_messages(self._leo_chat_id, ids=ids)
         if not isinstance(msgs, list):
             msgs = [msgs]
         caption = ""
         entities: list | None = None
         files: list[io.BytesIO] = []
+        liked = self._liked_range()
         for m in sorted(
             (m for m in msgs if m is not None), key=lambda m: m.id,
         ):
@@ -375,6 +464,10 @@ class MatchIntro:
             if text.strip() and not caption:
                 caption = text
                 entities = list(getattr(m, "entities", None) or [])
+                if liked is not None:
+                    boosted = boost_liked_count(caption, entities, *liked)
+                    if boosted is not None:
+                        caption, entities = boosted
             if getattr(m, "media", None) is None:
                 continue
             data = await src_client.download_media(m, file=bytes)

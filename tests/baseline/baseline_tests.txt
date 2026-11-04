@@ -713,6 +713,11 @@ tests/test_match_intro.py::TestMatchIntro::test_flood_postpones
 tests/test_match_intro.py::TestMatchIntro::test_card_on_other_account_not_relayed
 tests/test_match_intro.py::TestMatchIntro::test_card_on_other_account_sent_as_copy
 tests/test_match_intro.py::TestMatchIntro::test_copy_single_photo_and_flood
+tests/test_match_intro.py::TestMatchIntro::test_liked_count_randomized_on_own_card
+tests/test_match_intro.py::TestMatchIntro::test_boost_liked_count_formats[\u041a\u043e\u043c\u0443-\u0442\u043e \u043f\u043e\u043d\u0440\u0430\u0432\u0438\u043b\u0430\u0441\u044c \u0442\u0432\u043e\u044f \u0430\u043d\u043a\u0435\u0442\u0430 (\u0438 \u0435\u0449\u0451 2):\n\n\u0420\u043e\u0437\u0430-(\u0438 \u0435\u0449\u0451 ]
+tests/test_match_intro.py::TestMatchIntro::test_boost_liked_count_formats[\u041a\u043e\u043c\u0443-\u0442\u043e \u043f\u043e\u043d\u0440\u0430\u0432\u0438\u043b\u0430\u0441\u044c \u0442\u0432\u043e\u044f \u0430\u043d\u043a\u0435\u0442\u0430:\n\n\u0420\u043e\u0437\u0430-\u0430\u043d\u043a\u0435\u0442\u0430 (\u0438 \u0435\u0449\u0451 ]
+tests/test_match_intro.py::TestMatchIntro::test_boost_shifts_entities_after_insert
+tests/test_match_intro.py::TestMatchIntro::test_card_without_liked_header_is_forwarded
 tests/test_match_intro.py::TestMatchIntro::test_match_card_missing_sends_nothing
 tests/test_match_intro.py::TestMatchIntro::test_own_card_sent_from_leo_chat
 tests/test_match_intro.py::TestMatchIntro::test_unknown_card_sends_nothing

@@ -24,6 +24,7 @@ from collectors.match_intro import (
     WAITING_REPLY,
     WAKE_UP_SENT,
     MatchIntro,
+    boost_liked_count,
 )
 from database.database import Database
 from models.raw import ParsedMatch
@@ -392,6 +393,61 @@ class TestMatchIntro:
         client.send_file = AsyncMock(side_effect=FloodWaitError(request=None, capture=60))
         assert run(intro.send_intro(client, "dvai_2", due_row(
             card_session="dvai", card_message_id=11))) == "FLOOD"
+
+    def test_liked_count_randomized_on_own_card(self) -> None:
+        """Владелец, 2026-11-04: шапка «понравилась твоя анкета (и еще 31)»
+        уходит ей с N из [20, 30] — копией, пересылку не изменить."""
+        db = make_db()
+        db.get_profile_card_message_ids = AsyncMock(return_value=[11, 12])
+        text = (
+            "Кому-то понравилась твоя анкета(и еще 31)\n\n"
+            "Борюсь с эгоизмом, 19, 📍2 км – онигири"
+        )
+        ent = SimpleNamespace(offset=43, length=6)
+        client = make_client()
+        client.get_messages = AsyncMock(return_value=[
+            SimpleNamespace(id=11, message=text, entities=[ent], media=object(), video=None),
+            SimpleNamespace(id=12, message="", entities=None, media=object(), video=None),
+        ])
+        client.download_media = AsyncMock(side_effect=lambda m, file=None: b"img%d" % m.id)
+        client.send_file = AsyncMock(return_value=[
+            SimpleNamespace(id=5, text="x"), SimpleNamespace(id=6, text=""),
+        ])
+        assert run(make_intro(db).send_intro(client, "dvai_2", due_row())) == INTRO_SENT
+        client.forward_messages.assert_not_called()
+        kw = client.send_file.await_args.kwargs
+        caption = kw["caption"][0]
+        head, rest = caption.split("\n", 1)
+        n = int(head.removeprefix("Кому-то понравилась твоя анкета(и еще ").rstrip(")"))
+        assert 20 <= n <= 30 and rest == text.split("\n", 1)[1]
+        moved = kw["formatting_entities"][0][0]
+        assert caption[moved.offset:moved.offset + 6] == text[43:49]
+        assert ent.offset == 43  # исходная сущность не тронута
+
+    @pytest.mark.parametrize("text, expected", [
+        ("Кому-то понравилась твоя анкета (и ещё 2):\n\nРоза", "(и ещё "),
+        ("Кому-то понравилась твоя анкета:\n\nРоза", "анкета (и ещё "),
+    ])
+    def test_boost_liked_count_formats(self, text: str, expected: str) -> None:
+        out, _ = boost_liked_count(text, None, 20, 30)
+        assert expected in out and out.endswith(":\n\nРоза")
+        assert 20 <= int(out.split("ещё ")[1].split(")")[0]) <= 30
+
+    def test_boost_shifts_entities_after_insert(self) -> None:
+        text = "Кому-то понравилась твоя анкета:\n\nРоза"
+        ent = SimpleNamespace(offset=text.index("Роза"), length=4)
+        out, ents = boost_liked_count(text, [ent], 20, 30)
+        assert out[ents[0].offset:ents[0].offset + 4] == "Роза"
+
+    def test_card_without_liked_header_is_forwarded(self) -> None:
+        assert boost_liked_count("Роза, 19, Москва – привет", None, 20, 30) is None
+        db = make_db()
+        client = make_client()
+        client.get_messages = AsyncMock(return_value=[
+            SimpleNamespace(id=11, message="Роза, 19, Москва", entities=None, media=object()),
+        ])
+        assert run(make_intro(db).send_intro(client, "dvai_2", due_row())) == INTRO_SENT
+        client.forward_messages.assert_awaited_once()
 
     def test_match_card_missing_sends_nothing(self) -> None:
         """Карточка матча не нашлась — не шлём «похожую» анкету."""
