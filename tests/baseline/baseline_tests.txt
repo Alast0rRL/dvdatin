@@ -1029,6 +1029,7 @@ tests/test_photo_vice.py::TestCollectorPhotoVice::test_disabled_detector_skips_d
 tests/test_photo_vice.py::TestCollectorPhotoVice::test_album_photos_are_collected
 tests/test_preferences.py::TestPreferencesEngine::test_evaluate_skip_and_like
 tests/test_preferences.py::TestPreferencesEngine::test_evaluate_forced_like
+tests/test_preferences.py::TestPreferencesEngine::test_serious_relationship_is_hard_like
 tests/test_preferences.py::TestPreferencesEngine::test_forced_like_negation_respected
 tests/test_preferences.py::TestPreferencesEngine::test_no_text_no_rules
 tests/test_preferences.py::TestPreferencesEngine::test_disabled_engine_hits_nothing

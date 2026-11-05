@@ -92,6 +92,38 @@ class TestPreferencesEngine:
         e = PreferencesEngine(make_prefs())
         assert e.evaluate_forced_like("я не политех") == []
 
+    def test_serious_relationship_is_hard_like(self) -> None:
+        """«Человек на всю жизнь, хочу партнёра» → жёсткий LIKE, фото не перебивает.
+
+        Прод 2026-11-05: Юлия, 18 — текст мечта, а модель фото (блондинка)
+        поставила 👎. Отрицания («не ищу серьёзных») правило не включают.
+        """
+        from app.preferences import PREFERENCES_EXAMPLE, load_preferences
+        e = load_preferences(path=PREFERENCES_EXAMPLE)
+        label = "ищет серьёзные отношения"
+        text = (
+            "Учусь в меде. Сначала общение. Дальше - больше) А вообще, мне "
+            "нужен человек на всю жизнь. Я хочу партнёра, с которым буду "
+            "становиться лучше. И быть таким же человеком для него"
+        )
+        assert e.evaluate_forced_like(text) == [label]
+        assert e.evaluate_forced_like("Ищу серьёзные отношения") == [label]
+        assert e.evaluate_forced_like("хочу создать семью") == [label]
+        assert e.evaluate_forced_like("не ищу серьезных отношений") == []
+        assert e.evaluate_forced_like("без серьезных отношений") == []
+        assert e.evaluate_forced_like("не ищу отношения") == []
+        assert e.evaluate_forced_like("люблю гулять и котиков") == []
+
+        svc = make_service(e)
+        decision, _, reasons = svc._decide(
+            filter_decision=FilterDecision.PASS, filter_reasons=[], score=0.6,
+            informative=True, meaningful_words=19,
+            skip_labels=e.evaluate(text)[0], like_labels=e.evaluate(text)[1],
+            hard_like_labels=e.evaluate_forced_like(text),
+        )
+        assert decision == AIDecision.LIKE
+        assert reasons[0] == f"USER_LIKE_HARD:{label}"
+
     def test_no_text_no_rules(self) -> None:
         e = PreferencesEngine(make_prefs())
         assert e.evaluate("") == ([], [])
