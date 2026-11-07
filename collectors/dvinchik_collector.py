@@ -209,7 +209,9 @@ class DvinchikCollector(
             delete_silent=bool(config.auto_actions.match_script.delete_silent_chat),
         )
         # После анкеты — сценарий знакомства по схеме владельца (AUTO).
-        self._match_script = MatchScript(config.auto_actions.match_script, db)
+        self._match_script = MatchScript(
+            config.auto_actions.match_script, db, config.dvinchik.chat_id,
+        )
         # Журнал переписок с девушками-матчами (данные для анализа общения).
         dialog_cfg = config.auto_actions.dialog_log
         self._dialog_log = DialogLogger(db, enabled=dialog_cfg.enabled)

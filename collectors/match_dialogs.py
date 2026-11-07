@@ -17,6 +17,7 @@ from collectors.match_intro import (
 from services.match_script_rules import (
     ACTIVE_STEPS,
     ASKS_BOT,
+    ASKS_YOUR_CARD,
     DELETED,
     HANDOFF,
     OWNER,
@@ -575,6 +576,8 @@ def script_notice(row: dict, step: str, kind: str, session: str) -> str:
         return ""
     if kind == ASKS_BOT:
         why = "спросила, не бот ли ты — ответь сам"
+    elif kind == ASKS_YOUR_CARD:
+        why = "просит твою анкету — в Leo её не нашёл (открой «Моя анкета»), скинь сам"
     elif row.get("script_text"):
         why = f"бот ответил «{row['script_text']}», дальше ты"
     else:

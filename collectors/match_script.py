@@ -67,6 +67,8 @@ from services.match_script_rules import (
     AFTER_PIN,
     DELETED,
     ERROR,
+    HANDOFF,
+    OWN_CARD,
     OWNER,
     STOP_KINDS,
     STOPPED,
@@ -89,6 +91,10 @@ if TYPE_CHECKING:
 SILENCE: str = "silence"
 #: Сколько последних сообщений её чата смотреть перед действием.
 SCAN_HISTORY: int = 30
+#: Сколько сообщений после «Так выглядит твоя анкета» смотреть в поиске карточки.
+OWN_CARD_LOOKAHEAD: int = 10
+#: Подпись шага «переслал анкету владельца» (для уведомлений и журнала шагов).
+OWN_CARD_LABEL: str = "твоя анкета из Leo"
 
 
 def _now() -> datetime:
@@ -113,9 +119,14 @@ def _msg_text(msg: Any) -> str:
 class MatchScript:
     """Ведёт девушку по веткам схемы до передачи владельцу."""
 
-    def __init__(self, config: MatchScriptConfig, db: Database | None) -> None:
+    def __init__(
+        self, config: MatchScriptConfig, db: Database | None,
+        leo_chat_id: int = 0,
+    ) -> None:
         self._config = config
         self._db = db
+        # Чат Leo — откуда пересылается анкета владельца («а твою можно?»).
+        self._leo_chat_id = int(leo_chat_id or 0)
         self._rng = random.Random()
         # Один проход сценария на аккаунт за раз: параллельные проходы
         # (минутный цикл + живой хендлер) читали устаревшую строку и отвечали
@@ -336,10 +347,32 @@ class MatchScript:
         fields: dict[str, object] = {
             "script_step": nxt, "script_pending": "", "script_due_at": "",
         }
-        text, idx = self._pick(key)
+        card_ids: list[int] = []
+        if key == OWN_CARD:
+            # «А твою анкету можно?» — пересылаем анкету владельца из Leo.
+            if self._config.send_own_card:
+                card_ids = await self._own_card_ids(client)
+            if card_ids:
+                text, idx = OWN_CARD_LABEL, 0
+            else:
+                logger.warning(
+                    f"MatchScript: {account_session}: просит твою анкету, а в "
+                    "чате Leo её нет (открой «Моя анкета») — переписка тебе"
+                )
+                text, idx = "", -1
+                nxt = HANDOFF
+                fields["script_step"] = HANDOFF
+        else:
+            text, idx = self._pick(key)
         if text:
             try:
-                sent = await client.send_message(peer, text)
+                if card_ids:
+                    out = await client.forward_messages(
+                        peer, card_ids, self._leo_chat_id,
+                    )
+                    sent_list = list(out) if isinstance(out, list) else [out]
+                else:
+                    sent_list = [await client.send_message(peer, text)]
             except Exception as e:
                 pause = flood_pause_sec(e)
                 if pause is None:
@@ -355,11 +388,16 @@ class MatchScript:
                     script_due_at=due.isoformat(), error=str(e)[:300],
                 )
                 return None
+            sent_list = [m for m in sent_list if m is not None]
             if self.on_sent is not None:
-                try:
-                    await self.on_sent(account_session, user_id, sent)
-                except Exception as e:
-                    logger.error(f"MatchScript: журнал переписки: {e}")
+                # Каждое сообщение — в журнал как «бот»: иначе пересланный
+                # альбом сверка истории приняла бы за владельца.
+                for msg in sent_list:
+                    try:
+                        await self.on_sent(account_session, user_id, msg)
+                    except Exception as e:
+                        logger.error(f"MatchScript: журнал переписки: {e}")
+            sent = sent_list[-1] if sent_list else None
             sent_id = getattr(sent, "id", None)
             fields["script_at"] = _now().isoformat()
             if isinstance(sent_id, int) and sent_id:
@@ -457,6 +495,42 @@ class MatchScript:
             # молчит (как «пишет владелец»), иначе его фраза вернула бы чат.
             return True, []
         return owner_wrote, texts
+
+    async def _own_card_ids(self, client: Any) -> list[int]:
+        """Id карточки владельца в чате Leo: первое входящее сообщение с
+        медиа после последнего «Так выглядит твоя анкета» (альбом — целиком).
+        Не нашлась / ошибка чтения — ``[]`` (переписка владельцу)."""
+        leo = self._leo_chat_id
+        marker = str(self._config.own_card_marker or "").strip()
+        if not leo or not marker:
+            return []
+        try:
+            header = None
+            async for msg in client.iter_messages(leo, search=marker, limit=5):
+                if not getattr(msg, "out", False):
+                    header = msg
+                    break
+            head_id = getattr(header, "id", None)
+            if not isinstance(head_id, int):
+                return []
+            after = await client.get_messages(
+                leo, ids=list(range(head_id + 1, head_id + 1 + OWN_CARD_LOOKAHEAD)),
+            )
+        except Exception as e:
+            logger.warning(f"MatchScript: не нашёл твою анкету в Leo: {e}")
+            return []
+        msgs = [
+            m for m in (after or [])
+            if m is not None and not getattr(m, "out", False)
+            and isinstance(getattr(m, "id", None), int)
+        ]
+        first = next((m for m in msgs if getattr(m, "media", None)), None)
+        if first is None:
+            return []
+        group = getattr(first, "grouped_id", None)
+        if not group:
+            return [first.id]
+        return [m.id for m in msgs if getattr(m, "grouped_id", None) == group]
 
     def _pick(self, key: str | None) -> tuple[str, int]:
         """Случайный вариант фразы (текст, номер); нет фразы — ("", -1)."""

@@ -31,6 +31,11 @@ GREETING: str = "greeting"
 AND_SO: str = "and_so"
 #: «мы знакомы?» / «кто ты?» / «откуда ты?» (владелец, 2026-11-07).
 ASKS_KNOW: str = "asks_know"
+#: «а твою анкету можно?» / «скинь свою» / «как ты выглядишь?» → бот пересылает
+#: анкету владельца из чата Leo («Моя анкета»; владелец, 2026-11-07).
+ASKS_YOUR_CARD: str = "asks_your_card"
+#: Ключ «фразы» — не текст, а пересылка анкеты владельца.
+OWN_CARD: str = "own_card"
 
 #: Шаги сценария (``match_dialogs.script_step``).
 AFTER_PIN: str = "after_pin"      # анкета закреплена, ждём её
@@ -56,6 +61,8 @@ _PRIORITY: dict[str, int] = {
     ASKS_PIN: 5,
     # «Мы знакомы?» важнее её прочего вопроса, слабее закрепа.
     ASKS_KNOW: 4,
+    # Просьба показать его анкету — её вопрос, на который у бота есть ответ.
+    ASKS_YOUR_CARD: 4,
     # Её свой вопрос важнее переспроса: «а че» + «ну вы любите розы?» — не
     # «О себе конечно», а владельцу (прод 2026-11-04, @Pivo2007).
     HER_QUESTION: 3,
@@ -81,6 +88,15 @@ _RULES: list[tuple[str, list[str]]] = [
     (ASKS_BOT, [
         r"\bбот(ом|ы|а)?\b", r"нейросет", r"автоответ", r"chat\s*gpt", r"\bгпт\b",
         r"\bробот",
+    ]),
+    (ASKS_YOUR_CARD, [
+        r"\b(тво|сво|ваш)\w*\s+(\w+\s+)?анкет", r"у\s+(тебя|вас)\s+(\w+\s+)?анкет",
+        r"\b(тво|сво|ваш)\w*\s+(\w+\s+)?(фот|фоч|селф)",
+        r"как\s+(ты|вы)\s+(\w+\s+)?выгляд",
+        r"(покажи|покажешь|покажись|скинь|скинешь|кинь|кинешь|отправь|пришли|"
+        r"пришлешь|пришлёшь)\s+(\w+\s+)?(себя|фот|фоч|селф|анкет)",
+        r"(посмотреть|глянуть|увидеть)\s+(на\s+)?(тебя|вас)\b",
+        r"(тебя|вас)\s+(\w+\s+)?(посмотреть|глянуть|увидеть)",
     ]),
     (NOT_DAMOCHKA, [
         r"не\s+дамочк", r"какая\s+(я\s+)?(тебе\s+)?дамочк", r"\bя\s+не\s+дама\b",
@@ -141,12 +157,19 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
 
 
+#: «это твоя анкета?» — она спрашивает про присланную ей анкету, а не просит
+#: его: не ``ASKS_YOUR_CARD``.
+_THIS_IS_YOUR_CARD = re.compile(r"\bэто\s+(\w+\s+)?тво\w*\s+анкет")
+
+
 def classify(text: str) -> str:
     """Вид её ответа. Пустой текст (стикер, фото) и эмодзи — ``GREETING``."""
     norm = normalize(text)
     if not norm:
         return GREETING
     for kind, patterns in _COMPILED:
+        if kind == ASKS_YOUR_CARD and _THIS_IS_YOUR_CARD.search(norm):
+            continue
         if any(p.search(norm) for p in patterns):
             if kind in (ASKS_WHAT, ABOUT_WHAT) and _AND_SO.search(norm):
                 return AND_SO  # «Моя анкета в дв, и?» — не «Это твоя анкета…»
@@ -170,7 +193,10 @@ def classify_before_card(text: str) -> str:
     как «мы знакомы?»."""
     if _BARE_MARK.match(normalize(text)):
         return ASKS_KNOW
-    return classify(text)
+    kind = classify(text)
+    # До анкеты просьба показать его анкету — просто её вопрос (слабее
+    # «мы знакомы?»): анкета не уходит, владельцу.
+    return HER_QUESTION if kind == ASKS_YOUR_CARD else kind
 
 
 def decide_before_card(texts: list[str]) -> str:
@@ -209,13 +235,18 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
     2026-11-04: «Пусть лежит здесь» смущал девушек); «много с кем общаешься,
     чтобы не перепутать?» → «Это так-то удобно»; пишет о другом →
     «Рассказывайте, дамочка» → «я не дамочка» → «А кто? Парнишка?»;
-    «о чём?/что?» → «О себе конечно». После «Это твоя анкета…» / «удобно»
-    и на концах веток любой её ответ — владельцу.
+    «о чём?/что?» → «О себе конечно»; «а твою анкету можно?» (на любом
+    шаге) → пересылка анкеты владельца из Leo (``OWN_CARD``). После «Это
+    твоя анкета…» / «удобно» и на концах веток любой её ответ — владельцу.
     """
     if kind in STOP_KINDS:
         return None, DELETED
     if kind in (ASKS_BOT, HER_QUESTION, AND_SO):
         return None, HANDOFF
+    if kind == ASKS_YOUR_CARD:
+        # Пересылка анкеты владельца на любом шаге; дальше — как после
+        # «Это твоя анкета…» (её следующий ответ — владельцу).
+        return OWN_CARD, WAIT_MORE
     if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_PIN:
         return "pin_why", WAIT_MORE
     if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_KNOW:

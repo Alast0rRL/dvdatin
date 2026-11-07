@@ -334,6 +334,11 @@ class MatchScriptConfig(BaseModel):
     #: Молчит и после «АЛООО» на стикер-привет → чат удаляется только у
     #: владельца (владелец, 2026-11-04).
     delete_silent_chat: bool = True
+    #: «а твою анкету можно?» → переслать ей анкету владельца из чата Leo
+    #: (карточка после сообщения ``own_card_marker``, его шлёт Leo на «Моя
+    #: анкета»); не нашлась — переписка владельцу (владелец, 2026-11-07).
+    send_own_card: bool = True
+    own_card_marker: str = "Так выглядит твоя анкета"
     texts: MatchScriptTexts = MatchScriptTexts()
 
 

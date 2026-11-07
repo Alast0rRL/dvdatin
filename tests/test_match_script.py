@@ -709,3 +709,106 @@ class TestDialogsLabel:
             == "анкета отправлена"
         assert intro_label({"intro_status": "OWNER_CHAT", "script_step": "x"}) \
             == "пишешь сам — анкету не слал"
+
+
+LEO = 1234060895
+
+
+def card_client(
+    history: list | None = None,
+    header: list | None = None,
+    after: list | None = None,
+) -> AsyncMock:
+    """Клиент: её чат (``history``) + чат Leo с «Так выглядит твоя анкета»."""
+    client = make_client(history)
+    items = history or [PIN_SERVICE]
+    head = [SimpleNamespace(id=500, out=False)] if header is None else header
+
+    def _iter(*a: object, **k: object):
+        return async_iter(head if "search" in k else items)
+
+    client.iter_messages = MagicMock(side_effect=_iter)
+    client.get_messages = AsyncMock(return_value=after or [])
+    client.forward_messages = AsyncMock(
+        side_effect=lambda peer, ids, src: [SimpleNamespace(id=900 + i) for i in range(len(ids))],
+    )
+    return client
+
+
+def leo_card(msg_id: int, grouped_id: int | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=msg_id, out=False, media=object(), grouped_id=grouped_id, message="Макс, 22",
+    )
+
+
+class TestAsksYourCard:
+    """«А твою анкету можно?» → анкета владельца из Leo (владелец, 2026-11-07)."""
+
+    @pytest.mark.parametrize("text", [
+        "а твою анкету можно?", "Скинь свою анкету", "а вашу анкету?",
+        "а у тебя есть анкета?", "как ты выглядишь?", "покажи себя",
+        "кинь фотку", "твои фото можно глянуть?", "хочу на тебя посмотреть",
+        "отправь свое селфи",
+    ])
+    def test_classified(self, text: str) -> None:
+        assert R.classify(text) == R.ASKS_YOUR_CARD
+
+    @pytest.mark.parametrize("text", ["это твоя анкета?", "моя анкета?", "я тебе фото скинула"])
+    def test_not_a_request(self, text: str) -> None:
+        assert R.classify(text) != R.ASKS_YOUR_CARD
+
+    def test_beats_her_question_loses_to_pin(self) -> None:
+        assert R.strongest([R.HER_QUESTION, R.ASKS_YOUR_CARD]) == R.ASKS_YOUR_CARD
+        assert R.strongest([R.ASKS_YOUR_CARD, R.ASKS_PIN]) == R.ASKS_PIN
+
+    @pytest.mark.parametrize("step", list(R.ACTIVE_STEPS))
+    def test_decide_any_step(self, step: str) -> None:
+        assert R.decide(step, R.ASKS_YOUR_CARD) == (R.OWN_CARD, R.WAIT_MORE)
+
+    def test_before_card_goes_to_owner(self) -> None:
+        assert R.decide_before_card(["а твою анкету можно?"]) == "handoff"
+
+    def test_own_card_forwarded_from_leo(self, db: Database) -> None:
+        step_to(db, R.TELL_ME)
+        script = MatchScript(MatchScriptConfig(reply_delay_sec=[0, 0]), db, LEO)
+        logged: list = []
+        script.on_sent = AsyncMock(side_effect=lambda s, u, m: logged.append(m.id))
+        client = card_client(after=[None, leo_card(502)])
+        client, res = reply(db, script, "а твою анкету можно?", client)
+        client.forward_messages.assert_awaited_once()
+        assert client.forward_messages.await_args.args[1:] == ([502], LEO)
+        assert client.send_message.await_count == 0
+        r = row(db)
+        assert r["script_step"] == R.WAIT_MORE
+        assert r["script_msg_id"] == 900
+        assert "own_card:0" in r["script_variant"]
+        assert logged == [900]
+        assert res[0][1] == R.WAIT_MORE
+
+    def test_album_forwarded_whole(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        script = MatchScript(MatchScriptConfig(reply_delay_sec=[0, 0]), db, LEO)
+        after = [leo_card(501, 7), leo_card(502, 7), leo_card(503, 7),
+                 SimpleNamespace(id=504, out=False, media=None, grouped_id=None)]
+        client, _ = reply(db, script, "скинь свою анкету", card_client(after=after))
+        assert client.forward_messages.await_args.args[1] == [501, 502, 503]
+        assert row(db)["script_msg_id"] == 902
+
+    def test_card_missing_hands_off(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        script = MatchScript(MatchScriptConfig(reply_delay_sec=[0, 0]), db, LEO)
+        client, res = reply(db, script, "а твою анкету можно?", card_client(header=[]))
+        assert client.forward_messages.await_count == 0
+        assert client.send_message.await_count == 0
+        assert row(db)["script_step"] == R.HANDOFF
+        r, step, kind = res[0]
+        assert "твою анкету" in script_notice(r, step, kind, S)
+
+    def test_disabled_hands_off(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        script = MatchScript(
+            MatchScriptConfig(reply_delay_sec=[0, 0], send_own_card=False), db, LEO,
+        )
+        client, _ = reply(db, script, "а твою анкету можно?", card_client(after=[leo_card(501)]))
+        assert client.forward_messages.await_count == 0
+        assert row(db)["script_step"] == R.HANDOFF
