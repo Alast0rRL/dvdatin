@@ -1002,7 +1002,7 @@ class SyncDB:
     _DIALOG_LIST_SQL = """
         SELECT c.account_session, c.user_id, c.username, c.name, c.profile_id,
                c.matched_at, c.last_message_at, c.synced_at,
-               c.chat_deleted_at,
+               c.chat_deleted_at, c.chat_folder, c.blocked_at, c.archived_at,
                md.status AS intro_status,
                md.script_step AS script_step,
                md.greeted_at AS greeted_at, md.wake_at AS wake_at,
@@ -1053,6 +1053,24 @@ class SyncDB:
             return self._query(sql, params)
         except sqlite3.OperationalError:
             return []  # БД ещё без таблиц журнала (бот не перезапускался)
+
+    def take_dialog_to_owner(self, account_session: str, user_id: int) -> bool:
+        """«Забрать себе»: бот больше не пишет этой девушке (шаг сценария ``owner``).
+
+        Привет без ответа / анкета в очереди закрываются статусом ``OWNER_CHAT``
+        (анкету бот не шлёт). True — строка автопереписки найдена.
+        """
+        try:
+            return self._execute_rowcount(
+                "UPDATE match_dialogs SET script_step = 'owner', "
+                "script_pending = '', script_due_at = '', "
+                "status = CASE WHEN status IN ('WAITING_REPLY', 'SCHEDULED') "
+                "THEN 'OWNER_CHAT' ELSE status END "
+                "WHERE account_session = ? AND user_id = ?",
+                (account_session, int(user_id)),
+            ) > 0
+        except sqlite3.OperationalError:
+            return False
 
     def get_dialog(
         self, account_session: str, user_id: int,

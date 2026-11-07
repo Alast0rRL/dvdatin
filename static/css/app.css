@@ -1244,6 +1244,27 @@ a.seg__btn {
 .dialogs__tab--good.is-active { color: var(--like-fg); }
 .dialogs__tab--failed.is-active { color: var(--dislike-fg); }
 .dialogs__tab--you.is-active { color: var(--review-fg); }
+/* Папки как в Telegram: аватар-буква, строка чата, «Забрать себе». */
+.dialogs__row { display: flex; flex-direction: column; gap: 6px; }
+.dialogs__row .dialogs__item { grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; }
+.dialogs__avatar {
+    width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 16px;
+}
+.dialogs__body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.dialogs__row .dialogs__time { grid-column: 3; }
+.dialogs__row .dialogs__last { grid-column: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dialogs__who { color: var(--muted); font-size: 12px; font-weight: 500; margin-left: 6px; }
+.dialogs__badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dialogs__badges .dialogs__badge { margin-left: 0; }
+.dialogs__badge--bot { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-line); }
+.dialogs__step { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.dialogs__take { margin: 0; }
+.dialogs__tabs--folders .dialogs__tab { flex: 1 1 auto; }
+@media (max-width: 640px) {
+    .dialogs__row .dialogs__item { padding: 12px; gap: 3px 10px; }
+    .dialogs__tabs--folders .dialogs__tab { padding: 6px 8px; font-size: 13px; }
+}
 .dialogs__count { font-size: 12px; font-weight: 700; color: var(--faint); }
 .dialogs__reasons, .dialogs__sort { display: flex; flex-wrap: wrap; gap: 6px; }
 .dialogs__tools { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }

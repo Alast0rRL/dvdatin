@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,7 +15,7 @@ from rich.table import Table
 from telethon import events
 
 from collectors.account_engines import AccountEnginesMixin
-from collectors.auto_action import AutoActionEngine
+from collectors.auto_action import AutoActionEngine, AutoActionPaused
 from collectors.console_output import ConsoleOutputMixin
 from collectors.dedup import Dedup
 from collectors.dialog_logger import DialogLogger
@@ -182,6 +183,8 @@ class DvinchikCollector(
         # два прохода по одной карточке (живой хендлер + «активная анкета»
         # после капчи) не должны слать два 👎 — второй уходит на следующую.
         self._reacted_cards: Dedup = Dedup()
+        # Возобновление ленты после FloodWait: по задаче на аккаунт.
+        self._flood_resume_tasks: dict[str, asyncio.Task] = {}
         self._parser = DvinchikParser(config.filters)
         # Стикер-приветствие девушке после взаимного лайка.
         self._match_greeter = MatchGreeter(
@@ -839,7 +842,7 @@ class DvinchikCollector(
                 decision, profile.id, task.msg, card_key, friends,
             )
         except Exception as e:
-            logger.error(f"AutoAction error: {e}")
+            self._log_action_error(e)
             return
         await self._react_to_card(
             task, profile.id, decision.decision,
@@ -915,6 +918,9 @@ class DvinchikCollector(
             action = await self._auto_engine.maybe_act(
                 decision, profile_id, **kwargs,
             )
+            if action == "FLOOD_PAUSE":
+                self._schedule_flood_resume()
+                return
             if action == "LIKE_LIMIT":
                 # Лимит уже был (например, до рестарта) — лента встала бы.
                 self.stop_scroll_on_like_limit(
@@ -932,7 +938,49 @@ class DvinchikCollector(
                     f"AutoAction: действие отправлено, но не записано: {e}"
                 )
         except Exception as e:
-            logger.error(f"AutoAction error: {e}")
+            self._log_action_error(e)
+
+    def _log_action_error(self, error: BaseException) -> None:
+        """Ошибка авто-действия: FloodWait — WARNING + пауза аккаунта и
+        возобновление ленты после неё; остальное — ERROR."""
+        engine = self._auto_engine
+        cause = error.__cause__ if error.__cause__ is not None else error
+        if isinstance(error, AutoActionPaused) or engine.pause_for_flood(
+            cause
+        ) is not None:
+            logger.warning(f"AutoAction: пауза после FloodWait — {error}")
+            self._schedule_flood_resume()
+            return
+        logger.error(f"AutoAction error: {error}")
+
+    def _schedule_flood_resume(
+        self, engine: AutoActionEngine | None = None,
+    ) -> None:
+        """После паузы FloodWait один раз продолжаем ленту аккаунта."""
+        engine = engine or self._auto_engine
+        session = engine.account_session or ""
+        task = self._flood_resume_tasks.get(session)
+        if task is not None and not task.done():
+            return  # в т.ч. вызов из самой _resume: её цикл ждёт новую паузу
+
+        async def _resume() -> None:
+            try:
+                while True:
+                    while engine.flood_paused():
+                        await asyncio.sleep(
+                            max(1.0, engine.flood_until - time.time()) + 1.0
+                        )
+                    await self.start_auto_stream(session or None)
+                    # Новый FloodWait внутри start_auto_stream: пауза без
+                    # отдельной задачи (текущую задачу видим как «активную»).
+                    if not engine.flood_paused():
+                        break
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"AutoAction: лента после FloodWait: {e}")
+
+        self._flood_resume_tasks[session] = asyncio.ensure_future(_resume())
 
     async def _on_match(self, task: RawTask) -> None:
         """Взаимный лайк: журнал ответа (Stage 8.5) + привет девушке."""
@@ -958,9 +1006,17 @@ class DvinchikCollector(
         msg, text = task.msg, task.text
         # Штатные служебные тексты Leo (✨🔍 перед анкетой и т.п.) — в DEBUG,
         # чтобы не топить настоящие ошибки в логе.
-        log_unknown = (
-            logger.debug if self._is_routine_leo_text(text) else logger.warning
+        # Так же — то, что ниже обрабатывается штатной веткой: карточка лайка
+        # «Ты понравился N девушке, показать её?» и промо «Смотреть анкеты»
+        # (прод: ~130 ложных WARNING за 4 дня, поведение верное).
+        low = (text or "").lower()
+        handled = (
+            self._is_routine_leo_text(text)
+            or VIEW_BUTTON_FRAGMENT.lower() in low
+            or (MATCH_CARD_FRAGMENT in low and MATCH_SHOW_FRAGMENT in low)
+            or self._is_match_card(msg)
         )
+        log_unknown = logger.debug if handled else logger.warning
         log_unknown(
             f"Unknown message format: message_id={task.message_id}, "
             f"preview={text[:100]}"

@@ -10,16 +10,22 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from telethon.tl.functions.account import UpdateNotifySettingsRequest
+from telethon.tl.functions.account import (
+    GetNotifySettingsRequest,
+    UpdateNotifySettingsRequest,
+)
 from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     UpdateDialogFilterRequest,
 )
+from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import (
     DialogFilter,
     DialogFilterDefault,
     InputPeerUser,
     TextWithEntities,
+    UserStatusEmpty,
+    UserStatusRecently,
 )
 
 from app.config import ChatFoldersConfig
@@ -27,7 +33,7 @@ from collectors.chat_folders import ARCHIVE_FOLDER, MAX_MOVES_PER_PASS, ChatFold
 from collectors.match_intro import INTRO_SENT, OWNER_CHAT, SCHEDULED
 from database.database import Database
 from services import match_script_rules as R
-from services.chat_folders import ACTIVE, AUTO, FIFTY, NEW, folder_target
+from services.chat_folders import ACTIVE, AUTO, BLOCKED, FIFTY, NEW, folder_target
 
 S = "dvai_2"
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
@@ -99,6 +105,13 @@ class FakeTelegram:
         self.filters: list = [DialogFilterDefault(), *filters]
         self.updates: list[UpdateDialogFilterRequest] = []
         self.fail_update = False
+        self.notifies: list[UpdateNotifySettingsRequest] = []
+        #: user_id -> (status, photo) для users.GetUsers.
+        self.users: dict[int, tuple[object, object]] = {}
+        #: user_id -> mute_until, уже стоящий в Telegram (владелец заглушил).
+        self.muted: dict[int, int] = {}
+        #: user_id -> готовый объект пользователя (UserEmpty / deleted).
+        self.raw_users: dict[int, object] = {}
         self.client = AsyncMock(side_effect=self._call)
         self.client.get_input_entity = AsyncMock(side_effect=self._entity)
         self.client.edit_folder = AsyncMock(return_value=None)
@@ -119,6 +132,21 @@ class FakeTelegram:
             if req.filter is not None:
                 self.filters.append(req.filter)
             return True
+        if isinstance(req, GetNotifySettingsRequest):
+            uid = req.peer.peer.user_id
+            return SimpleNamespace(mute_until=self.muted.get(uid, 0))
+        if isinstance(req, UpdateNotifySettingsRequest):
+            self.notifies.append(req)
+            return True
+        if isinstance(req, GetUsersRequest):
+            out = []
+            for p in req.id:
+                if p.user_id in self.raw_users:
+                    out.append(self.raw_users[p.user_id])
+                    continue
+                status, photo = self.users.get(p.user_id, (UserStatusRecently(), object()))
+                out.append(SimpleNamespace(id=p.user_id, status=status, photo=photo))
+            return out
         raise AssertionError(f"неожиданный запрос {req!r}")
 
     def members(self, title: str) -> set[int]:
@@ -186,6 +214,31 @@ class TestFolderTarget:
     def test_talk_for_days_is_active(self) -> None:
         row = self._row(her_days=3, last_her_at=self._her(23))
         assert folder_target(row, bot_on=True, now=NOW) == ACTIVE
+
+    @pytest.mark.parametrize("step", [R.HANDOFF, R.OWNER])
+    def test_handoff_waiting_for_owner_is_new_at_once(self, step: str) -> None:
+        """Владелец, 2026-11-07: передала управление — из Auto в New сразу,
+        хоть 3+ дня общения (Active) или давняя тишина (50/50)."""
+        for kw in (
+            {"her_days": 5, "last_her_at": self._her(30)},
+            {"her_days": 1, "last_her_at": self._her(100)},
+        ):
+            row = self._row(intro_status=INTRO_SENT, script_step=step,
+                            last_by="her", last_msg_at=kw["last_her_at"], **kw)
+            assert folder_target(row, bot_on=True, now=NOW) == NEW
+
+    def test_handoff_after_owner_replied_uses_normal_rules(self) -> None:
+        row = self._row(intro_status=INTRO_SENT, script_step=R.HANDOFF,
+                        her_days=5, last_her_at=self._her(30),
+                        last_by="owner", last_msg_at=self._her(5))
+        assert folder_target(row, bot_on=True, now=NOW) == ACTIVE
+
+    def test_blocked_beats_everything_but_deleted(self) -> None:
+        row = self._row(intro_status=INTRO_SENT, script_step=R.TELL_ME,
+                        blocked_at=NOW.isoformat())
+        assert folder_target(row, bot_on=True, now=NOW) == BLOCKED
+        row["chat_deleted_at"] = NOW.isoformat()
+        assert folder_target(row, bot_on=True, now=NOW) is None
 
     def test_fresh_talk_is_new(self) -> None:
         row = self._row(intro_status=INTRO_SENT, script_step=R.HANDOFF,
@@ -400,7 +453,7 @@ class TestDeleteSilent:
 
 class TestHideNow:
     """Сразу после стикера-привета её чат — в архив, не дожидаясь ответа.
-    Звук бот не трогает — уведомления владелец включает сам (2026-11-04)."""
+    Звук hide_now не трогает."""
 
     @staticmethod
     def _notify_requests(tg: FakeTelegram) -> list:
@@ -416,15 +469,6 @@ class TestHideNow:
         tg.client.edit_folder.assert_awaited_once()
         assert tg.client.edit_folder.await_args.args[1] == ARCHIVE_FOLDER
         assert run(db.list_folder_dialogs(S))[0]["archived_at"]
-        assert self._notify_requests(tg) == []
-
-    def test_bot_never_touches_sound(self, db: Database) -> None:
-        girl(db, 1, intro={})                                        # Auto
-        girl(db, 2, her_days=3, owner=3)                             # Active
-        girl(db, 3, her_days=2, last_hours=100)                      # 50/50
-        tg = FakeTelegram()
-        run(folders(db, archive=True).sync(tg.client, S, bot_on=True))
-        assert tg.members("Auto") == {1}
         assert self._notify_requests(tg) == []
 
     def test_hide_now_without_archive_does_nothing(self, db: Database) -> None:
@@ -475,3 +519,195 @@ class TestArchive:
         tg = FakeTelegram()
         f = folders(db, archive=True, enabled=False)
         assert run(f.sync(tg.client, S, bot_on=True)) == MAX_MOVES_PER_PASS
+
+
+class TestMuteAuto:
+    """Чат, который бот кладёт в Auto, глушится (папка глушит только текущих
+    участников); при выходе из Auto звук возвращается (владелец, 2026-11-07).
+    Чаты вне Auto и не заглушённые ботом не трогаем."""
+
+    @staticmethod
+    def _mark(db: Database, uid: int) -> str:
+        rows = run(db.list_folder_dialogs(S))
+        return next(r for r in rows if r["user_id"] == uid)["notify_mark"]
+
+    def test_chat_put_in_auto_is_muted(self, db: Database) -> None:
+        girl(db, 1, intro={})
+        tg = FakeTelegram()
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.members("Auto") == {1}
+        assert len(tg.notifies) == 1
+        req = tg.notifies[0]
+        assert req.peer.peer.user_id == 1 and req.settings.mute_until == 2**31 - 1
+        assert self._mark(db, 1) == "bot_muted"
+        run(f.sync(tg.client, S, bot_on=True))
+        assert len(tg.notifies) == 1
+
+    def test_leaving_auto_unmutes(self, db: Database) -> None:
+        girl(db, 1, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        tg = FakeTelegram()
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        # Передача владельцу, последнее слово её: New сразу.
+        run(db.update_match_dialog(S, 1, script_step=R.HANDOFF))
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.members("New") == {1}
+        assert [n.settings.mute_until for n in tg.notifies] == [2**31 - 1, 0]
+        assert self._mark(db, 1) == "on"
+
+    def test_chat_outside_auto_never_touched(self, db: Database) -> None:
+        girl(db, 2, her_days=3, owner=3)                             # Active
+        girl(db, 3, her_days=2, last_hours=100)                      # 50/50
+        tg = FakeTelegram()
+        run(folders(db, archive=True).sync(tg.client, S, bot_on=True))
+        assert tg.members("Active") == {2} and tg.members("50/50") == {3}
+        assert tg.notifies == []
+
+    def test_not_bot_muted_chat_is_not_unmuted(self, db: Database) -> None:
+        """Заглушил не бот (mute_auto выключен) — при выходе из Auto не трогаем."""
+        girl(db, 1, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        tg = FakeTelegram()
+        f = folders(db, mute_auto=False)
+        run(f.sync(tg.client, S, bot_on=True))
+        run(f.sync(tg.client, S, bot_on=False))
+        assert tg.notifies == []
+
+
+class TestMuteExisting:
+    """Чаты, уже лежащие в Auto (до деплоя), глушатся; заглушённые владельцем
+    не трогаем и не возвращаем."""
+
+    def test_chat_already_in_auto_gets_muted(self, db: Database) -> None:
+        girl(db, 1, intro={})
+        tg = FakeTelegram(folder(2, "Auto", 1))
+        run(db.update_dialog_contact(S, 1, chat_folder=AUTO))
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        assert len(tg.notifies) == 1
+        assert tg.notifies[0].settings.mute_until == 2**31 - 1
+
+    def test_owner_muted_chat_is_marked_and_never_unmuted(self, db: Database) -> None:
+        girl(db, 1, her_days=1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        tg = FakeTelegram()
+        tg.muted[1] = 2**31 - 1
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        rows = run(db.list_folder_dialogs(S))
+        assert rows[0]["notify_mark"] == "owner_muted"
+        run(db.update_match_dialog(S, 1, script_step=R.HANDOFF))
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.members("New") == {1}
+        assert tg.notifies == []
+
+
+class TestBlocked:
+    """Эвристика «заблокировала»: пустой статус и нет фото (2026-11-07)."""
+
+    @staticmethod
+    def _recheck(db: Database) -> None:
+        run(db._connection.execute(
+            "UPDATE dialog_contacts SET block_checked_at = ?", (ago(7),)
+        ))
+
+    def test_blocked_needs_two_consecutive_checks(self, db: Database) -> None:
+        girl(db, 1, intro={})
+        tg = FakeTelegram()
+        tg.users[1] = (UserStatusEmpty(), None)
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is False
+        # Отрицательная проверка сбрасывает счётчик.
+        tg.users[1] = (UserStatusRecently(), object())
+        self._recheck(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        tg.users[1] = (UserStatusEmpty(), None)
+        self._recheck(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is False
+        self._recheck(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is True
+
+    def test_user_empty_and_deleted_are_not_blocked(self, db: Database) -> None:
+        from telethon.tl.types import UserEmpty
+
+        girl(db, 1, intro={})
+        girl(db, 2, intro={})
+        tg = FakeTelegram()
+        tg.raw_users[1] = UserEmpty(id=1)
+        tg.raw_users[2] = SimpleNamespace(
+            id=2, deleted=True, status=UserStatusEmpty(), photo=None)
+        f = folders(db)
+        for _ in range(3):
+            run(f.sync(tg.client, S, bot_on=True))
+            self._recheck(db)
+        assert run(db.is_dialog_blocked(S, 1)) is False
+        assert run(db.is_dialog_blocked(S, 2)) is False
+
+    def test_blocked_goes_to_chs_and_clears(self, db: Database) -> None:
+        girl(db, 1, intro={})
+        girl(db, 2, intro={})
+        tg = FakeTelegram()
+        tg.users[1] = (UserStatusEmpty(), None)
+        f = folders(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is False  # первая проверка
+        self._recheck(db)
+        run(f.sync(tg.client, S, bot_on=True))
+        run(f.sync(tg.client, S, bot_on=True))
+        assert tg.members("ЧС") == {1}
+        assert tg.members("Auto") == {2}
+        assert run(db.is_dialog_blocked(S, 1)) is True
+        assert run(db.is_dialog_blocked(S, 2)) is False
+        # Не чаще раза в 6 ч: статус вернулся, но проверки ещё нет.
+        tg.users[1] = (UserStatusRecently(), object())
+        run(f.sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is True
+        run(db._connection.execute(
+            "UPDATE dialog_contacts SET block_checked_at = ?", (ago(7),)
+        ))
+        run(f.sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is False
+        assert tg.members("ЧС") == set() and tg.members("Auto") == {1, 2}
+
+    def test_empty_status_with_photo_is_not_blocked(self, db: Database) -> None:
+        girl(db, 1, intro={})
+        tg = FakeTelegram()
+        tg.users[1] = (UserStatusEmpty(), object())
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        assert run(db.is_dialog_blocked(S, 1)) is False
+
+    def test_check_batch_limit_and_switch(self, db: Database) -> None:
+        for uid in (1, 2, 3):
+            girl(db, uid, intro={})
+        tg = FakeTelegram()
+        run(folders(db, block_check_batch=2).sync(tg.client, S, bot_on=True))
+        checked = [r for r in run(db.list_folder_dialogs(S)) if r["block_checked_at"]]
+        assert len(checked) == 2
+        tg2 = FakeTelegram()
+        run(folders(db, check_blocked=False).sync(tg2.client, S, bot_on=True))
+        assert not any(
+            isinstance(c.args[0], GetUsersRequest) for c in tg2.client.await_args_list
+        )
+
+
+class TestDeadChats:
+    """Не находящийся собеседник: WARNING один раз за запуск, дальше молча."""
+
+    def test_lost_chat_warned_once_per_run(self, db: Database) -> None:
+        from loguru import logger
+
+        girl(db, 1, intro={})
+        tg = FakeTelegram()
+        tg.client.get_input_entity = AsyncMock(
+            side_effect=ValueError("No user has girl1 as username"))
+        msgs: list[str] = []
+        sink = logger.add(lambda m: msgs.append(str(m)), level="WARNING")
+        try:
+            f = folders(db, archive=True)
+            for _ in range(3):
+                run(f.sync(tg.client, S, bot_on=True))
+        finally:
+            logger.remove(sink)
+        assert len([m for m in msgs if "G1" in m or "girl1" in m]) == 1
+        assert tg.client.get_input_entity.await_count == 1

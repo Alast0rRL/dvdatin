@@ -298,8 +298,12 @@ class DialogLogger:
                 # в лог — один раз за запуск.
                 key = (account_session, user_id)
                 if key not in self._lost_chats:
+                    # WARNING — только первый потерянный чат за запуск, остальные
+                    # (это разные девушки, не повтор) — INFO: прод 2026-11-06,
+                    # 32 строки за 4 дня, каждая — другой чат после рестарта.
+                    log = logger.info if self._lost_chats else logger.warning
                     self._lost_chats.add(key)
-                    logger.warning(
+                    log(
                         f"DialogLog: чат {user_id} не найти "
                         f"(@{row.get('username') or '—'} больше не существует)"
                     )

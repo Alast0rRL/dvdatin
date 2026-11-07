@@ -14,18 +14,31 @@ New / Active / 50/50 / Auto, какая — решает ``services/chat_folders
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
+from telethon.tl.functions.account import (
+    GetNotifySettingsRequest,
+    UpdateNotifySettingsRequest,
+)
 from telethon.tl.functions.messages import (
     GetDialogFiltersRequest,
     UpdateDialogFilterRequest,
 )
-from telethon.tl.types import DialogFilter, TextWithEntities
+from telethon.tl.functions.users import GetUsersRequest
+from telethon.tl.types import (
+    DialogFilter,
+    InputNotifyPeer,
+    InputPeerNotifySettings,
+    TextWithEntities,
+    UserStatusEmpty,
+)
 
 from collectors.match_greeter import flood_pause_sec
-from services.chat_folders import FOLDERS, folder_target
+from services.chat_folders import AUTO, FOLDERS, folder_target
+from services.dialog_outcome import parse_time
 from services.match_script_rules import DELETED
 
 if TYPE_CHECKING:
@@ -36,6 +49,8 @@ if TYPE_CHECKING:
 ARCHIVE_FOLDER: int = 1
 #: Сколько чатов класть в архив / в папки за проход.
 MAX_MOVES_PER_PASS: int = 15
+#: «Заглушить навсегда» для Telegram (mute_until).
+MUTE_FOREVER: int = 2**31 - 1
 #: Номера пользовательских папок Telegram.
 _FILTER_IDS: range = range(2, 256)
 #: Флаги папки «по типу чатов»: хоть один — папка не пустая.
@@ -92,6 +107,11 @@ class ChatFolders:
         self._uncertain: dict[str, set[int]] = {}
         #: Папка переполнена — предупреждение один раз за запуск.
         self._full_warned: set[tuple[str, str]] = set()
+        #: Чаты, чей собеседник не находится («No user has…», «Could not find
+        #: input entity»): предупреждаем один раз за запуск и больше не ищем.
+        self._dead: set[tuple[str, int]] = set()
+        #: Сколько peer-запросов для звука ещё можно за проход.
+        self._mute_budget: int = MAX_MOVES_PER_PASS
 
     @property
     def enabled(self) -> bool:
@@ -101,8 +121,212 @@ class ChatFolders:
         cfg = self._config
         return {
             "new": cfg.new, "active": cfg.active,
-            "fifty": cfg.fifty, "auto": cfg.auto,
+            "fifty": cfg.fifty, "auto": cfg.auto, "blocked": cfg.blocked,
         }
+
+    async def _peer(
+        self, client: Any, session: str, user_id: int, username: str = "",
+        name: object = "",
+    ) -> Any | None:
+        """InputPeer её чата. Не нашёлся — WARNING один раз за запуск, дальше
+        молча None. FloodWait пробрасывается вызывающему."""
+        key = (session, int(user_id))
+        if key in self._dead:
+            return None
+        try:
+            return await client.get_input_entity(username or user_id)
+        except Exception as e:
+            if flood_pause_sec(e) is not None:
+                raise
+            if isinstance(e, ValueError):
+                self._dead.add(key)
+            logger.warning(f"Папки чатов: не нашёл {name or user_id} на {session}: {e}")
+            return None
+
+    async def _set_mute(
+        self, client: Any, session: str, user_id: int, peer: Any, mute: bool,
+    ) -> bool:
+        """Выключить / вернуть звук её чата. True — запрос прошёл."""
+        try:
+            await client(UpdateNotifySettingsRequest(
+                peer=InputNotifyPeer(peer=peer),
+                settings=InputPeerNotifySettings(
+                    mute_until=MUTE_FOREVER if mute else 0,
+                ),
+            ))
+        except Exception as e:
+            if flood_pause_sec(e) is not None:
+                logger.warning(f"Папки чатов: {session} FloodWait — звук позже")
+            else:
+                logger.warning(f"Папки чатов: звук {user_id} на {session}: {e}")
+            return False
+        await self._db.update_dialog_contact(
+            session, user_id, notify_mark="bot_muted" if mute else "on",
+        )
+        return True
+
+    @staticmethod
+    def _muted_now(settings: Any) -> bool:
+        """Чат уже заглушён (mute_until в будущем): int или datetime."""
+        until = getattr(settings, "mute_until", None)
+        if isinstance(until, datetime):
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=timezone.utc)
+            return until > datetime.now(timezone.utc)
+        if isinstance(until, (int, float)) and not isinstance(until, bool):
+            return until > time.time()
+        return False
+
+    async def _update_mute(
+        self, client: Any, session: str, row: dict, user_id: int,
+        target: str | None, peers: dict[int, Any],
+    ) -> None:
+        """Звук следует за Auto: положили в Auto — глушим (папка глушит только
+        текущих участников), вышел из Auto — возвращаем, но только если глушил
+        бот. Чаты вне Auto и не заглушённые ботом не трогаем (2026-11-07).
+        Уже заглушён владельцем → ``owner_muted``, никогда не возвращаем."""
+        mark = str(row.get("notify_mark") or "")
+        if target == AUTO:
+            if not self._config.mute_auto or mark in ("bot_muted", "owner_muted"):
+                return
+            peer = peers.get(user_id)
+            if peer is None:
+                if self._mute_budget <= 0:
+                    return
+                self._mute_budget -= 1
+                try:
+                    peer = await self._peer(
+                        client, session, user_id, row.get("username") or "",
+                        row.get("name"),
+                    )
+                except Exception:
+                    self._mute_budget = 0  # FloodWait — до следующего прохода
+                    return
+            if peer is None:
+                return
+            try:
+                current = await client(GetNotifySettingsRequest(
+                    InputNotifyPeer(peer=peer),
+                ))
+            except Exception as e:
+                if flood_pause_sec(e) is not None:
+                    self._mute_budget = 0
+                logger.warning(f"Папки чатов: настройки звука {user_id} на {session}: {e}")
+                return
+            if self._muted_now(current):
+                await self._db.update_dialog_contact(
+                    session, user_id, notify_mark="owner_muted",
+                )
+                row["notify_mark"] = "owner_muted"
+                return
+            if await self._set_mute(client, session, user_id, peer, True):
+                row["notify_mark"] = "bot_muted"
+        elif mark == "bot_muted" and target is not None:
+            try:
+                peer = peers.get(user_id) or await self._peer(
+                    client, session, user_id, row.get("username") or "",
+                    row.get("name"),
+                )
+            except Exception:
+                return
+            if peer is not None and await self._set_mute(
+                client, session, user_id, peer, False,
+            ):
+                row["notify_mark"] = "on"
+
+    async def _mute_pending(
+        self, client: Any, session: str, auto_rows: list[dict],
+        peers: dict[int, Any],
+    ) -> None:
+        """Чаты, уже лежащие в Auto (до деплоя / сбой звука), — заглушить."""
+        for row in auto_rows:
+            if self._mute_budget <= 0:
+                break
+            await self._update_mute(
+                client, session, row, int(row["user_id"]), AUTO, peers,
+            )
+
+    async def _check_blocked(
+        self, client: Any, session: str, rows: list[dict],
+    ) -> None:
+        """Эвристика «она нас заблокировала» (владелец, 2026-11-07): Telegram
+        блок не сообщает, но у заблокировавшей users.GetUsers отдаёт пустой
+        статус и обычно нет фото. Раз в ``block_check_hours`` на чат, пачкой."""
+        cfg = self._config
+        if not cfg.check_blocked:
+            return
+        now = datetime.now(timezone.utc)
+        limit = now - timedelta(hours=cfg.block_check_hours)
+        batch: list[tuple[dict, Any]] = []
+        for row in rows:
+            if len(batch) >= cfg.block_check_batch:
+                break
+            if row.get("chat_deleted_at") or int(row.get("total") or 0) == 0:
+                continue
+            if (row.get("script_step") or "") == DELETED:
+                continue
+            checked = parse_time(row.get("block_checked_at"))
+            if checked is not None and checked > limit:
+                continue
+            try:
+                peer = await self._peer(
+                    client, session, int(row["user_id"]),
+                    row.get("username") or "", row.get("name"),
+                )
+            except Exception:
+                break  # FloodWait
+            if peer is not None:
+                batch.append((row, peer))
+        if not batch:
+            return
+        try:
+            users = await client(GetUsersRequest([p for _, p in batch]))
+        except Exception as e:
+            if flood_pause_sec(e) is not None:
+                logger.warning(f"Папки чатов: {session} FloodWait — ЧС позже")
+            else:
+                logger.warning(f"Папки чатов: не проверил ЧС на {session}: {e}")
+            return
+        by_id = {int(u.id): u for u in users if getattr(u, "id", None) is not None}
+        stamp = now.isoformat()
+        for row, _peer in batch:
+            user = by_id.get(int(row["user_id"]))
+            uid = int(row["user_id"])
+            fields: dict[str, object] = {"block_checked_at": stamp}
+            if (
+                user is None or type(user).__name__ == "UserEmpty"
+                or getattr(user, "deleted", False) is True
+            ):
+                # Нет данных / удалённый аккаунт — не «заблокировала».
+                await self._db.update_dialog_contact(session, uid, **fields)
+                row["block_checked_at"] = stamp
+                continue
+            status = getattr(user, "status", None)
+            photo = getattr(user, "photo", None)
+            suspect = (status is None or isinstance(status, UserStatusEmpty)) and (
+                photo is None or type(photo).__name__ == "UserProfilePhotoEmpty"
+            )
+            was = bool(row.get("blocked_at"))
+            hits = int(row.get("block_hits") or 0)
+            if suspect:
+                hits += 1
+                fields["block_hits"] = hits
+                # ЧС — только после двух проверок подряд.
+                if hits >= 2 and not was:
+                    fields["blocked_at"] = stamp
+                    logger.info(
+                        f"Папки чатов: {row.get('name') or uid} на {session} — "
+                        "похоже, заблокировала"
+                    )
+            else:
+                fields["block_hits"] = 0
+                if was:
+                    fields["blocked_at"] = None
+            await self._db.update_dialog_contact(session, uid, **fields)
+            row["block_checked_at"] = stamp
+            row["block_hits"] = fields.get("block_hits", hits)
+            if "blocked_at" in fields:
+                row["blocked_at"] = fields["blocked_at"]
 
     async def sync(self, client: Any, session: str, bot_on: bool) -> int:
         """Один проход по аккаунту. Возвращает число перемещённых чатов."""
@@ -116,6 +340,7 @@ class ChatFolders:
             logger.error(f"Папки чатов: не прочитал переписки {session}: {e}")
             return 0
         moved = 0
+        await self._check_blocked(client, session, rows)
         if self.delete_silent:
             await self._delete_silent(client, session, rows)
         if self._config.enabled:
@@ -142,7 +367,11 @@ class ChatFolders:
             user_id = int(row["user_id"])
             name = row.get("name") or user_id
             try:
-                peer = await client.get_input_entity(row.get("username") or user_id)
+                peer = await self._peer(
+                    client, session, user_id, row.get("username") or "", name,
+                )
+                if peer is None:
+                    continue
                 await client.delete_dialog(peer, revoke=False)
             except Exception as e:
                 if flood_pause_sec(e) is not None:
@@ -169,9 +398,13 @@ class ChatFolders:
         who: object = username or user_id
         if not who:
             return
+        if user_id and (session, int(user_id)) in self._dead:
+            return
         try:
             peer = await client.get_input_entity(who)
         except Exception as e:
+            if isinstance(e, ValueError) and user_id:
+                self._dead.add((session, int(user_id)))
             logger.warning(f"Папки чатов: не нашёл {who} на {session}: {e}")
             return
         uid = int(getattr(peer, "user_id", 0) or user_id or 0)
@@ -204,7 +437,16 @@ class ChatFolders:
                 break
             user_id = int(row["user_id"])
             try:
-                peer = await client.get_input_entity(row.get("username") or user_id)
+                peer = await self._peer(
+                    client, session, user_id, row.get("username") or "",
+                    row.get("name"),
+                )
+                if peer is None:
+                    # Мёртвый чат: отметку ставим, чтобы не долбить.
+                    await self._db.update_dialog_contact(
+                        session, user_id, archived_at=_now(),
+                    )
+                    continue
                 await client.edit_folder(peer, ARCHIVE_FOLDER)
             except Exception as e:
                 if flood_pause_sec(e) is not None:
@@ -261,6 +503,8 @@ class ChatFolders:
 
         uncertain = self._uncertain.setdefault(session, set())
         cfg = self._config
+        self._mute_budget = MAX_MOVES_PER_PASS
+        auto_rows: list[dict] = []
         now = datetime.now(timezone.utc)
         plan: list[tuple[dict, int, set[str], str | None]] = []
         for row in rows:
@@ -300,14 +544,18 @@ class ChatFolders:
                         session, user_id, chat_folder=target or "",
                     )
                     uncertain.discard(user_id)
+                if target == AUTO:
+                    auto_rows.append(row)
                 continue
             plan.append((row, user_id, actual, target))
 
         if not plan:
+            await self._mute_pending(client, session, auto_rows, {})
             return 0
         changed: set[str] = set()
         done: list[tuple[dict, int, set[str], str | None]] = []
         adds = 0
+        peers: dict[int, Any] = {}
         for row, user_id, actual, target in plan:
             name = row.get("name") or user_id
             if target is not None:
@@ -335,13 +583,15 @@ class ChatFolders:
                         )
                     continue
                 try:
-                    peer = await client.get_input_entity(row.get("username") or user_id)
-                except Exception as e:
-                    if flood_pause_sec(e) is not None:
-                        logger.warning(f"Папки чатов: {session} FloodWait — позже")
-                        break
-                    logger.warning(f"Папки чатов: {name} на {session}: {e}")
+                    peer = await self._peer(
+                        client, session, user_id, row.get("username") or "", name,
+                    )
+                except Exception:
+                    logger.warning(f"Папки чатов: {session} FloodWait — позже")
+                    break
+                if peer is None:
                     continue
+                peers[user_id] = peer
                 f.include_peers.append(peer)
                 changed.add(target)
                 adds += 1
@@ -379,6 +629,8 @@ class ChatFolders:
                 f"Папки чатов: {row.get('name') or user_id} на {session} — "
                 f"{titles[target] if target else 'убран из папок'}"
             )
+            await self._update_mute(client, session, row, user_id, target, peers)
+        await self._mute_pending(client, session, auto_rows, peers)
         return moved
 
 

@@ -53,7 +53,7 @@ class StreamControlMixin:
            кнопку, чтобы получить следующую партию.
         3) Ничего из этого → False.
         """
-        if not self._auto_engine.enabled:
+        if not self._auto_engine.enabled or self._auto_engine.flood_paused():
             return False
         try:
             await self._auto_engine.ensure_peer()

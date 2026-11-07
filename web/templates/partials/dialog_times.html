@@ -4,7 +4,15 @@ document.querySelectorAll('time[data-local][datetime]').forEach(function (t) {
     var d = new Date(t.getAttribute('datetime'));
     if (isNaN(d.getTime())) return;
     var p = function (n) { return ('0' + n).slice(-2); };
-    t.textContent = p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    var rel = null;
+    if (t.hasAttribute('data-relative')) {
+        var m = Math.floor((Date.now() - d.getTime()) / 60000);
+        if (m < 1) rel = 'сейчас';
+        else if (m < 60) rel = m + ' мин';
+        else if (m < 1440) rel = Math.floor(m / 60) + ' ч';
+        else if (m < 43200) rel = Math.floor(m / 1440) + ' дн';
+    }
+    t.textContent = rel || p(d.getDate()) + '.' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
     t.title = d.toLocaleString();
 });
 </script>

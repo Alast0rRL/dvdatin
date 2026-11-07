@@ -126,7 +126,12 @@ class TestClassify:
         ("ты дебил", R.RUDE),
         ("ахах пиздец", R.OTHER),       # мат не по адресу — не грубость
         ("Мне 20, учусь в политехе", R.OTHER),
-        ("", R.OTHER),
+        ("", R.GREETING),
+        ("😊", R.GREETING),
+        ("Привет)", R.GREETING),
+        ("хай", R.GREETING),
+        ("Привет, я Лена", R.OTHER),
+        ("привлекательная", R.OTHER),
         ("работаю дизайнером", R.OTHER),  # «бот» внутри слова
     ])
     def test_kinds(self, text: str, kind: str) -> None:
@@ -180,7 +185,9 @@ class TestDecide:
         (R.AFTER_PIN, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
         (R.AFTER_PIN, R.ASKS_PIN, ("pin_why", R.WAIT_MORE)),
         (R.WAIT_MORE, R.ASKS_PIN, ("pin_why", R.WAIT_MORE)),
-        (R.AFTER_PIN, R.OTHER, ("tell_me", R.TELL_ME)),
+        (R.AFTER_PIN, R.GREETING, ("tell_me", R.TELL_ME)),
+        (R.AFTER_PIN, R.OTHER, (None, R.HANDOFF)),
+        (R.AFTER_PIN, R.NOT_DAMOCHKA, (None, R.HANDOFF)),
         (R.WAIT_MORE, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
         (R.WAIT_MORE, R.OTHER, (None, R.HANDOFF)),
         (R.WAIT_MORE, R.ASKS_WHAT, (None, R.HANDOFF)),
@@ -195,6 +202,11 @@ class TestDecide:
     ])
     def test_table(self, step: str, kind: str, expected: tuple) -> None:
         assert R.decide(step, kind) == expected
+
+    @pytest.mark.parametrize("step", [R.AFTER_PIN, R.WAIT_MORE, R.TELL_ME, R.WAKE_UP])
+    def test_unrecognized_text_hands_off(self, step: str) -> None:
+        """«Не знаешь, что ответить — передавай мне» (владелец, 2026-11-07)."""
+        assert R.decide(step, R.OTHER) == (None, R.HANDOFF)
 
     def test_silence(self) -> None:
         assert R.decide_silence(R.AFTER_PIN) == ("tell_me", R.TELL_ME)
@@ -489,6 +501,142 @@ class TestMatchScript:
         script = make_script(db, enabled=False)
         assert not run(script.start(S, UID, 1))
         assert run(script.process(make_client(), S, "AUTO")) == []
+
+
+class TestAndSo:
+    """«и?» / «и что?» — бот молчит, владельцу (владелец, 2026-11-07)."""
+
+    @pytest.mark.parametrize("text", [
+        "и?", "И что?", "ну и?", "и чё?", "Моя анкета в дв, и?",
+    ])
+    def test_classified(self, text: str) -> None:
+        assert R.classify(text) == R.AND_SO
+
+    @pytest.mark.parametrize("step", [R.AFTER_PIN, R.WAIT_MORE])
+    def test_handoff_without_reply(self, step: str) -> None:
+        assert R.decide(step, R.AND_SO) == (None, R.HANDOFF)
+
+    def test_pin_question_still_answered(self) -> None:
+        assert R.classify("зачем закрепил и?") == R.ASKS_PIN
+        assert R.classify("что это?") == R.ASKS_WHAT
+
+    def test_end_to_end_silent(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        client, _ = reply(db, make_script(db), "Моя анкета в дв, и?")
+        assert sent_text(client) is None
+        assert row(db)["script_step"] == R.HANDOFF
+
+
+class TestAsksKnow:
+    """«Мы знакомы?» / «кто ты?» (владелец, 2026-11-07)."""
+
+    @pytest.mark.parametrize("text", [
+        "мы знакомы", "знакомы?", "кто ты", "Кто это?", "откуда ты", "откуда ты меня",
+        "мы где-то виделись",
+    ])
+    def test_classified(self, text: str) -> None:
+        assert R.classify(text) == R.ASKS_KNOW
+
+    def test_priority(self) -> None:
+        assert R.strongest([R.HER_QUESTION, R.ASKS_KNOW]) == R.ASKS_KNOW
+        assert R.strongest([R.ASKS_KNOW, R.ASKS_PIN]) == R.ASKS_PIN
+
+    @pytest.mark.parametrize("step", [R.AFTER_PIN, R.WAIT_MORE])
+    def test_decide(self, step: str) -> None:
+        assert R.decide(step, R.ASKS_KNOW) == ("know_after", R.WAIT_MORE)
+        assert R.decide(R.TELL_ME, R.ASKS_KNOW) == (None, R.HANDOFF)
+
+    def test_reply_text_and_step(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        client, _ = reply(db, make_script(db), "мы знакомы?")
+        assert sent_text(client) == "Пока нет, лайкнули друг друга в Дайвинчике)"
+        assert row(db)["script_step"] == R.WAIT_MORE
+
+    def test_before_card_decision(self) -> None:
+        assert R.decide_before_card(["?"]) == "know"
+        assert R.decide_before_card(["привет", "кто ты?"]) == "know"
+        assert R.decide_before_card(["скинешь фотку?"]) == "handoff"
+        assert R.decide_before_card(["привет", ""]) == "card"
+
+
+class TestOneBatchOneReply:
+    """Прод 2026-11-07 (Looney): «Моя анкета в дв, и?» → «Это твоя анкета…»,
+    через 39 с без её сообщения — «Рассказывайте, дамочка»."""
+
+    def test_after_other_text_hands_off_silently(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        client, results = reply(db, make_script(db), "Мне 20, учусь в политехе")
+        assert sent_text(client) is None
+        assert row(db)["script_step"] == R.HANDOFF
+        assert results[0][1] == R.HANDOFF
+
+    def test_after_sticker_tell_me(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        client, _ = reply(db, make_script(db), "")
+        assert sent_text(client) == "Рассказывайте, дамочка"
+
+    def test_concurrent_passes_reply_once(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        script = make_script(db)
+        assert run(script.note_message(S, UID, "Что это?", "AUTO"))
+        client = make_client()
+
+        async def both():
+            return await asyncio.gather(
+                script.process(client, S, "AUTO"), script.process(client, S, "AUTO"),
+            )
+
+        run(both())
+        assert client.send_message.await_count == 1
+        assert row(db)["script_step"] == R.WAIT_MORE
+
+    def test_stale_snapshot_row_is_not_answered(self, db: Database) -> None:
+        """Строка из выборки устарела (шаг уже ушёл вперёд) — по ней не пишем."""
+        step_to(db, R.WAIT_MORE, script_pending="", script_due_at="")
+        script = make_script(db)
+        stale = dict(row(db), script_step=R.AFTER_PIN, script_pending=SILENCE,
+                     script_at=ago(hours=30), script_due_at=ago(minutes=1))
+        client = make_client()
+        assert run(script._process_row(client, S, stale)) is None
+        client.send_message.assert_not_called()
+
+    def test_leftover_silence_timer_after_fresh_reply_dropped(self, db: Database) -> None:
+        """Висящий отложенный таймер молчания не срабатывает сразу после
+        свежего ответа бота."""
+        step_to(db, R.WAIT_MORE, script_pending=SILENCE, script_due_at=ago(minutes=1))
+        client = make_client()
+        assert run(make_script(db).process(client, S, "AUTO")) == []
+        client.send_message.assert_not_called()
+        assert row(db)["script_pending"] == ""
+
+
+class TestSilentWakeUpDeletesChat:
+    """Молчит и после «АЛООО» (шаг wake_up) → stopped + чат удалён у владельца."""
+
+    def test_deleted_for_owner_only(self, db: Database) -> None:
+        step_to(db, R.WAKE_UP, script_at=ago(hours=25))
+        client = make_client()
+        db.set_dialog_chat_deleted = AsyncMock()
+        results = run(make_script(db).process(client, S, "AUTO"))
+        assert results[0][1] == R.STOPPED
+        db.set_dialog_chat_deleted.assert_awaited_once_with(S, UID, True)
+        client.delete_dialog.assert_awaited_once()
+        assert client.delete_dialog.await_args.kwargs["revoke"] is False
+        assert row(db)["script_step"] == R.STOPPED
+
+    def test_not_deleted_when_disabled(self, db: Database) -> None:
+        step_to(db, R.WAKE_UP, script_at=ago(hours=25))
+        client = make_client()
+        run(make_script(db, delete_silent_chat=False).process(client, S, "AUTO"))
+        client.delete_dialog.assert_not_called()
+        assert row(db)["script_step"] == R.STOPPED
+
+    def test_delete_error_still_stops(self, db: Database) -> None:
+        step_to(db, R.WAKE_UP, script_at=ago(hours=25))
+        client = make_client()
+        client.delete_dialog = AsyncMock(side_effect=RuntimeError("boom"))
+        run(make_script(db).process(client, S, "AUTO"))
+        assert row(db)["script_step"] == R.STOPPED
 
 
 class TestCollectorScript:

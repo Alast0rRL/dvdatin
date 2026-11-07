@@ -384,6 +384,23 @@ class TestDialogLogger:
             _logger.remove(sink)
         assert sum("не найти" in line for line in lines) == 1
 
+    def test_many_lost_chats_only_first_is_warning(self, db) -> None:
+        """Разные потерянные чаты — не повтор, но и не 32 WARNING: за запуск
+        WARNING один, остальные INFO."""
+        from loguru import logger as _logger
+        log = DialogLogger(db)
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(side_effect=ValueError("nope"))
+        lines: list[str] = []
+        sink = _logger.add(lambda m: lines.append(str(m)), level="WARNING")
+        try:
+            for uid in (71, 72, 73):
+                run(db.add_match_dialog("dvai", uid))
+                run(log._sync_chat(client, "dvai", {"user_id": uid, "username": ""}))
+        finally:
+            _logger.remove(sink)
+        assert sum("не найти" in line for line in lines) == 1
+
 
 class TestCollectorDialogLog:
     def _collector(self):

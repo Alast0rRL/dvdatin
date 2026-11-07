@@ -2823,6 +2823,129 @@ class TestCollectorAutoActions:
         assert len(action_calls) == 1
         collector._db.record_auto_action.assert_awaited_once()
 
+    def test_flood_wait_pauses_account_without_error(self) -> None:
+        """FloodWait на реакции: WARNING (не ERROR), аккаунт на паузе, пока
+        пауза — ничего не шлём, потом лента продолжается (задача возобновления).
+
+        Прод 2026-11-06: «A wait of 330 seconds is required» → окно ошибки.
+        """
+        from loguru import logger as _logger
+        from telethon.errors import FloodWaitError
+
+        from models.decision import AIDecision
+
+        auto_client = make_tg_client()
+        auto_client.is_connected.return_value = True
+        auto_client.send_message = AsyncMock(
+            side_effect=FloodWaitError(request=None, capture=330)
+        )
+        collector = self._make_collector(
+            self._make_config(), self._make_decision(AIDecision.DISLIKE),
+            auto_client, AsyncMock(),
+        )
+        collector._db.has_reaction_for_message = AsyncMock(return_value=False)
+
+        def task(mid: int) -> RawTask:
+            return RawTask(
+                chat_id=1234060895, message_id=mid, sender_id=1234060895,
+                sender_username="", sender_name="",
+                text="Полина, 18, Санкт-Петербург",
+                media_type="", entities_json="[]", reply_markup_json="[]",
+                reply_to=None, received_at="now", msg_date="now",
+                msg=self._auto_event_on_client(auto_client).message, raw_id=mid,
+            )
+
+        levels: list[str] = []
+        sink = _logger.add(
+            lambda m: levels.append(m.record["level"].name), level="WARNING",
+        )
+        loop = asyncio.get_event_loop()
+        try:
+            loop.run_until_complete(collector._process_message(task(910)))
+            calls_after_first = auto_client.send_message.await_count
+            engine = collector._auto_engine
+            assert engine.flood_paused()
+            loop.run_until_complete(collector._process_message(task(911)))
+        finally:
+            _logger.remove(sink)
+            for t in collector._flood_resume_tasks.values():
+                t.cancel()
+            loop.run_until_complete(asyncio.sleep(0))
+        assert "ERROR" not in levels and "WARNING" in levels
+        assert auto_client.send_message.await_count == calls_after_first
+        assert collector._flood_resume_tasks
+
+    def test_flood_inside_resume_gets_new_resume(self) -> None:
+        """Новый FloodWait внутри start_auto_stream самой задачи возобновления
+        не теряется: лента перезапускается после второй паузы."""
+        import time as _time
+
+        from models.decision import AIDecision
+
+        auto_client = make_tg_client()
+        auto_client.is_connected.return_value = True
+        collector = self._make_collector(
+            self._make_config(), self._make_decision(AIDecision.DISLIKE),
+            auto_client, AsyncMock(),
+        )
+        engine = collector._auto_engine
+        engine._flood_until = _time.time() + 0.05
+        calls: list[int] = []
+
+        async def fake_start(session: object = None) -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                engine._flood_until = _time.time() + 0.05  # снова FloodWait
+                collector._schedule_flood_resume(engine)
+
+        collector.start_auto_stream = fake_start
+        loop = asyncio.get_event_loop()
+
+        async def scenario() -> None:
+            collector._schedule_flood_resume(engine)
+            for task in list(collector._flood_resume_tasks.values()):
+                await asyncio.wait_for(task, 10)
+
+        loop.run_until_complete(scenario())
+        assert len(calls) == 2
+        assert not engine.flood_paused()
+
+    def test_match_card_and_view_promo_are_not_unknown_warnings(self) -> None:
+        """«Ты понравился N девушке…» и «Смотреть анкеты» штатно разбираются
+        в _on_unknown — в логе DEBUG, а не WARNING «Unknown message format»."""
+        from loguru import logger as _logger
+
+        auto_client = make_tg_client()
+        auto_client.is_connected.return_value = True
+        collector = self._make_collector(
+            self._make_config(), None, auto_client, AsyncMock(),
+        )
+        collector._press_view_button_if_needed = AsyncMock()
+        collector._on_match_card = AsyncMock()
+        collector._continue_from_history = AsyncMock()
+        lines: list[str] = []
+        sink = _logger.add(lambda m: lines.append(str(m)), level="WARNING")
+        try:
+            for mid, text in (
+                (920, "Ты понравился 3 девушке, показать её?"),
+                (921, "🚀 Смотреть анкеты"),
+            ):
+                msg = self._auto_event_on_client(auto_client).message
+                msg.text = text
+                task = RawTask(
+                    chat_id=1234060895, message_id=mid, sender_id=1234060895,
+                    sender_username="", sender_name="", text=text,
+                    media_type="", entities_json="[]", reply_markup_json="[]",
+                    reply_to=None, received_at="now", msg_date="now",
+                    msg=msg, raw_id=mid,
+                )
+                asyncio.get_event_loop().run_until_complete(
+                    collector._on_unknown(task)
+                )
+        finally:
+            _logger.remove(sink)
+        assert not any("Unknown message format" in line for line in lines)
+
     def test_no_action_when_message_on_other_account(self) -> None:
         from models.decision import AIDecision
 

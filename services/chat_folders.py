@@ -10,6 +10,7 @@
 * ``fifty``  — **50/50**: переписка не идёт — она молчит ``silence_hours``+,
   так и не написала, или последнее сообщение наше (владелец / бот) и она не
   отвечает ``unanswered_hours``+;
+* ``blocked`` — **ЧС**: она заблокировала нас (``blocked_at``), важнее всех;
 * ``new``    — **New**: всё остальное (вышла из автоматики, старые переписки
   владельца — ещё не устоялось и не затихло).
 
@@ -25,15 +26,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from services.dialog_outcome import parse_time
-from services.match_script_rules import ACTIVE_STEPS, DELETED
+from services.match_script_rules import ACTIVE_STEPS, DELETED, HANDOFF, OWNER
 
 NEW: str = "new"
 ACTIVE: str = "active"
 FIFTY: str = "fifty"
 AUTO: str = "auto"
+BLOCKED: str = "blocked"
 
 #: Порядок папок (номер папки владельца = индекс + 1).
-FOLDERS: tuple[str, ...] = (NEW, ACTIVE, FIFTY, AUTO)
+FOLDERS: tuple[str, ...] = (NEW, ACTIVE, FIFTY, AUTO, BLOCKED)
 
 
 def bot_leads(
@@ -84,8 +86,17 @@ def folder_target(
         return None
     if int(row.get("total") or 0) == 0:
         return None
+    # Она заблокировала нас (эвристика) — ЧС важнее всех папок (2026-11-07).
+    if row.get("blocked_at"):
+        return BLOCKED
     if bot_on and bot_leads(row, bot_wait_hours=bot_wait_hours, now=now):
         return AUTO
+    # Бот передал управление, а последнее слово её — ждёт владельца: New сразу,
+    # какие бы 48 ч / 3 дня ни стояли (владелец, 2026-11-07).
+    if (row.get("script_step") or "") in (HANDOFF, OWNER) and (
+        (row.get("last_by") or "") == "her"
+    ):
+        return NEW
     last_her = parse_time(row.get("last_her_at"))
     if last_her is None or now - last_her >= timedelta(hours=silence_hours):
         return FIFTY

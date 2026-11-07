@@ -92,6 +92,34 @@ class TestPreferencesEngine:
         e = PreferencesEngine(make_prefs())
         assert e.evaluate_forced_like("я не политех") == []
 
+    def test_relationship_word_order_variants_are_skip(self) -> None:
+        """«Ищу общение, отношения не интересуют. (Есть молодой человек)» → 👎.
+
+        Прод 2026-11-06: анкета получила LIKE, потому что в skip были только
+        «не ищу отношения» / «есть парень» (другой порядок слов).
+        """
+        from app.preferences import PREFERENCES_EXAMPLE, load_preferences
+        e = load_preferences(path=PREFERENCES_EXAMPLE)
+        text = (
+            "Приветик! Я ищу общение, отношения не интересуют. "
+            "(Есть молодой человек)"
+        )
+        skip, _ = e.evaluate(text)
+        assert skip
+        for phrase in ("не интересуют отношения", "я замужем", "у меня мч",
+                       "не ищу отношений", "уже в отношениях"):
+            assert e.evaluate(phrase)[0], phrase
+        # Отрицание отменяет правило.
+        assert e.evaluate("не замужем, свободна")[0] == []
+        assert e.evaluate("не в отношениях")[0] == []
+        decision, _, reasons = make_service(e)._decide(
+            filter_decision=FilterDecision.PASS, filter_reasons=[], score=0.9,
+            informative=True, meaningful_words=12,
+            skip_labels=skip, like_labels=[],
+        )
+        assert decision == AIDecision.DISLIKE
+        assert reasons[0].startswith("USER_SKIP:")
+
     def test_serious_relationship_is_hard_like(self) -> None:
         """«Человек на всю жизнь, хочу партнёра» → жёсткий LIKE, фото не перебивает.
 

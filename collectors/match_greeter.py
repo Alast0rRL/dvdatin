@@ -95,7 +95,10 @@ class MatchGreeter:
         source: tuple[int, int] | None = None,
     ) -> str:
         """Пишет девушке. Статус: SENT / DISABLED / NO_TARGET / ALREADY /
-        HAS_CHAT / NO_STICKER / PAUSED / SPAM_BLOCK / ERROR.
+        HAS_CHAT / NO_STICKER / PAUSED / SPAM_BLOCK / NO_ACCESS / ERROR.
+
+        NO_ACCESS — она принимает сообщения только от Premium (403
+        PRIVACY_PREMIUM_REQUIRED): не повторяем, владелец пишет сам.
 
         PAUSED — аккаунт на паузе после спам-блока, девушка в очереди.
         SPAM_BLOCK — блок пойман сейчас (пауза поставлена, девушка в очереди);
@@ -153,6 +156,15 @@ class MatchGreeter:
                     f"пауза {pause // 60} мин, {match.name} ({target}) в очередь"
                 )
                 return "SPAM_BLOCK"
+            if "PRIVACY_PREMIUM_REQUIRED" in str(e):
+                # Она принимает сообщения только от Premium — известный исход,
+                # не сбой: помечаем, не повторяем, владелец пишет сам.
+                logger.warning(
+                    f"MatchGreeting: {match.name} ({target}) принимает "
+                    "сообщения только от Premium — не пишу"
+                )
+                await self._mark(key, "NO_ACCESS", match)
+                return "NO_ACCESS"
             logger.error(
                 f"MatchGreeting: не удалось написать {match.name} ({target}): {e}"
             )

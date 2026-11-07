@@ -2723,7 +2723,8 @@ class TestDialogsPage:
     def test_list_shows_girl_and_last_message(self, client, sync_db) -> None:
         self._seed(sync_db)
         _login(client)
-        html = client.get("/dialogs").get_data(as_text=True)
+        # Папка не задана → вкладка «Без папки» (по умолчанию открыта Auto).
+        html = client.get("/dialogs?folder=none").get_data(as_text=True)
         assert "Алиса, 19" in html and "@roza" in html
         assert "ответила" in html
         assert "/dialogs/dvai/77" in html
@@ -2742,57 +2743,60 @@ class TestDialogsPage:
         _login(client)
         assert client.get("/dialogs/dvai/1").status_code == 404
 
-    def test_tabs_split_good_and_failed(self, client, sync_db) -> None:
-        """Вкладки итогов: старая переписка, где она замолчала, — «затухла»,
-        свежая со сценарием до конца — «удачные»; чужой вкладке не видна."""
-        self._seed(sync_db)   # Алиса: ответила, потом тишина с 29.10 → затухла
+    def test_tabs_mirror_telegram_folders(self, client, sync_db) -> None:
+        """Вкладки = папки Telegram (было: итоги «Удачные / Неудачные»);
+        чат лежит в папке из dialog_contacts.chat_folder, счётчики на вкладках."""
+        self._seed(sync_db)   # Алиса: привет без ответа → бот ведёт; папка не задана
         _, _, db = sync_db
         loop = asyncio.get_event_loop()
-        now = datetime.now(timezone.utc)
         loop.run_until_complete(db.upsert_dialog_contact(
             "dvai", 88, username="vera", name="Вера", profile_id=None,
-            matched_at=(now - timedelta(hours=5)).isoformat(),
+            matched_at="2026-10-29T10:00:00+00:00",
         ))
-        loop.run_until_complete(db.add_match_dialog("dvai", 88, name="Вера"))
-        loop.run_until_complete(db.update_match_dialog(
-            "dvai", 88, status="INTRO_SENT", script_step="handoff",
-        ))
-        loop.run_until_complete(db.save_dialog_message(
-            "dvai", 88, 5, is_outgoing=False, sent_by="her",
-            message_date=(now - timedelta(hours=1)).isoformat(), text="я Вера",
-        ))
+        loop.run_until_complete(db.update_dialog_contact(
+            "dvai", 88, chat_folder="active"))
         _login(client)
-        html = client.get("/dialogs").get_data(as_text=True)
-        assert "Ждёт тебя" in html and "Неудачные" in html and "Удачные" in html
-        assert "Алиса" in html and "Вера" in html
-        good = client.get("/dialogs?cat=good").get_data(as_text=True)
-        assert "Вера" in good and "Алиса" not in good and "ждёт тебя" in good
-        failed = client.get("/dialogs?cat=failed").get_data(as_text=True)
-        assert "Алиса" in failed and "Вера" not in failed
-        assert "затухла" in failed and "все причины" in failed
-        faded = client.get("/dialogs?cat=failed&reason=faded").get_data(as_text=True)
-        assert "Алиса" in faded
-        silent = client.get("/dialogs?cat=failed&reason=silent").get_data(as_text=True)
-        assert "Алиса" not in silent and "В этой вкладке никого" in silent
-        you = client.get("/dialogs?cat=you").get_data(as_text=True)
-        assert "Вера" in you and "Алиса" not in you
+        html = client.get("/dialogs?folder=active").get_data(as_text=True)
+        assert "Вера" in html and "Алиса" not in html
+        for title in ("Auto", "Active", "50/50", "New", "ЧС", "Без папки", "Удалённые"):
+            assert title in html
+        none = client.get("/dialogs?folder=none").get_data(as_text=True)
+        assert "Алиса" in none and "Вера" not in none
+        junk = client.get("/dialogs?folder=zzz").get_data(as_text=True)
+        assert "Auto" in junk                      # мусор — вкладка по умолчанию, без 500
 
-    def test_deleted_chat_in_failed(self, client, sync_db) -> None:
-        """Сверка нашла чат пустым → «Неудачные», причина «чат удалён»."""
+    def test_blocked_and_deleted_tabs(self, client, sync_db) -> None:
         self._seed(sync_db)
         _, _, db = sync_db
         asyncio.get_event_loop().run_until_complete(
             db.set_dialog_chat_deleted("dvai", 77, True))
         _login(client)
-        html = client.get("/dialogs?cat=failed&reason=deleted").get_data(as_text=True)
-        assert "Алиса" in html and "чат удалён" in html
+        deleted = client.get("/dialogs?folder=deleted").get_data(as_text=True)
+        assert "Алиса" in deleted
+        assert "Алиса" not in client.get("/dialogs?folder=none").get_data(as_text=True)
 
-    def test_sort_and_bad_params(self, client, sync_db) -> None:
+    def test_take_to_owner_stops_bot(self, client, sync_db) -> None:
+        """«Забрать себе»: POST с CSRF ставит шаг owner; без CSRF — 403."""
         self._seed(sync_db)
+        _, _, db = sync_db
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(db.update_match_dialog(
+            "dvai", 77, status="INTRO_SENT", script_step="tell_me",
+        ))
+        loop.run_until_complete(db.update_dialog_contact(
+            "dvai", 77, chat_folder="auto"))
         _login(client)
-        html = client.get("/dialogs?cat=zzz&sort=zzz&reason=zzz").get_data(as_text=True)
-        assert "Алиса" in html                     # мусор в параметрах — как «Все»
-        assert "больше её сообщений" in html
+        page = client.get("/dialogs?folder=auto").get_data(as_text=True)
+        assert "бот ведёт" in page and "Забрать себе" in page
+        assert client.post("/dialogs/dvai/77/take").status_code == 403
+        with client.session_transaction() as sess:
+            token = sess["_csrf_token"]
+        resp = client.post("/dialogs/dvai/77/take", data={"csrf_token": token})
+        assert resp.status_code == 302
+        row = loop.run_until_complete(db.get_match_dialog("dvai", 77))
+        assert row["script_step"] == "owner"
+        after = client.get("/dialogs?folder=auto").get_data(as_text=True)
+        assert "Забрать себе" not in after
 
     def test_dialog_page_shows_outcome(self, client, sync_db) -> None:
         self._seed(sync_db)

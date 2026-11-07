@@ -320,7 +320,7 @@ class AccountEnginesMixin:
                 f"accounts; авто-действия основного аккаунта отключены"
             )
 
-        return AutoActionEngine(
+        engine = AutoActionEngine(
             client=client,
             config=auto_cfg,
             mode=self._config.controls_for(session).legacy_mode,
@@ -334,6 +334,9 @@ class AccountEnginesMixin:
                 if self._is_friends_session(session) else None
             ),
         )
+        # FloodWait на действии → пауза аккаунта и продолжение ленты после неё.
+        engine.on_flood = lambda: self._schedule_flood_resume(engine)
+        return engine
 
     def switch_auto_account(self, session: str) -> bool:
         """Делает аккаунт ``session`` основным (Веб-панель).

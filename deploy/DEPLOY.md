@@ -86,6 +86,10 @@ journalctl -u dvai -n 25 --no-pager # смотрим логи запуска
 
 `config.yaml → telegram.accounts`:
 - **acc1** (`dvai`, +79375003342, melancholic) — сессия `data/sessions/dvai.session` уже на сервере.
+- **acc3** (`dvai_3`, +79819241752, добавлен 2026-11-04; api_id как у acc2) — вход
+  без остановки сервиса (отдельный session-файл), от пользователя `dvai`:
+  `sudo -u dvai PYTHONUTF8=1 ./venv/bin/python -c "..."` с `create_client` + `authorize`,
+  затем `systemctl restart dvai`.
 - **acc2** (`dvai_2`, +79997621114, авто-аккаунт `auto_actions.account_session`) —
   сессии со старого сервера нет; для входа нужен интерактивный login-прогон:
 

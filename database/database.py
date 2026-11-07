@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,7 +33,10 @@ def match_name_key(name: str | None) -> str:
     ссылке матча Leo «[miss.E,](…)» — подчёркивание ушло как курсив (прод
     2026-11-04: анкета ей не ушла, NO_PROFILE).
     """
-    return (name or "").strip(_NAME_EDGE_CHARS).casefold()
+    folded = unicodedata.normalize("NFKC", name or "").casefold()
+    key = "".join(ch for ch in folded if ch.isalnum())
+    # Имя без единой буквы/цифры («,», эмодзи) — прежнее сравнение по краям.
+    return key or folded.strip(_NAME_EDGE_CHARS)
 
 
 def is_blank_profile_name(name: str | None) -> bool:
@@ -318,6 +322,9 @@ CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
 -- обратно не кладём). chat_folder — папка, куда её положил бот (new | active |
 -- fifty | auto, '' — ни в одной); folder_manual = 1 — владелец перенёс чат
 -- сам, бот его больше не двигает (collectors/chat_folders.py).
+-- blocked_at — эвристика «она нас заблокировала» (статус пуст и нет фото),
+-- block_checked_at — когда проверяли; notify_mark: 'bot_muted' — звук чата
+-- выключил бот (в Auto), 'on' — вернул, '' — не трогал.
 CREATE TABLE IF NOT EXISTS dialog_contacts (
     account_session TEXT NOT NULL,
     user_id INTEGER NOT NULL,
@@ -331,6 +338,10 @@ CREATE TABLE IF NOT EXISTS dialog_contacts (
     archived_at TEXT NOT NULL DEFAULT '',
     chat_folder TEXT NOT NULL DEFAULT '',
     folder_manual INTEGER NOT NULL DEFAULT 0,
+    blocked_at TEXT,
+    block_checked_at TEXT NOT NULL DEFAULT '',
+    notify_mark TEXT NOT NULL DEFAULT '',
+    block_hits INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_session, user_id)
 );
 
@@ -554,6 +565,11 @@ class Database:
         "archived_at": "TEXT NOT NULL DEFAULT ''",
         "chat_folder": "TEXT NOT NULL DEFAULT ''",
         "folder_manual": "INTEGER NOT NULL DEFAULT 0",
+        # ЧС и звук чатов в Auto (владелец, 2026-11-07).
+        "blocked_at": "TEXT",
+        "block_checked_at": "TEXT NOT NULL DEFAULT ''",
+        "notify_mark": "TEXT NOT NULL DEFAULT ''",
+        "block_hits": "INTEGER NOT NULL DEFAULT 0",
     }
 
     async def _ensure_dialog_contacts_deleted_column(self) -> None:
@@ -2266,6 +2282,7 @@ class Database:
                        AND m.user_id = c.user_id) AS last_msg_at,
                    c.matched_at, c.last_message_at, c.chat_deleted_at,
                    c.archived_at, c.chat_folder, c.folder_manual,
+                   c.blocked_at, c.block_checked_at, c.notify_mark, c.block_hits,
                    md.status AS intro_status, md.script_step AS script_step,
                    md.greeted_at AS greeted_at, md.wake_at AS wake_at,
                    (SELECT COUNT(*) FROM dialog_messages m
@@ -2299,6 +2316,7 @@ class Database:
     #: Поля dialog_contacts, которые меняет update_dialog_contact.
     _DIALOG_CONTACT_FIELDS: frozenset[str] = frozenset({
         "archived_at", "chat_folder", "folder_manual",
+        "blocked_at", "block_checked_at", "notify_mark", "block_hits",
     })
 
     async def update_dialog_contact(
@@ -2322,6 +2340,20 @@ class Database:
         except Exception as e:
             await self._connection.rollback()
             logger.warning(f"update_dialog_contact: {e}")
+
+    async def is_dialog_blocked(self, account_session: str, user_id: int) -> bool:
+        """Она нас заблокировала (эвристика ``blocked_at``) — для сайта и сценария."""
+        try:
+            cursor = await self._connection.execute(
+                "SELECT blocked_at FROM dialog_contacts "
+                "WHERE account_session = ? AND user_id = ?",
+                (account_session or "", int(user_id)),
+            )
+            row = await cursor.fetchone()
+        except Exception as e:
+            logger.warning(f"is_dialog_blocked: {e}")
+            return False
+        return bool(row and row[0])
 
     async def set_dialog_chat_deleted(
         self, account_session: str, user_id: int, deleted: bool,

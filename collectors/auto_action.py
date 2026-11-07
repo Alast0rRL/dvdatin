@@ -10,6 +10,7 @@ import asyncio
 import random
 import time
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -18,6 +19,7 @@ from telethon.errors import FloodWaitError
 from rich.panel import Panel
 from rich.table import Table
 
+from collectors.match_greeter import flood_pause_sec
 from core.types import Mode
 from models.action import ActionPolicy
 from models.decision import AIDecision
@@ -80,6 +82,10 @@ class AutoActionError(Exception):
     """Ошибка выполнения авто-действия."""
 
 
+class AutoActionPaused(AutoActionError):
+    """Аккаунт на паузе после FloodWait: отправка пропущена (не сбой)."""
+
+
 class AutoActionEngine:
     """Выполняет действия (лайк/дизлайк) на анкетах от имени аккаунта.
 
@@ -138,6 +144,12 @@ class AutoActionEngine:
         # Прод 2026-11-01: ERROR «ошибка служебного уведомления» ×3 подряд.
         self._notify_paused_until: float = 0.0
         self._notify_backlog: list[str] = []
+        # FloodWait на действиях в чат Leo (реакции/кнопки): до срока этот
+        # аккаунт ничего не шлёт. Прод 2026-11-06: «A wait of 330 seconds is
+        # required (caused by SendMessageRequest)» → ERROR на сайте.
+        self._flood_until: float = 0.0
+        #: Колбэк коллектора: запланировать продолжение ленты после паузы.
+        self.on_flood: Callable[[], None] | None = None
         self._last_action_at: float = 0.0
         self._actions: list[float] = []
         self._lock = asyncio.Lock()
@@ -381,6 +393,8 @@ class AutoActionEngine:
             return "GATE"
         if decision is None:
             return "SKIP"
+        if self.flood_paused():
+            return "FLOOD_PAUSE"
         if decision == AIDecision.REVIEW:
             # REVIEW → НЕ действуем сами: бот «не справляется», ждём решение
             # владельца. Анкета остаётся активной, владельцу отправляется
@@ -813,7 +827,12 @@ class AutoActionEngine:
         """
         if not (self.enabled or (any_mode and self.can_press)):
             return False
-        await self._send(text)
+        if self.flood_paused():
+            return False
+        try:
+            await self._send(text)
+        except AutoActionPaused:
+            return False
         logger.info(f"AutoAction: нажата кнопка {text!r} на chat={self._chat_id}")
         return True
 
@@ -833,18 +852,47 @@ class AutoActionEngine:
         )
         return True
 
+    def flood_paused(self) -> bool:
+        """Аккаунт на паузе после FloodWait?"""
+        return time.time() < self._flood_until
+
+    @property
+    def flood_until(self) -> float:
+        return self._flood_until
+
+    def pause_for_flood(self, error: BaseException) -> float | None:
+        """FloodWait/«Too many requests» → пауза аккаунта (WARNING, не ERROR).
+
+        Возвращает секунды паузы или None, если ошибка — не флуд.
+        """
+        wait = flood_pause_sec(error)
+        if wait is None:
+            return None
+        self._flood_until = max(self._flood_until, time.time() + wait)
+        if self.on_flood is not None:
+            self.on_flood()
+        logger.warning(
+            f"AutoAction: Telegram просит подождать ({error}) — "
+            f"{self._account_session or 'аккаунт'} на паузе {wait // 60} мин"
+        )
+        return float(wait)
+
     async def _send(self, text: str) -> None:
         """Отправляет текст в чат от имени сконфигурированного клиента."""
         if self._client is None:
             msg = "AutoAction: клиент не задан"
             logger.warning(msg)
             raise AutoActionError(msg)
+        if self.flood_paused():
+            raise AutoActionPaused("пауза после FloodWait")
         try:
             await self.ensure_peer()
             sent = await self._client.send_message(
                 self._peer or self._chat_id, text
             )
         except Exception as e:
+            if self.pause_for_flood(e) is not None:
+                raise AutoActionPaused(str(e)) from e
             logger.error(f"AutoAction: ошибка отправки {text!r}: {e}")
             raise AutoActionError(str(e)) from e
         await self._persist_outgoing(sent, text)

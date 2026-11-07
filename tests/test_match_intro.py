@@ -664,12 +664,33 @@ class TestWakeUpAfterSticker:
         assert [st for _, st in results] == [WAKE_UP_SENT]
 
     def test_old_silent_match_not_woken(self, db: Database) -> None:
-        """Её вечер давно прошёл (старый привет) — «АЛООО» не шлём."""
+        """Её вечер и добор прошли (старый привет) — «АЛООО» не шлём."""
         self._waiting(db, _ago(49))
         client = self._client()
         assert run(self._intro(db).process(client, self.S, "AUTO")) == []
         client.send_message.assert_not_called()
         assert self._row(db)["status"] == WAITING_REPLY
+
+    def test_missed_evening_caught_up_once(self, db: Database) -> None:
+        """Бот лежал в своё окно (25-48 ч) — «АЛООО» уходит в следующем
+        (добор: ещё одно окно, не больше)."""
+        self._waiting(db, _ago(40))
+        client = self._client()
+        results = run(self._intro(db).process(client, self.S, "AUTO"))
+        assert [st for _, st in results] == [WAKE_UP_SENT]
+
+    def test_old_waiting_rows_do_not_starve_fresh_ones(self, db: Database) -> None:
+        """Выборка «старые первыми» с малым лимитом забивалась давними
+        строками; свежая (25 ч) обязана дойти до «АЛООО» (2026-11-07)."""
+        for i in range(250):
+            run(db.add_match_dialog(
+                self.S, 1000 + i, username=f"old{i}", name="Старая",
+                greeted_at=_ago(500 + i).isoformat(),
+            ))
+        self._waiting(db, _ago(25))
+        client = self._client()
+        results = run(self._intro(db).process(client, self.S, "AUTO"))
+        assert [r["user_id"] for r, _ in results] == [self.UID]
 
     def test_not_a_day_yet(self, db: Database) -> None:
         self._waiting(db, _ago(23))
@@ -881,3 +902,100 @@ class TestCollectorIntro:
         text = collector._auto_engine.notify_owner.await_args.args[0]
         assert "@rosa" in text and "Напиши ей сам" in text
         collector._match_script.start.assert_not_called()
+
+
+class TestBeforeCardQuestions:
+    """Она ответила на стикер вопросом до анкеты (владелец, 2026-11-07):
+    «мы знакомы?» / «?» → «Лайкнули друг друга…» и анкета; чужой вопрос →
+    анкету не шлём, владельцу."""
+
+    @staticmethod
+    def _client(*texts: str) -> AsyncMock:
+        client = make_client()
+        items = [
+            SimpleNamespace(
+                id=10 + i, out=False, message=t, sticker=None,
+                date=datetime.fromisoformat("2026-10-29T10:01:00+00:00"),
+            )
+            for i, t in enumerate(texts)
+        ] + [GREETING_STICKER]
+        client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter(items))
+        client.send_message = AsyncMock(return_value=SimpleNamespace(id=500))
+        return client
+
+    @staticmethod
+    def _intro(db: object) -> MatchIntro:
+        return MatchIntro(
+            MatchIntroConfig(), db, LEO, script_config=MatchScriptConfig(),
+        )
+
+    @pytest.mark.parametrize("texts", [
+        ("Мы знакомы?",), ("?",), ("Привет", "кто ты?"), ("откуда ты меня знаешь",),
+    ])
+    def test_know_text_then_card(self, texts: tuple[str, ...]) -> None:
+        client = self._client(*texts)
+        status = run(self._intro(make_db()).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
+        client.send_message.assert_awaited_once()
+        assert client.send_message.await_args.args[1] == "Лайкнули друг друга в Дайвинчике)"
+        client.forward_messages.assert_awaited_once()
+
+    @pytest.mark.parametrize("texts", [("Привет",), ("😊",), ("",)])
+    def test_greeting_goes_straight_to_card(self, texts: tuple[str, ...]) -> None:
+        client = self._client(*texts)
+        status = run(self._intro(make_db()).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
+        client.send_message.assert_not_called()
+
+    @pytest.mark.parametrize("texts", [("скинешь фотку?",), ("Привет", "сколько лет?")])
+    def test_other_question_hands_off_without_card(self, texts: tuple[str, ...]) -> None:
+        db = make_db()
+        client = self._client(*texts)
+        status = run(self._intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == OWNER_CHAT
+        client.send_message.assert_not_called()
+        client.forward_messages.assert_not_called()
+        assert db.update_match_dialog.await_args.kwargs["status"] == OWNER_CHAT
+
+    def test_know_beats_other_question(self) -> None:
+        client = self._client("мы знакомы?", "скинешь фотку?")
+        status = run(self._intro(make_db()).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
+        client.send_message.assert_awaited_once()
+
+    def test_know_text_not_taken_for_owner_on_retry(self) -> None:
+        """FloodWait на анкете → повтор: своё «Лайкнули…» — не владелец и не
+        шлётся второй раз."""
+        from telethon.errors import FloodWaitError
+        db = make_db()
+        intro = self._intro(db)
+        client = self._client("Мы знакомы?")
+        client.forward_messages = AsyncMock(side_effect=FloodWaitError(request=None, capture=60))
+        assert run(intro.send_intro(client, "dvai_2", due_row())) == "FLOOD"
+        own = SimpleNamespace(
+            id=500, out=True, message="", sticker=None,
+            date=datetime.fromisoformat("2026-10-29T10:02:00+00:00"),
+        )
+        client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter(
+            [own, SimpleNamespace(
+                id=10, out=False, message="Мы знакомы?", sticker=None,
+                date=datetime.fromisoformat("2026-10-29T10:01:00+00:00")),
+             GREETING_STICKER]))
+        client.forward_messages = AsyncMock(return_value=[SimpleNamespace(id=2, text="")])
+        assert run(intro.send_intro(client, "dvai_2", due_row())) == INTRO_SENT
+        assert client.send_message.await_count == 1
+
+    def test_own_know_text_after_restart_is_not_owner(self) -> None:
+        """id «Лайкнули…» потерян (рестарт / сбой карточки): своё сообщение по
+        тексту — не владелец, анкета уходит."""
+        own = SimpleNamespace(
+            id=500, out=True, message="Лайкнули друг друга в Дайвинчике)",
+            sticker=None,
+            date=datetime.fromisoformat("2026-10-29T10:02:00+00:00"),
+        )
+        client = self._client("Мы знакомы?")
+        client.iter_messages = MagicMock(side_effect=lambda *a, **k: async_iter(
+            [own, GREETING_STICKER]))
+        status = run(self._intro(make_db()).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
+        client.forward_messages.assert_awaited_once()

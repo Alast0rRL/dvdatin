@@ -53,7 +53,7 @@ from loguru import logger
 
 from collectors.match_greeter import flood_pause_sec
 from models.raw import ParsedMatch
-from services.match_script_rules import in_hour_window
+from services.match_script_rules import decide_before_card, in_hour_window
 
 if TYPE_CHECKING:
     from app.config import MatchIntroConfig, MatchScriptConfig
@@ -95,9 +95,13 @@ GREETING_STICKER_SKEW_SEC: float = 60.0
 #: Она написала первой: её сообщение не старше стольких секунд до привета —
 #: тоже ответ (матч мог висеть, пока владелец не нажал «показать»).
 EARLY_REPLY_SEC: float = 24 * 3600.0
-#: «АЛООО» — в первый вечер после суток тишины: позже стольких часов после
-#: срока не шлём (иначе на запуске его получили бы все старые матчи).
+#: «АЛООО» — в первое вечернее окно после суток тишины; позже стольких часов
+#: после срока не шлём (иначе на запуске его получили бы все старые матчи).
+#: Это только добор, если бот лежал в своё окно: ещё одно окно, не больше.
 WAKE_UP_LATE_HOURS: float = 24.0
+#: Сколько ожидающих ответа читаем из БД: выборка идёт «старые первыми», малый
+#: лимит забивался бы давними строками и свежие не доходили до «АЛООО».
+WAKE_SCAN_LIMIT: int = 5000
 
 #: Шапка карточки той, кто лайкнула первой: «Кому-то понравилась твоя
 #: анкета (и ещё 31):» — бывает без пробела перед скобкой и без счётчика.
@@ -180,6 +184,9 @@ class MatchIntro:
         # Клиент аккаунта по имени сессии — скачать карточку из ЕГО чата Leo,
         # когда личка перенаправлена на другой аккаунт (копия анкеты).
         self.client_for: Callable[[str], Any] | None = None
+        # Наше «Лайкнули друг друга…» до анкеты: id (не считать владельцем при
+        # повторе после FloodWait) и «уже слали» — по (аккаунт, user_id).
+        self._know_ids: dict[tuple[str, int], int] = {}
 
     def allowed_in(self, mode: str) -> bool:
         return bool(self._config.enabled) and mode in self._config.modes
@@ -300,7 +307,11 @@ class MatchIntro:
         name = row.get("name") or str(user_id)
         try:
             peer = await client.get_input_entity(row.get("username") or user_id)
-            owner_wrote = await self._owner_wrote(client, peer, row)
+            know_id = self._know_ids.get((account_session, user_id), 0)
+            owner_wrote = await self._owner_wrote(
+                client, peer, row, know_id, self._know_texts(),
+            )
+            her_texts = [] if owner_wrote else await self._her_texts(client, peer, row)
         except Exception as e:
             pause = flood_pause_sec(e)
             if pause is not None:
@@ -318,6 +329,15 @@ class MatchIntro:
         if owner_wrote:
             logger.info(
                 f"MatchIntro: с {name} уже переписывается владелец — анкету не шлю"
+            )
+            await self._update(account_session, user_id, status=OWNER_CHAT)
+            return OWNER_CHAT
+        plan = decide_before_card(her_texts)
+        if plan == "handoff":
+            # Её вопрос не про знакомство — анкету не шлём, отвечает владелец.
+            logger.info(
+                f"MatchIntro: {name} спросила своё до анкеты — бот молчит, "
+                "владельцу"
             )
             await self._update(account_session, user_id, status=OWNER_CHAT)
             return OWNER_CHAT
@@ -340,6 +360,10 @@ class MatchIntro:
                 )
                 await self._update(account_session, user_id, status=OTHER_ACCOUNT)
                 return OTHER_ACCOUNT
+        if plan == "know" and not await self._send_know_before(
+            client, peer, account_session, user_id, name,
+        ):
+            return "FLOOD"
         try:
             if src_client is not None:
                 sent = await self._send_copy(client, peer, src_client, ids)
@@ -410,6 +434,59 @@ class MatchIntro:
             f"{' и закрепил 📌' if pinned else ''}"
         )
         return INTRO_SENT
+
+    async def _send_know_before(
+        self, client: Any, peer: Any, account_session: str, user_id: int,
+        name: str,
+    ) -> bool:
+        """«Лайкнули друг друга в Дайвинчике)» перед анкетой (один раз).
+        False — FloodWait, повтор позже. Прочие ошибки — анкета уходит так."""
+        key = (account_session, user_id)
+        cfg = self._script
+        texts = [t for t in ((cfg.texts.know_before if cfg else None) or []) if t]
+        if key in self._know_ids or not texts:
+            return True
+        try:
+            sent = await client.send_message(peer, random.choice(texts))
+        except Exception as e:
+            pause = flood_pause_sec(e)
+            if pause is not None:
+                await self._update(
+                    account_session, user_id,
+                    due_at=(_now() + timedelta(seconds=pause)).isoformat(),
+                    error=str(e)[:300],
+                )
+                return False
+            logger.warning(f"MatchIntro: не отправил «знакомы» {name}: {e}")
+            return True
+        sent_id = getattr(sent, "id", None)
+        self._know_ids[key] = sent_id if isinstance(sent_id, int) else -1
+        if self.on_sent is not None:
+            try:
+                await self.on_sent(account_session, user_id, sent)
+            except Exception as e:
+                logger.error(f"MatchIntro: журнал переписки: {e}")
+        return True
+
+    @staticmethod
+    async def _her_texts(client: Any, peer: Any, row: dict) -> list[str]:
+        """Её тексты до анкеты (после привета, включая ранние). Только в
+        память для разбора — в лог не пишутся."""
+        greeted = _parse_dt(row.get("greeted_at"))
+        early = greeted - timedelta(seconds=EARLY_REPLY_SEC) if greeted else None
+        texts: list[str] = []
+        async for msg in client.iter_messages(peer, limit=OWNER_CHECK_HISTORY):
+            if getattr(msg, "out", False):
+                continue
+            date = getattr(msg, "date", None)
+            if isinstance(date, datetime):
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                if early is not None and date < early:
+                    break
+            text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
+            texts.append(text if isinstance(text, str) else "")
+        return texts
 
     def _liked_range(self) -> tuple[int, int] | None:
         rng = list(getattr(self._config, "liked_count", None) or [])
@@ -494,8 +571,18 @@ class MatchIntro:
             kwargs["formatting_entities"] = [entities] + [[]] * (len(files) - 1)
         return await client.send_file(peer, files, **kwargs)
 
+    def _know_texts(self) -> set[str]:
+        cfg = self._script
+        return {
+            t.strip() for t in ((cfg.texts.know_before if cfg else None) or [])
+            if t and t.strip()
+        }
+
     @staticmethod
-    async def _owner_wrote(client: Any, peer: Any, row: dict) -> bool:
+    async def _owner_wrote(
+        client: Any, peer: Any, row: dict, skip_id: int = 0,
+        know_texts: set[str] | frozenset[str] = frozenset(),
+    ) -> bool:
         """Есть ли в её чате наше исходящее новее привета (пишет владелец).
 
         Анкету бот ещё не слал, так что исходящее позже ``greeted_at`` —
@@ -515,7 +602,8 @@ class MatchIntro:
         seen = False
         async for msg in client.iter_messages(peer, limit=OWNER_CHECK_HISTORY):
             seen = True
-            if wake_id and getattr(msg, "id", None) == wake_id:
+            msg_id = getattr(msg, "id", None)
+            if msg_id is not None and msg_id in (wake_id, skip_id) and msg_id > 0:
                 continue
             date = getattr(msg, "date", None)
             if not isinstance(date, datetime):
@@ -528,6 +616,11 @@ class MatchIntro:
                 continue
             is_sticker = getattr(msg, "sticker", None) is not None
             if is_sticker and date <= greeted + skew:
+                continue
+            # Наше «Лайкнули друг друга…» (id потерян после рестарта / сбоя
+            # карточки) — тоже не владелец.
+            body = getattr(msg, "message", None) or getattr(msg, "text", None)
+            if isinstance(body, str) and body.strip() in know_texts:
                 continue
             # Без текста (приватность): только что за сообщение и когда.
             logger.info(
@@ -599,7 +692,7 @@ class MatchIntro:
         self._last_reply_check[account_session] = now_ts
         try:
             rows = await self._db.list_match_dialogs(
-                account_session, WAITING_REPLY, limit=200,
+                account_session, WAITING_REPLY, limit=WAKE_SCAN_LIMIT,
             )
         except Exception as e:
             logger.error(f"MatchIntro: не прочитал ожидающих: {e}")
@@ -687,7 +780,7 @@ class MatchIntro:
             return []
         try:
             rows = await self._db.list_match_dialogs(
-                account_session, WAITING_REPLY, limit=200,
+                account_session, WAITING_REPLY, limit=WAKE_SCAN_LIMIT,
             )
         except Exception as e:
             logger.error(f"MatchIntro: не прочитал ожидающих: {e}")
@@ -702,14 +795,24 @@ class MatchIntro:
         for row in rows:
             woke = _parse_dt(row.get("wake_at"))
             greeted = _parse_dt(row.get("greeted_at"))
+            uid = row.get("user_id")
             if woke is not None:
                 if now - woke < limit:
+                    logger.debug(f"MatchIntro: wake {uid}: после «АЛООО» ещё не сутки")
                     continue
-            elif greeted is None or now - greeted < limit or not evening:
+            elif greeted is None:
+                logger.debug(f"MatchIntro: wake {uid}: нет greeted_at")
+                continue
+            elif now - greeted < limit:
+                logger.debug(f"MatchIntro: wake {uid}: ещё нет суток после привета")
                 continue
             elif now - greeted >= limit + timedelta(hours=WAKE_UP_LATE_HOURS):
                 # Её вечер для «АЛООО» прошёл (старые приветы до 2026-11-02,
                 # бот лежал) — не пишем, ждём её ответа как раньше.
+                logger.debug(f"MatchIntro: wake {uid}: окно для «АЛООО» прошло")
+                continue
+            elif not evening:
+                logger.debug(f"MatchIntro: wake {uid}: не вечернее окно")
                 continue
             user_id = int(row["user_id"])
             name = row.get("name") or str(user_id)
@@ -719,7 +822,9 @@ class MatchIntro:
                 if first is not None:
                     await self.note_reply(account_session, user_id, mode, at=first)
                     continue
-                if await self._owner_wrote(client, peer, row):
+                if await self._owner_wrote(
+                    client, peer, row, 0, self._know_texts(),
+                ):
                     logger.info(
                         f"MatchIntro: с {name} переписывается владелец — "
                         "бот молчит"

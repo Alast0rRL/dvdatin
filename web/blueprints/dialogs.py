@@ -4,9 +4,10 @@
 # (collectors/dialog_logger.py). Цель — данные для анализа и будущего
 # алгоритма общения.
 #
-#   GET /dialogs                         — список девушек: ?account=<session>,
-#                                          ?cat=you|active|good|failed,
-#                                          ?reason=<причина неудачи>, ?sort=…
+#   GET /dialogs                         — папки как в Telegram (Auto / Active /
+#                                          50/50 / New / ЧС / без папки /
+#                                          удалённые): ?folder=…, ?account=<session>
+#   POST /dialogs/<session>/<id>/take    — «Забрать себе»: бот ей больше не пишет
 #   GET /dialogs/<session>/<user_id>     — переписка с девушкой + её анкета
 #   GET /dialogs/export.json             — все переписки целиком (для анализа)
 
@@ -15,10 +16,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from flask import Blueprint, Response, abort, current_app, json, render_template, request
+from flask import (
+    Blueprint, Response, abort, current_app, flash, json, redirect,
+    render_template, request, session, url_for,
+)
 
 from web.blueprints.auth import login_required
-from services import dialog_outcome as outcome
+from app.config import ChatFoldersConfig
+from services import chat_folders, dialog_outcome as outcome
 from web.db import SyncDB
 
 dialogs_bp = Blueprint("dialogs", __name__)
@@ -87,37 +92,53 @@ def dialog_media(kind: str) -> str:
     return MEDIA_LABELS.get(kind or "", kind or "")
 
 
-#: Вкладки списка: «ждёт тебя» — флаг поверх итога, остальные — итоги.
-TABS: tuple[tuple[str, str], ...] = (
-    ("", "Все"),
-    ("you", "Ждёт тебя"),
-    (outcome.ACTIVE, outcome.CATEGORY_LABELS[outcome.ACTIVE]),
-    (outcome.GOOD, outcome.CATEGORY_LABELS[outcome.GOOD]),
-    (outcome.FAILED, outcome.CATEGORY_LABELS[outcome.FAILED]),
+#: Вкладки — папки Telegram, которые ведёт бот (порядок как у владельца),
+#: плюс «Без папки» (только архив) и «Удалённые».
+NO_FOLDER: str = "none"
+DELETED_TAB: str = "deleted"
+TAB_ORDER: tuple[str, ...] = (
+    chat_folders.AUTO, chat_folders.ACTIVE, chat_folders.FIFTY,
+    chat_folders.NEW, chat_folders.BLOCKED, NO_FOLDER, DELETED_TAB,
 )
+DEFAULT_TAB: str = chat_folders.AUTO
 
 
-def _in_tab(g: dict[str, Any], cat: str) -> bool:
-    if not cat:
-        return True
-    if cat == "you":
-        return g["outcome"].needs_you
-    return g["outcome"].category == cat
+def tabs() -> tuple[tuple[str, str], ...]:
+    """Вкладки (ключ, название); названия папок — из ``folders`` конфига."""
+    cfg = ChatFoldersConfig()
+    titles = {
+        chat_folders.AUTO: cfg.auto,
+        chat_folders.ACTIVE: cfg.active,
+        chat_folders.FIFTY: cfg.fifty,
+        chat_folders.NEW: cfg.new,
+        chat_folders.BLOCKED: cfg.blocked,
+        NO_FOLDER: "Без папки",
+        DELETED_TAB: "Удалённые",
+    }
+    return tuple((key, titles[key]) for key in TAB_ORDER)
+
+
+def folder_of(row: dict[str, Any]) -> str:
+    """Вкладка чата: удалён → ЧС → папка бота (``chat_folder``) → без папки."""
+    if row.get("chat_deleted_at") or (row.get("script_step") or "") == "deleted":
+        return DELETED_TAB
+    if row.get("blocked_at"):
+        return chat_folders.BLOCKED
+    folder = row.get("chat_folder") or ""
+    return folder if folder in chat_folders.FOLDERS else NO_FOLDER
 
 
 def _summary(girls: list[dict[str, Any]]) -> dict[str, Any]:
-    """Цифры над списком: по вкладкам, по причинам неудач, конверсия."""
-    counts = {key: sum(_in_tab(g, key) for g in girls) for key, _ in TABS}
-    reasons = {
-        r: sum(1 for g in girls if g["outcome"].reason == r)
-        for r in outcome.REASON_LABELS
-    }
+    """Цифры: по вкладкам, матчи → ответили → удачно."""
+    counts = {key: 0 for key in TAB_ORDER}
+    for g in girls:
+        counts[g["folder"]] += 1
     replied = sum(1 for g in girls if g.get("her_count"))
     total = len(girls)
-    good = counts[outcome.GOOD]
+    good = sum(1 for g in girls if g["outcome"].category == outcome.GOOD)
     return {
         "counts": counts,
-        "reasons": reasons,
+        "good": good,
         "replied": replied,
         "replied_pct": round(100 * replied / total) if total else 0,
         "good_pct": round(100 * good / total) if total else 0,
@@ -130,15 +151,9 @@ def _summary(girls: list[dict[str, Any]]) -> dict[str, Any]:
 def index() -> str:
     db = _get_db()
     account = (request.args.get("account") or "").strip() or None
-    cat = (request.args.get("cat") or "").strip()
-    if cat not in {key for key, _ in TABS}:
-        cat = ""
-    reason = (request.args.get("reason") or "").strip()
-    if cat != outcome.FAILED or reason not in outcome.REASON_LABELS:
-        reason = ""
-    sort = (request.args.get("sort") or "").strip()
-    if sort not in outcome.SORTS:
-        sort = "recent"
+    folder = (request.args.get("folder") or "").strip()
+    if folder not in TAB_ORDER:
+        folder = DEFAULT_TAB
 
     girls = db.get_dialog_list(account)
     accounts = sorted({g["account_session"] for g in db.get_dialog_list()})
@@ -147,27 +162,39 @@ def index() -> str:
         g["who"] = _who(g)
         g["intro_label"] = intro_label(g)
         g["outcome"] = outcome.classify(g, now)
+        g["folder"] = folder_of(g)
+        g["bot_leads"] = chat_folders.bot_leads(g, now=now)
     summary = _summary(girls)
-    shown = [
-        g for g in girls
-        if _in_tab(g, cat) and (not reason or g["outcome"].reason == reason)
-    ]
+    shown = [g for g in girls if g["folder"] == folder]  # уже свежие сверху
     return render_template(
         "dialogs.html",
-        girls=outcome.sort_rows(shown, sort),
+        girls=shown,
         total=len(girls),
         accounts=accounts,
         account=account,
-        cat=cat,
-        reason=reason,
-        sort=sort,
-        tabs=TABS,
-        sorts=outcome.SORTS,
-        reason_labels=outcome.REASON_LABELS,
+        folder=folder,
+        tabs=tabs(),
         reason_hints=outcome.REASON_HINTS,
         summary=summary,
         stats=db.get_dialog_stats(),
     )
+
+
+@dialogs_bp.route("/dialogs/<session_name>/<int:user_id>/take", methods=["POST"])
+@login_required
+def take(session_name: str, user_id: int) -> Response:
+    """«Забрать себе»: шаг сценария ``owner`` — бот ей больше не пишет."""
+    if request.form.get("csrf_token", "") != session.get("_csrf_token"):
+        flash("Ошибка безопасности", "error")
+        return Response("CSRF token invalid", status=403)
+    if _get_db().take_dialog_to_owner(session_name, user_id):
+        flash("Забрал себе: бот ей больше не пишет", "success")
+    else:
+        flash("Автопереписки с ней нет — забирать нечего", "warning")
+    target = request.form.get("next", "")
+    if not target.startswith("/") or target.startswith("//"):
+        target = url_for("dialogs.index")
+    return redirect(target)
 
 
 @dialogs_bp.route("/dialogs/export.json")

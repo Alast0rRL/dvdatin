@@ -7,8 +7,13 @@
       «что это / зачем / закрепил? / скинул?» → «Это твоя анкета из
       Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов» → WAIT_MORE
       «много с кем общаешься, не путать?» → «Это так-то удобно»   → WAIT_MORE
-      молчит ``silence_min`` (24 ч) или ответила не про анкету
-                                          → «Рассказывайте, дамочка» → TELL_ME
+      «мы знакомы? / кто ты? / откуда ты?» → «Пока нет, лайкнули друг друга
+      в Дайвинчике)» (``texts.know_after``)                        → WAIT_MORE
+      «и? / и что?» → без ответа                                   → HANDOFF
+      приветствие (стикер / эмодзи / короткое «привет») → «Рассказывайте,
+      дамочка»                                                     → TELL_ME
+      молчит ``silence_min`` (24 ч)                                → TELL_ME
+      любой другой текст (не знаем, что ответить)                  → HANDOFF
     WAIT_MORE
       «много с кем общаешься?» → «Это так-то удобно»; любой другой ответ →
       HANDOFF; молчит ``silence_min`` → «Рассказывайте, дамочка»
@@ -16,15 +21,26 @@
       «я не дамочка» → «А кто? Парнишка?»                 → HANDOFF
       «о чём? / что?» → «О себе конечно»                  → HANDOFF
       что-то другое (рассказывает о себе)                 → HANDOFF
-      молчит ``give_up_hours`` (24 ч) → в ближайшие ``wake_up_hour`` (22:00)
-      «АЛООО ПРОСЫПАЕМСЯ»                                 → WAKE_UP
+      молчит ``give_up_hours`` (24 ч) → первое местное окно 22:00–24:00
+      (``wake_up_hour``), пропущенный вечер догоняется не более чем одним
+      следующим окном, только при включённом «Авто»: «АЛООО ПРОСЫПАЕМСЯ» → WAKE_UP
     WAKE_UP
-      любой ответ → HANDOFF; молчит ещё ``give_up_hours`` → STOPPED
+      любой ответ → HANDOFF; молчит ещё ``give_up_hours`` → STOPPED, чат
+      удаляется только у владельца
+
+До анкеты (``MatchIntro``): «мы знакомы? / кто ты?» или одиночное «?» →
+``texts.know_before`` («Лайкнули друг друга в Дайвинчике)»), затем анкета;
+другой её вопрос до анкеты → анкета не уходит, ``OWNER_CHAT``.
 
 Везде: «не пиши» / «есть парень» / прямое оскорбление → чат удаляется
 (DELETED); «ты бот?» → HANDOFF (бот не врёт, отвечает владелец); владелец
 сам написал ей после бота → OWNER, бот замолкает. HANDOFF / DELETED /
-STOPPED — уведомление владельцу (коллектор).
+STOPPED — уведомление владельцу (коллектор). Принцип: не знаешь, что
+ответить, — молчи и передай владельцу.
+
+Один проход сценария на аккаунт (``asyncio.Lock``), строка перечитывается
+свежей, устаревший таймер молчания после ответа бота сбрасывается (прод
+2026-11-07: двойной ответ Looney).
 
 Её сообщение (живое событие) → ``note_message``: вид ответа и срок ответа
 (пауза ``reply_delay_sec``, удаление — сразу) пишутся в строку; отправка — в
@@ -36,6 +52,7 @@ STOPPED — уведомление владельцу (коллектор).
 
 from __future__ import annotations
 
+import asyncio
 import random
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -52,6 +69,7 @@ from services.match_script_rules import (
     ERROR,
     OWNER,
     STOP_KINDS,
+    STOPPED,
     TELL_ME,
     WAIT_MORE,
     WAKE_UP,
@@ -99,6 +117,10 @@ class MatchScript:
         self._config = config
         self._db = db
         self._rng = random.Random()
+        # Один проход сценария на аккаунт за раз: параллельные проходы
+        # (минутный цикл + живой хендлер) читали устаревшую строку и отвечали
+        # по ней второй раз (2026-11-07).
+        self._locks: dict[str, asyncio.Lock] = {}
         # Колбэк «бот отправил девушке» — журнал переписок (DialogLogger.log_sent).
         self.on_sent: Callable[[str, int, Any], Awaitable[Any]] | None = None
 
@@ -182,6 +204,13 @@ class MatchScript:
         """
         if self._db is None or not self.allowed_in(mode):
             return []
+        lock = self._locks.setdefault(account_session or "", asyncio.Lock())
+        async with lock:
+            return await self._process_locked(client, account_session)
+
+    async def _process_locked(
+        self, client: Any, account_session: str,
+    ) -> list[tuple[dict, str, str]]:
         try:
             rows = await self._db.list_match_script_dialogs(
                 account_session, ACTIVE_STEPS,
@@ -210,9 +239,39 @@ class MatchScript:
         self, client: Any, account_session: str, row: dict,
     ) -> tuple[dict, str, str] | None:
         user_id = int(row["user_id"])
+        # Строка из выборки могла устареть (её ответили в предыдущей строке
+        # прохода, пришло новое сообщение): решаем только по свежей.
+        try:
+            fresh = await self._db.get_match_dialog(account_session, user_id)
+        except Exception as e:
+            logger.error(f"MatchScript: не перечитал переписку: {e}")
+            return None
+        if not isinstance(fresh, dict) or fresh.get("status") != INTRO_SENT:
+            return None
+        if fresh.get("script_step") not in ACTIVE_STEPS:
+            return None
+        row.update(fresh)
         step = str(row.get("script_step") or "")
         now = _now()
         pending = str(row.get("script_pending") or "")
+        if pending == SILENCE:
+            # Таймер молчания (в т. ч. повтор после FloodWait) сработал бы
+            # сразу после нашего ответа: молчание считаем от последнего
+            # сообщения бота (``script_at``).
+            started = _parse_dt(row.get("script_at"))
+            if step in (TELL_ME, WAKE_UP):
+                span = timedelta(hours=float(self._config.give_up_hours))
+            else:
+                span = timedelta(minutes=float(self._config.silence_min))
+            if started is not None and now - started < span:
+                logger.debug(
+                    f"MatchScript: {user_id}: молчание ещё не истекло — "
+                    "сбрасываю отложенный таймер"
+                )
+                await self._update(
+                    account_session, user_id, script_pending="", script_due_at="",
+                )
+                return None
         if pending:
             due = _parse_dt(row.get("script_due_at"))
             if due is not None and due > now:
@@ -254,6 +313,12 @@ class MatchScript:
         if silence:
             key, nxt = decide_silence(step)
             kind = SILENCE
+            if nxt == STOPPED and self._config.delete_silent_chat:
+                # Молчит и после «АЛООО» — чат удаляется только у владельца.
+                if not await self._delete_silent_chat(
+                    client, peer, account_session, row, now,
+                ):
+                    return None
         else:
             key, nxt = decide(step, kind)
 
@@ -310,6 +375,38 @@ class MatchScript:
             f"{f' ({key})' if text else ''}"
         )
         return row, nxt, kind
+
+    async def _delete_silent_chat(
+        self, client: Any, peer: Any, account_session: str, row: dict,
+        now: datetime,
+    ) -> bool:
+        """Удалить чат у владельца. False — FloodWait, повтор позже (шаг не
+        меняем); прочие ошибки — WARNING, сценарий всё равно завершается."""
+        user_id = int(row["user_id"])
+        name = row.get("name") or user_id
+        try:
+            await client.delete_dialog(peer, revoke=False)
+        except Exception as e:
+            pause = flood_pause_sec(e)
+            if pause is not None:
+                logger.warning(
+                    f"MatchScript: {account_session} FloodWait — удаление чата "
+                    f"через {pause // 60} мин"
+                )
+                await self._update(
+                    account_session, user_id, script_pending=SILENCE,
+                    script_due_at=(now + timedelta(seconds=pause)).isoformat(),
+                    error=str(e)[:300],
+                )
+                return False
+            logger.warning(f"MatchScript: не удалил чат {name}: {e}")
+            return True
+        logger.info(f"MatchScript: {name} молчит и после «АЛООО» — чат удалён у тебя")
+        try:
+            await self._db.set_dialog_chat_deleted(account_session, user_id, True)
+        except Exception as e:
+            logger.warning(f"MatchScript: не отметил удалённый чат {name}: {e}")
+        return True
 
     async def _scan(
         self, client: Any, peer: Any, row: dict,

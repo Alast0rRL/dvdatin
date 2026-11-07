@@ -497,6 +497,23 @@ class MatchDialogsMixin:
                 f"⚠️ Взаимный лайк на {source}: {match.name} ({who}) — не смог "
                 f"написать с {session}{via}. Напиши ей сам."
             )
+        elif status == "NO_ACCESS":
+            user_id = int(match.telegram_user_id or 0)
+            if user_id:
+                try:
+                    await self._db.add_match_dialog(
+                        session, user_id, name=match.name or "",
+                    )
+                    await self._db.update_match_dialog(
+                        session, user_id, status=NO_ACCESS,
+                    )
+                except Exception as e:
+                    logger.error(f"MatchGreeting: не отметил {match.name}: {e}")
+            await self._auto_engine.notify_owner(
+                f"⚠️ Взаимный лайк: {match.name} ({who}) принимает сообщения "
+                f"только от Premium — бот не пишет{via}. Напиши ей сам с "
+                f"{source or session or 'аккаунта'}."
+            )
         elif status == "SPAM_BLOCK":
             until = await self._match_greeter.paused_until(session)
             when = (

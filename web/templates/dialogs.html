@@ -2,96 +2,87 @@
 {% block title %}DvAI — переписки{% endblock %}
 
 {# Ссылка на список с текущими фильтрами, поменяв часть из них. #}
-{% macro list_url(cat=cat, reason=reason, sort=sort, account=account) -%}
-{{ url_for('dialogs.index', cat=cat or None, reason=reason or None,
-           sort=(sort if sort != 'recent' else None), account=account or None) }}
+{% macro list_url(folder=folder, account=account) -%}
+{{ url_for('dialogs.index', folder=folder, account=account or None) }}
 {%- endmacro %}
 
 {% block content %}
-{# Девушки со взаимным лайком: итог знакомства, причины неудач (журнал бота). #}
+{# Чаты девушек по папкам Telegram, которые ведёт бот (dialog_contacts.chat_folder). #}
 <div class="dialogs">
     <div class="dialogs__head">
         <h1 class="dialogs__title">Переписки</h1>
         <p class="dialogs__stats">
             Матчей <b>{{ total }}</b>
             → ответили <b>{{ summary.replied }}</b> ({{ summary.replied_pct }}%)
-            → удачно <b>{{ summary.counts.good }}</b> ({{ summary.good_pct }}%{% if summary.easy %}, легко {{ summary.easy }}{% endif %})
+            → удачно <b>{{ summary.good }}</b> ({{ summary.good_pct }}%{% if summary.easy %}, легко {{ summary.easy }}{% endif %})
             · сообщений <b>{{ stats.messages }}</b>
             · <a href="{{ url_for('dialogs.export') }}">скачать всё (JSON)</a>
         </p>
     </div>
 
-    <nav class="dialogs__tabs" aria-label="Итог знакомства">
+    {% if accounts|length > 1 %}
+    <nav class="dialogs__sort" aria-label="Аккаунт">
+        <a class="dialogs__chip{% if not account %} is-active{% endif %}" href="{{ list_url(account='') }}">все аккаунты</a>
+        {% for a in accounts %}
+        <a class="dialogs__chip{% if account == a %} is-active{% endif %}" href="{{ list_url(account=a) }}">{{ a }}</a>
+        {% endfor %}
+    </nav>
+    {% endif %}
+
+    <nav class="dialogs__tabs dialogs__tabs--folders" aria-label="Папки">
         {% for key, label in tabs %}
-        <a class="dialogs__tab dialogs__tab--{{ key or 'all' }}{% if cat == key %} is-active{% endif %}"
-           {% if cat == key %}aria-current="page"{% endif %}
-           href="{{ list_url(cat=key, reason='') }}">
+        <a class="dialogs__tab dialogs__tab--{{ key }}{% if folder == key %} is-active{% endif %}"
+           {% if folder == key %}aria-current="page"{% endif %}
+           href="{{ list_url(folder=key) }}">
             {{ label }} <span class="dialogs__count">{{ summary.counts[key] }}</span>
         </a>
         {% endfor %}
     </nav>
 
-    {% if cat == 'failed' %}
-    <nav class="dialogs__reasons" aria-label="Почему не вышло">
-        <a class="dialogs__chip{% if not reason %} is-active{% endif %}" href="{{ list_url(reason='') }}">все причины</a>
-        {% for key, label in reason_labels.items() %}
-        <a class="dialogs__chip{% if reason == key %} is-active{% endif %}"
-           title="{{ reason_hints[key] }}" href="{{ list_url(reason=key) }}">
-            {{ label }} <span class="dialogs__count">{{ summary.reasons[key] }}</span>
-        </a>
-        {% endfor %}
-    </nav>
-    {% endif %}
-
-    <div class="dialogs__tools">
-        <nav class="dialogs__sort" aria-label="Сортировка">
-            {% for key, label in sorts.items() %}
-            <a class="dialogs__chip{% if sort == key %} is-active{% endif %}" href="{{ list_url(sort=key) }}">{{ label }}</a>
-            {% endfor %}
-        </nav>
-        {% if accounts|length > 1 %}
-        <nav class="dialogs__sort" aria-label="Аккаунт">
-            <a class="dialogs__chip{% if not account %} is-active{% endif %}" href="{{ list_url(account='') }}">все аккаунты</a>
-            {% for a in accounts %}
-            <a class="dialogs__chip{% if account == a %} is-active{% endif %}" href="{{ list_url(account=a) }}">{{ a }}</a>
-            {% endfor %}
-        </nav>
-        {% endif %}
-    </div>
-
     {% if not total %}
     <p class="dialogs__empty">Пока пусто: девушка появится здесь после взаимного лайка.</p>
     {% elif not girls %}
-    <p class="dialogs__empty">В этой вкладке никого.</p>
+    <p class="dialogs__empty">В этой папке никого.</p>
     {% endif %}
 
     <ul class="dialogs__list">
         {% for g in girls %}
         {% set o = g.outcome %}
-        <li>
+        <li class="dialogs__row">
             <a class="dialogs__item dialogs__item--{{ o.category }}" data-name="{{ g.name|lower }}"
                href="{{ url_for('dialogs.dialog', session_name=g.account_session, user_id=g.user_id) }}">
-                <span class="dialogs__name">
-                    {{ g.name or g.who }}{% if g.age %}, {{ g.age }}{% endif %}
-                    <span class="dialogs__badge dialogs__badge--{{ o.category }}"
-                          {% if o.reason %}title="{{ reason_hints[o.reason] }}"{% endif %}>{{ o.label }}</span>
-                    {% if o.needs_you %}<span class="dialogs__badge dialogs__badge--you">ждёт тебя</span>{% endif %}
+                <span class="dialogs__avatar" aria-hidden="true">{{ ((g.name or g.who)[:1] or '?')|upper }}</span>
+                <span class="dialogs__body">
+                    <span class="dialogs__name">
+                        {{ g.name or g.who }}{% if g.age %}, {{ g.age }}{% endif %}
+                        <span class="dialogs__who">{{ g.who }}{% if accounts|length > 1 %} · {{ g.account_session }}{% endif %}</span>
+                    </span>
+                    <span class="dialogs__last">
+                        {% if g.last_text %}
+                            <b>{% if g.last_by == 'her' %}Она{% elif g.last_by == 'bot' %}Бот{% else %}Ты{% endif %}:</b>
+                            {{ g.last_text|dialog_media }}
+                        {% else %}нет сообщений{% endif %}
+                    </span>
+                    <span class="dialogs__badges">
+                        {% if g.bot_leads %}<span class="dialogs__badge dialogs__badge--bot">бот ведёт</span>{% endif %}
+                        {% if o.needs_you and not g.bot_leads %}<span class="dialogs__badge dialogs__badge--you">ждёт тебя</span>{% endif %}
+                        <span class="dialogs__badge dialogs__badge--{{ o.category }}"
+                              {% if o.reason %}title="{{ reason_hints[o.reason] }}"{% endif %}>{{ o.label }}</span>
+                        {% if g.intro_label %}<span class="dialogs__step">{{ g.intro_label }}</span>{% endif %}
+                    </span>
                 </span>
-                <span class="dialogs__meta">
-                    {{ g.who }} · {{ g.account_session }}
-                    · её {{ g.her_count }} / всего {{ g.total }}
-                    {% if g.intro_label %} · {{ g.intro_label }}{% endif %}
-                </span>
-                <span class="dialogs__last">
-                    {% if g.last_text %}
-                        {% if g.last_by == 'her' %}Она{% elif g.last_by == 'bot' %}Бот{% else %}Ты{% endif %}:
-                        {{ g.last_text|dialog_media }}
-                    {% else %}нет сообщений{% endif %}
-                </span>
-                <time class="dialogs__time" data-local datetime="{{ g.last_message_at or g.matched_at }}">
+                <time class="dialogs__time" data-local data-relative datetime="{{ g.last_message_at or g.matched_at }}">
                     {{ (g.last_message_at or g.matched_at or '')[:16]|replace('T', ' ') }}
                 </time>
             </a>
+            {% if g.bot_leads %}
+            <form class="dialogs__take" method="post"
+                  action="{{ url_for('dialogs.take', session_name=g.account_session, user_id=g.user_id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ list_url() }}">
+                <button type="submit" class="dialogs__chip" title="Бот перестанет ей писать">Забрать себе</button>
+            </form>
+            {% endif %}
         </li>
         {% endfor %}
     </ul>

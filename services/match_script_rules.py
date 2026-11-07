@@ -24,6 +24,13 @@ ABOUT_WHAT: str = "about_what"    # «о чём? / что?»
 #: живой ответ: бот молчит, переписка владельцу (владелец, 2026-11-04).
 HER_QUESTION: str = "her_question"
 OTHER: str = "other"
+#: Стикер / эмодзи / короткое «привет» — единственное, на что на шаге after_pin
+#: отвечает «Рассказывайте»; любой другой текст — владельцу (2026-11-07).
+GREETING: str = "greeting"
+#: «и?» / «и что?» / «ну и?» — ждёт продолжения от владельца: без ответа бота.
+AND_SO: str = "and_so"
+#: «мы знакомы?» / «кто ты?» / «откуда ты?» (владелец, 2026-11-07).
+ASKS_KNOW: str = "asks_know"
 
 #: Шаги сценария (``match_dialogs.script_step``).
 AFTER_PIN: str = "after_pin"      # анкета закреплена, ждём её
@@ -43,15 +50,19 @@ STOP_KINDS: frozenset[str] = frozenset({GO_AWAY, RUDE})
 
 #: Важность вида: при нескольких её сообщениях подряд побеждает важнейший.
 _PRIORITY: dict[str, int] = {
-    GO_AWAY: 6, RUDE: 6, ASKS_BOT: 5,
+    GO_AWAY: 7, RUDE: 7, ASKS_BOT: 6,
     # Вопрос про закреп важнее общего «зачем»: «Ну да, я» + «А для чего
     # закрепил?» — ответ про закреп, не «Пусть лежит здесь» (владелец, 2026-11-03).
-    ASKS_PIN: 4,
+    ASKS_PIN: 5,
+    # «Мы знакомы?» важнее её прочего вопроса, слабее закрепа.
+    ASKS_KNOW: 4,
     # Её свой вопрос важнее переспроса: «а че» + «ну вы любите розы?» — не
     # «О себе конечно», а владельцу (прод 2026-11-04, @Pivo2007).
     HER_QUESTION: 3,
     NOT_DAMOCHKA: 2, ASKS_TOO_MANY: 2, ASKS_WHAT: 2, ABOUT_WHAT: 2,
     OTHER: 1,
+    GREETING: 0,
+    AND_SO: 3,
 }
 
 _RULES: list[tuple[str, list[str]]] = [
@@ -91,6 +102,11 @@ _RULES: list[tuple[str, list[str]]] = [
         # «зачем пометил?» / «помечаешь?» — тот же закреп (2026-11-04)
         r"\bпомеч", r"\bпометил",
     ]),
+    (ASKS_KNOW, [
+        r"\bзнаком(ы|а|ство)\b", r"\bкто\s+(ты|это|вы|таков)\b",
+        r"откуда\s+(ты|вы)\b", r"(где[- ]то|когда[- ]то)\s+виделись",
+        r"\bмы\s+(с\s+тобой\s+)?виделись",
+    ]),
     (ASKS_WHAT, [
         r"что\s+это", r"это\s+что", r"зачем", r"нафига", r"нахрена", r"нафиг",
         r"к\s+ч[её]му", r"для\s+чего", r"почему\s+(ты\s+)?(мою|моя|это)",
@@ -107,6 +123,15 @@ _COMPILED: list[tuple[str, list[re.Pattern[str]]]] = [
     (kind, [re.compile(p) for p in patterns]) for kind, patterns in _RULES
 ]
 
+#: Короткое приветствие без содержания.
+_GREETING = re.compile(
+    r"^(при+в(е+т\w*|ик\w*)?|хай|хей|хэй|ку+|здравствуй\w*|здаров\w*|здорово|хелло|hi|hello|hey|"
+    r"салют|доброе\s+утро|добрый\s+(день|вечер)|добрый)[\s!.,)(\-~]*$"
+)
+
+#: «и?», «и что?», «ну и?», «Моя анкета в дв, и?» — вопрос-подталкивание.
+_AND_SO = re.compile(r"(^|[\s,.!)(-])и(\s+(что|чё|че|чо|дальше|потом))?\s*\?+[)!.]*$")
+
 #: Короткое «что?» / «?» без слов — переспрос.
 _BARE_QUESTION = re.compile(r"^(а\s+)?(что|чего|че|чё|шо|эм+|э+|\?)?\s*\?*[)!.]*$")
 
@@ -117,18 +142,49 @@ def normalize(text: str) -> str:
 
 
 def classify(text: str) -> str:
-    """Вид её ответа. Пустой текст (стикер, фото) — ``OTHER``."""
+    """Вид её ответа. Пустой текст (стикер, фото) и эмодзи — ``GREETING``."""
     norm = normalize(text)
     if not norm:
-        return OTHER
+        return GREETING
     for kind, patterns in _COMPILED:
         if any(p.search(norm) for p in patterns):
+            if kind in (ASKS_WHAT, ABOUT_WHAT) and _AND_SO.search(norm):
+                return AND_SO  # «Моя анкета в дв, и?» — не «Это твоя анкета…»
             return kind
+    if _AND_SO.search(norm):
+        return AND_SO
     if _BARE_QUESTION.match(norm):
         return ABOUT_WHAT
     if "?" in norm:
         return HER_QUESTION
+    if _GREETING.match(norm) or not any(c.isalnum() for c in norm):
+        return GREETING  # «привет», «хай», только эмодзи
     return OTHER
+
+
+_BARE_MARK = re.compile(r"^\?+$")
+
+
+def classify_before_card(text: str) -> str:
+    """Вид её сообщения до анкеты (она ответила на стикер): голый «?» —
+    как «мы знакомы?»."""
+    if _BARE_MARK.match(normalize(text)):
+        return ASKS_KNOW
+    return classify(text)
+
+
+def decide_before_card(texts: list[str]) -> str:
+    """Что делать с анкетой по её сообщениям на стикер (сильнейший вид):
+    ``know`` — сначала «Лайкнули друг друга…», потом анкета; ``handoff`` —
+    её вопрос не про знакомство: анкету не шлём, владельцу; ``card`` — анкета."""
+    if not texts:
+        return "card"
+    kind = strongest([classify_before_card(t) for t in texts])
+    if kind == ASKS_KNOW:
+        return "know"
+    if kind == HER_QUESTION:
+        return "handoff"
+    return "card"
 
 
 def priority(kind: str) -> int:
@@ -137,7 +193,7 @@ def priority(kind: str) -> int:
 
 def strongest(kinds: list[str]) -> str:
     """Важнейший из видов (при равенстве — последний)."""
-    best = OTHER
+    best = GREETING
     for kind in kinds:
         if priority(kind) >= priority(best):
             best = kind
@@ -158,16 +214,21 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
     """
     if kind in STOP_KINDS:
         return None, DELETED
-    if kind in (ASKS_BOT, HER_QUESTION):
+    if kind in (ASKS_BOT, HER_QUESTION, AND_SO):
         return None, HANDOFF
     if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_PIN:
         return "pin_why", WAIT_MORE
+    if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_KNOW:
+        return "know_after", WAIT_MORE
     if step == AFTER_PIN:
         if kind in (ASKS_WHAT, ABOUT_WHAT):
             return "card_here", WAIT_MORE
         if kind == ASKS_TOO_MANY:
             return "convenient", WAIT_MORE
-        return "tell_me", TELL_ME
+        if kind == GREETING:
+            return "tell_me", TELL_ME
+        # Не знаем, что ответить, — передаём владельцу (2026-11-07).
+        return None, HANDOFF
     if step == WAIT_MORE:
         if kind == ASKS_TOO_MANY:
             return "convenient", WAIT_MORE

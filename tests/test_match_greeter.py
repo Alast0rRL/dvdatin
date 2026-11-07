@@ -249,6 +249,24 @@ class TestSpamBlock:
         assert run(greeter.paused_until("dvai")) is not None
         assert "lkk263" in db.store["match_greeting_queue:dvai"]
 
+    def test_premium_only_girl_is_no_access_never_retried(self) -> None:
+        """403 PRIVACY_PREMIUM_REQUIRED: она пишет только Premium — WARNING,
+        NO_ACCESS, девушку помечаем и повторно не пробуем."""
+        from telethon.errors import RPCError
+
+        db = make_state_db()
+        client = make_client()
+        client.send_file = AsyncMock(
+            side_effect=RPCError(
+                request=None, message="PRIVACY_PREMIUM_REQUIRED", code=403,
+            )
+        )
+        greeter = MatchGreeter(MatchGreetingConfig(), db)
+        assert run(greeter.greet(client, "dvai", self.olesya, "AUTO")) == "NO_ACCESS"
+        assert "NO_ACCESS" in db.store["match_greeting:dvai:lkk263"]
+        assert run(greeter.greet(client, "dvai", self.olesya, "AUTO")) == "ALREADY"
+        assert client.send_file.await_count == 1
+
     def test_text_too_many_requests_is_spam_block(self) -> None:
         db = make_state_db()
         client = make_client()
@@ -497,6 +515,18 @@ class TestCollectorGreetsOnMatch:
         text = collector._auto_engine.notify_owner.await_args.args[0]
         assert "спам-блоке" in text and "Роза" in text
 
+    def test_no_access_notifies_owner_and_marks_dialog(self) -> None:
+        collector, _, auto = self._collector("SEMI_AUTO")
+        collector._match_greeter.greet = AsyncMock(return_value="NO_ACCESS")
+        collector._db.add_match_dialog = AsyncMock()
+        collector._db.update_match_dialog = AsyncMock()
+        task = self._task(auto)
+        task.text = MATCH_ID
+        run(collector._process_message(task))
+        text = collector._auto_engine.notify_owner.await_args.args[0]
+        assert "Premium" in text and "сам" in text
+        collector._db.update_match_dialog.assert_awaited_once()
+
     def test_paused_does_not_notify(self) -> None:
         collector, _, auto = self._collector("SEMI_AUTO")
         collector._match_greeter.greet = AsyncMock(return_value="PAUSED")
@@ -522,3 +552,16 @@ class TestCollectorGreetsOnMatch:
         collector, _, auto = self._collector("AUTO")
         run(collector._process_message(self._task(auto)))
         assert collector._match_greeter.greet.await_args.args[3] == Mode.AUTO.value
+
+
+class TestMatchNameKey:
+    def test_decorated_names_compare_equal(self) -> None:
+        """Профиль «[707𝕥𝕙] Лисёна» и ссылка матча «707𝕥𝕙 Лисёна» (профиль не
+        находился, profile_id NULL): NFKC + только буквы/цифры."""
+        from database.database import match_name_key
+
+        assert match_name_key("[707𝕥𝕙] Лисёна") == match_name_key("707𝕥𝕙 Лисёна")
+        assert match_name_key("_miss.E,") == match_name_key("miss.E,")
+        assert match_name_key("Роза 🌹") == match_name_key("роза")
+        assert match_name_key("Роза") != match_name_key("Лисёна")
+        assert match_name_key(",") == ","  # пустое имя не склеивается с другим
