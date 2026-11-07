@@ -525,6 +525,8 @@ tests/test_deterministic_scoring.py::TestFeatureExtractor::test_multiple_positiv
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_evidence_is_extracted
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_evidence_includes_context
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_age_mismatch_h10
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_older_than_card_is_not_h10
+tests/test_deterministic_scoring.py::TestFeatureExtractor::test_younger_than_card_still_h10
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_age_matches_no_h10
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_fake_age_phrase_h10_without_number
 tests/test_deterministic_scoring.py::TestFeatureExtractor::test_fake_age_phrase_h10_without_parsed_age
@@ -1030,6 +1032,7 @@ tests/test_photo_vice.py::TestCollectorPhotoVice::test_album_photos_are_collecte
 tests/test_preferences.py::TestPreferencesEngine::test_evaluate_skip_and_like
 tests/test_preferences.py::TestPreferencesEngine::test_evaluate_forced_like
 tests/test_preferences.py::TestPreferencesEngine::test_serious_relationship_is_hard_like
+tests/test_preferences.py::TestPreferencesEngine::test_med_student_is_hard_like
 tests/test_preferences.py::TestPreferencesEngine::test_forced_like_negation_respected
 tests/test_preferences.py::TestPreferencesEngine::test_no_text_no_rules
 tests/test_preferences.py::TestPreferencesEngine::test_disabled_engine_hits_nothing

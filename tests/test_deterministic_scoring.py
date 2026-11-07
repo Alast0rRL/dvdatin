@@ -268,6 +268,21 @@ class TestFeatureExtractor:
         assert not any(f.code == "H10" for f in result.hard_negatives)
         assert any(f.code == "P02" for f in result.positive_factors)
 
+    def test_older_than_card_is_not_h10(self) -> None:
+        """Карточка 18, в тексте «мне 19» → НЕ H10: старше — не подмена (прод «точк»)."""
+        result = self.extractor.extract(
+            name="точк", age=18, city="Санкт-Петербург",
+            description="мне 19\nя достаточно спокойный человек",
+        )
+        assert not any(f.code == "H10" for f in result.hard_negatives)
+
+    def test_younger_than_card_still_h10(self) -> None:
+        """Карточка 18, в тексте «мне 17» → H10 (прод «Ни»: 17, будет 18 в январе)."""
+        result = self.extractor.extract(
+            age=18, description="Приветик, мне 17, но 05.01 будет 18",
+        )
+        assert any(f.code == "H10" for f in result.hard_negatives)
+
     def test_fake_age_phrase_h10_without_number(self) ->None:
         """Фраза «не даёт поставить этот возраст» (без числа) → H10."""
         result = self.extractor.extract(age=18, description="не дает поставить этот возраст")

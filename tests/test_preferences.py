@@ -134,8 +134,9 @@ class TestPreferencesEngine:
             "нужен человек на всю жизнь. Я хочу партнёра, с которым буду "
             "становиться лучше. И быть таким же человеком для него"
         )
-        assert e.evaluate_forced_like(text) == [label]
+        assert label in e.evaluate_forced_like(text)
         assert e.evaluate_forced_like("Ищу серьёзные отношения") == [label]
+        assert e.evaluate_forced_like("Ищу общение или отношения") == [label]
         assert e.evaluate_forced_like("хочу создать семью") == [label]
         assert e.evaluate_forced_like("не ищу серьезных отношений") == []
         assert e.evaluate_forced_like("без серьезных отношений") == []
@@ -151,6 +152,30 @@ class TestPreferencesEngine:
         )
         assert decision == AIDecision.LIKE
         assert reasons[0] == f"USER_LIKE_HARD:{label}"
+
+    def test_med_student_is_hard_like(self) -> None:
+        """Девушка с меда → жёсткий LIKE, даже если фото «не оч» (владелец, 2026-11-07).
+
+        «мед» сам по себе не правило: «медаль», «комедия», «медведь» — мимо.
+        """
+        from app.preferences import PREFERENCES_EXAMPLE, load_preferences
+        e = load_preferences(path=PREFERENCES_EXAMPLE)
+        label = "медик"
+        for text in (
+            "Учусь в меде, люблю котов",
+            "студентка первого мед. Будущий врач",
+            "учусь на лечебном деле в СЗГМУ",
+            "поступила в мед в этом году",
+            "медсестра, работаю в больнице",
+            "учусь в медколледже",
+        ):
+            assert label in e.evaluate_forced_like(text), text
+        for text in (
+            "закончила школу с медалью",
+            "люблю комедии и медведей",
+            "медленно отвечаю",
+        ):
+            assert label not in e.evaluate_forced_like(text), text
 
     def test_no_text_no_rules(self) -> None:
         e = PreferencesEngine(make_prefs())

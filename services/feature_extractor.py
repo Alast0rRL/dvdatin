@@ -144,7 +144,9 @@ class FeatureExtractor:
                 continue
             if claimed_age not in _AGE_CLAIM_RANGE:
                 continue
-            if claimed_age != age:
+            # Старше карточки («18» в карточке, «мне 19» в тексте) — не подмена:
+            # прячут обычно меньший возраст (владелец, 2026-11-07, прод «точк»).
+            if claimed_age < age:
                 evidence = _extract_evidence(raw_text, match, text_norm)
                 result.hard_negatives.append(
                     Feature(
