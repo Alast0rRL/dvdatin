@@ -573,6 +573,24 @@ class TestDeleteSilent:
         run(folders(db, delete_silent=True).sync(tg.client, S, bot_on=True))
         tg.client.delete_dialog.assert_not_called()
 
+    def test_blocked_chat_deleted_after_confirmed_block(self, db: Database) -> None:
+        """Она кинула в ЧС (2 проверки подряд) — чат удаляется у владельца
+        (владелец, 2026-11-08, @Kimli123); после первой проверки — ещё нет."""
+        girl(db, 1, intro={})
+        tg = FakeTelegram()
+        tg.users[1] = (UserStatusEmpty(), None)
+        tg.client.delete_dialog = AsyncMock(return_value=None)
+        f = folders(db, delete_silent=True)
+        run(f.sync(tg.client, S, bot_on=True))
+        tg.client.delete_dialog.assert_not_called()
+        run(db._connection.execute(
+            "UPDATE dialog_contacts SET block_checked_at = ?", (ago(7),)
+        ))
+        run(f.sync(tg.client, S, bot_on=True))
+        tg.client.delete_dialog.assert_awaited_once()
+        assert tg.client.delete_dialog.await_args.kwargs == {"revoke": False}
+        assert run(db.list_folder_dialogs(S))[0]["chat_deleted_at"]
+
     def test_switched_off_not_deleted(self, db: Database) -> None:
         girl(db, 1, bot=2, intro={"status": "NO_REPLY"})
         tg = FakeTelegram()

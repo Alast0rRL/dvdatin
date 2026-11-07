@@ -356,12 +356,22 @@ class ChatFolders:
         замолчавшие до 2026-11-04 (прод: Guangxi лежала в 50/50)."""
         deleted = 0
         for row in rows:
-            if (row.get("intro_status") or "") != "NO_REPLY":
-                continue
-            if int(row.get("her_count") or 0) or row.get("chat_deleted_at"):
-                continue
-            if int(row.get("total") or 0) == 0 or int(row.get("folder_manual") or 0):
-                continue
+            blocked = bool(row.get("blocked_at"))
+            if blocked:
+                # Она кинула нас в ЧС (подтверждено двумя проверками) — чат
+                # удаляется у владельца (владелец, 2026-11-08, @Kimli123).
+                if row.get("chat_deleted_at") or int(row.get("total") or 0) == 0:
+                    continue
+            else:
+                if (row.get("intro_status") or "") != "NO_REPLY":
+                    continue
+                if int(row.get("her_count") or 0) or row.get("chat_deleted_at"):
+                    continue
+                if (
+                    int(row.get("total") or 0) == 0
+                    or int(row.get("folder_manual") or 0)
+                ):
+                    continue
             if deleted >= MAX_MOVES_PER_PASS:
                 break
             user_id = int(row["user_id"])
@@ -382,10 +392,8 @@ class ChatFolders:
             deleted += 1
             await self._db.set_dialog_chat_deleted(session, user_id, True)
             row["chat_deleted_at"] = _now()  # в этом же проходе — вон из папок
-            logger.info(
-                f"Папки чатов: {name} на {session} молчит и после «АЛООО» — "
-                "чат удалён у тебя"
-            )
+            why = "заблокировала" if blocked else "молчит и после «АЛООО»"
+            logger.info(f"Папки чатов: {name} на {session} {why} — чат удалён у тебя")
 
     async def hide_now(
         self, client: Any, session: str, *, user_id: int = 0, username: str = "",
