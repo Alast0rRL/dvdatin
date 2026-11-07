@@ -198,8 +198,9 @@ class DialogLogger:
     ) -> bool:
         """Живое сообщение лички → журнал, если собеседница в реестре.
 
-        Входящее — её; исходящее, пришедшее событием, — владельца (свои
-        отправки бот пишет сам через ``log_sent``). ``user_id`` — id чата
+        Входящее — её; исходящее, пришедшее событием, — владельца, кроме
+        служебного (``msg.action``, закреп анкеты), которое делает бот.
+        Свои отправки бот пишет сам через ``log_sent``. ``user_id`` — id чата
         (в личке = id собеседницы); без него берётся ``msg.chat_id``.
         """
         if not self._enabled or msg is None:
@@ -210,8 +211,13 @@ class DialogLogger:
         user_id = raw_id
         if not await self.is_tracked(account_session, user_id):
             return False
+        # Служебное исходящее (закреп анкеты) — бот, а не владелец.
+        if outgoing and getattr(msg, "action", None) is not None:
+            sent_by = BOT
+        else:
+            sent_by = OWNER if outgoing else HER
         return await self._save(
-            account_session, user_id, msg, sent_by=OWNER if outgoing else HER,
+            account_session, user_id, msg, sent_by=sent_by,
         )
 
     async def log_sent(
@@ -320,13 +326,14 @@ class DialogLogger:
             logger.error(f"DialogLog: сверка чата {user_id}: {e}")
             await self._db.mark_dialog_synced(account_session, user_id)
             return 0
+        bot_ids = await self._db.get_bot_message_ids(account_session, user_id)
         added = 0
         for msg in reversed(messages):  # от старых к новым
             if not isinstance(getattr(msg, "id", None), int):
                 continue
             if await self._save(
                 account_session, user_id, msg,
-                sent_by=self._history_sender(msg),
+                sent_by=self._history_sender(msg, bot_ids),
             ):
                 added += 1
         if last_tm:
@@ -372,14 +379,24 @@ class DialogLogger:
         return None
 
     @staticmethod
-    def _history_sender(msg: Any) -> str:
-        """Автор сообщения из истории: её / бот (стикер-привет, пересланная
-        анкета) / владелец. Свежие отправки бота уже записаны как ``bot``."""
+    def _history_sender(msg: Any, bot_ids: set[int] | frozenset[int] = frozenset()) -> str:
+        """Автор сообщения из истории: она / бот / владелец.
+
+        Исходящее — ``bot`` только если его id точно известен как отправка
+        бота (живой журнал ``log_sent``, шаг сценария, «АЛООО»). Раньше любой
+        стикер или пересланная анкета считались ботом — и ручной стикер /
+        пересланная анкета владельца помечались ``bot`` (прод 2026-11-07,
+        Вера: владелец вёл переписку сам, а в журнале был «бот»).
+        """
         if not getattr(msg, "out", False):
             return HER
-        if getattr(msg, "fwd_from", None) is not None:
+        mid = getattr(msg, "id", None)
+        if isinstance(mid, int) and mid in bot_ids:
             return BOT
-        if media_kind(msg) == "sticker":
+        # Служебное исходящее (``MessageActionPinMessage`` от pin_message) —
+        # всегда бот: владелец таких не шлёт. Иначе закреп после анкеты
+        # помечался владельцем и выкидывал INTRO_SENT из Auto.
+        if getattr(msg, "action", None) is not None:
             return BOT
         return OWNER
 

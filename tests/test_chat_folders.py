@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -30,10 +31,19 @@ from telethon.tl.types import (
 
 from app.config import ChatFoldersConfig
 from collectors.chat_folders import ARCHIVE_FOLDER, MAX_MOVES_PER_PASS, ChatFolders
+from collectors.dialog_logger import DialogLogger
 from collectors.match_intro import INTRO_SENT, OWNER_CHAT, SCHEDULED
 from database.database import Database
 from services import match_script_rules as R
-from services.chat_folders import ACTIVE, AUTO, BLOCKED, FIFTY, NEW, folder_target
+from services.chat_folders import (
+    ACTIVE,
+    AUTO,
+    BLOCKED,
+    FIFTY,
+    NEW,
+    folder_target,
+    owner_took_over,
+)
 
 S = "dvai_2"
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
@@ -123,7 +133,9 @@ class FakeTelegram:
 
     def _call(self, req: object) -> object:
         if isinstance(req, GetDialogFiltersRequest):
-            return SimpleNamespace(filters=list(self.filters))
+            # Копия: бот правит объекты фильтров у себя, сервер меняется
+            # только успешным UpdateDialogFilterRequest.
+            return SimpleNamespace(filters=deepcopy(self.filters))
         if isinstance(req, UpdateDialogFilterRequest):
             if self.fail_update:
                 raise RuntimeError("FILTER_INCLUDE_TOO_MUCH")
@@ -271,6 +283,48 @@ class TestFolderTarget:
     def test_deleted_or_empty_chat_in_no_folder(self, kw: dict) -> None:
         assert folder_target(self._row(**kw), bot_on=True, now=NOW) is None
 
+    def test_owner_wrote_after_bot_is_not_auto(self) -> None:
+        """Владелец написал позже бота — бот её не ведёт (прод: Вера)."""
+        row = self._row(
+            intro_status=INTRO_SENT, script_step=R.TELL_ME, has_match_dialog=1,
+            her_days=1, last_her_at=self._her(2),
+            last_by="owner", last_msg_at=self._her(1),
+            last_owner_at=self._her(1), last_bot_at=self._her(2),
+        )
+        assert folder_target(row, bot_on=True, now=NOW) == NEW
+
+    def test_no_match_row_is_not_auto(self) -> None:
+        """Строки match_dialogs нет — бот тут не работал, Auto не выбираем."""
+        row = self._row(has_match_dialog=0, greeted_at=NOW.isoformat())
+        assert folder_target(row, bot_on=True, now=NOW) != AUTO
+
+    def test_owner_later_with_empty_status_is_not_auto(self) -> None:
+        row = self._row(
+            intro_status="", has_match_dialog=1, her_days=1,
+            last_her_at=self._her(2), last_by="owner",
+            last_msg_at=self._her(1), last_owner_at=self._her(1),
+            last_bot_at=self._her(2),
+        )
+        assert folder_target(row, bot_on=True, now=NOW) != AUTO
+
+    @pytest.mark.parametrize("owner_hours,bot_hours,took", [
+        (None, None, True),      # ни бота, ни владельца — не Auto
+        (None, 2, False),        # бот писал, владелец нет — не takeover
+        (3, 2, False),           # владелец раньше бота — не takeover
+        (1, 2, True),            # владелец позже бота — takeover
+    ])
+    def test_no_row_uses_message_times(
+        self, owner_hours: float | None, bot_hours: float | None, took: bool,
+    ) -> None:
+        row = self._row(
+            has_match_dialog=0, intro_status="",
+            last_owner_at=self._her(owner_hours) if owner_hours else None,
+            last_bot_at=self._her(bot_hours) if bot_hours else None,
+        )
+        assert owner_took_over(row) is took
+        if bot_hours is None:
+            assert folder_target(row, bot_on=True, now=NOW) != AUTO
+
 
 class TestFolderRows:
     def test_her_days_counted_in_local_time(self, db: Database) -> None:
@@ -354,14 +408,15 @@ class TestChatFolders:
         run(f.sync(tg.client, S, bot_on=True))
         assert tg.members("Active") == {1}
 
-    def test_chat_already_in_owner_folder_is_manual(self, db: Database) -> None:
-        """Первый запуск: владелец сам положил её в папку — не трогаем."""
+    def test_chat_placed_by_owner_before_bot_is_not_manual(self, db: Database) -> None:
+        """Бот ещё никуда не клал её — это не «владелец перенёс»: правила
+        применяются, папка ставится по факту (владелец, 2026-11-07)."""
         girl(db, 1, intro={})
         tg = FakeTelegram(folder(5, "50/50", 1))
         run(folders(db).sync(tg.client, S, bot_on=True))
-        assert tg.members("50/50") == {1}
-        assert tg.members("Auto") == set()
-        assert run(db.list_folder_dialogs(S))[0]["folder_manual"] == 1
+        assert tg.members("Auto") == {1}
+        assert tg.members("50/50") == set()
+        assert run(db.list_folder_dialogs(S))[0]["folder_manual"] == 0
 
     def test_deleted_chat_removed_from_folder(self, db: Database) -> None:
         girl(db, 1, intro={})
@@ -403,6 +458,81 @@ class TestChatFolders:
         tg = FakeTelegram(folder(5, "Auto", 90, 91))
         run(folders(db, max_chats_per_folder=2).sync(tg.client, S, bot_on=True))
         assert tg.members("Auto") == {90, 91}
+
+    def test_owner_takeover_beats_auto(self, db: Database) -> None:
+        """Владелец пишет позже бота — в Auto не кладём, чат ждёт его."""
+        girl(db, 1, her_days=1, owner=1,
+             intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        tg = FakeTelegram()
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        assert tg.members("Auto") == set()
+        assert tg.members("New") == {1}
+
+    def test_old_bad_manual_flag_is_cleared_when_bot_never_placed(
+        self, db: Database,
+    ) -> None:
+        """Старая отметка «владелец перенёс» без folder_placed — ошибка:
+        бот её не клал, значит правила снова работают (прод: Вера)."""
+        girl(db, 1, her_days=2, owner=1)
+        run(db.update_dialog_contact(
+            S, 1, folder_manual=1, chat_folder=NEW,
+        ))
+        tg = FakeTelegram(folder(5, "New", 1))
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        row = run(db.list_folder_dialogs(S))[0]
+        assert row["folder_manual"] == 0
+        assert row["folder_placed"] == NEW
+        assert row["chat_folder"] == NEW
+
+    def test_failed_move_keeps_actual_folder_not_intended(
+        self, db: Database,
+    ) -> None:
+        """Перенос не приняли — chat_folder = факт из Telegram, не цель."""
+        girl(db, 1, intro={})
+        run(db.update_dialog_contact(S, 1, chat_folder=AUTO))
+        tg = FakeTelegram(folder(6, "New", 1))
+        tg.fail_update = True
+        assert run(folders(db).sync(tg.client, S, bot_on=True)) == 0
+        row = run(db.list_folder_dialogs(S))[0]
+        assert row["chat_folder"] == NEW
+        assert row["folder_placed"] == ""
+
+    def test_pin_service_after_intro_stays_auto(self, db: Database) -> None:
+        """Закреп анкеты (служебное исходящее) — бот, Auto не теряется."""
+        girl(db, 1, intro={"status": INTRO_SENT, "script_step": R.TELL_ME})
+        run(DialogLogger(db).log_event(
+            S,
+            SimpleNamespace(
+                id=99, out=True, action=object(), message="",
+                date=datetime.now(timezone.utc),
+            ),
+            outgoing=True, user_id=1,
+        ))
+        row = run(db.list_folder_dialogs(S))[0]
+        assert row["last_bot_at"] is not None
+        tg = FakeTelegram()
+        run(folders(db).sync(tg.client, S, bot_on=True))
+        assert tg.members("Auto") == {1}
+
+    def test_redirected_bot_chat_on_target_account_is_auto(
+        self, db: Database,
+    ) -> None:
+        """При перенаправлении и матч, и контакт — на аккаунте-цели: Auto."""
+        target = "dvai"
+        run(db.upsert_dialog_contact(
+            target, 1, username="girl1", name="G1", matched_at=ago(200),
+        ))
+        run(db.add_match_dialog(target, 1, username="girl1", name="G1"))
+        run(db.update_match_dialog(
+            target, 1, status=INTRO_SENT, script_step=R.TELL_ME,
+        ))
+        run(db.save_dialog_message(
+            target, 1, 1, is_outgoing=True, sent_by="bot",
+            message_date=ago(1),
+        ))
+        tg = FakeTelegram()
+        run(folders(db).sync(tg.client, target, bot_on=True))
+        assert tg.members("Auto") == {1}
 
     def test_friends_not_in_folders(self, db: Database) -> None:
         pid = run(db._connection.execute(

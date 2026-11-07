@@ -2783,6 +2783,11 @@ class TestDialogsPage:
         loop.run_until_complete(db.update_match_dialog(
             "dvai", 77, status="INTRO_SENT", script_step="tell_me",
         ))
+        # Последнее слово бота — иначе владелец считается забравшим чат.
+        loop.run_until_complete(db.save_dialog_message(
+            "dvai", 77, 4, is_outgoing=True, sent_by="bot",
+            message_date="2026-10-29T10:10:00+00:00", text="Рассказывайте",
+        ))
         loop.run_until_complete(db.update_dialog_contact(
             "dvai", 77, chat_folder="auto"))
         _login(client)

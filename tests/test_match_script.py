@@ -395,6 +395,13 @@ class TestMatchScript:
         assert row(db)["script_step"] == R.OWNER
         assert results[0][1] == R.OWNER
 
+    def test_own_wake_message_is_not_owner(self, db: Database) -> None:
+        """Своё «АЛООО» (wake_msg_id) не считается сообщением владельца."""
+        step_to(db, R.AFTER_PIN, wake_msg_id=120)
+        client = make_client([her(130, "привет"), mine(120), her(101, "привет")])
+        run(make_script(db).process(client, S, "AUTO"))
+        assert row(db)["script_step"] != R.OWNER
+
     def test_deleted_chat_silences_bot(self, db: Database) -> None:
         """Владелец удалил её чат (история пуста) — бот не пишет «АЛООО» /
         «Рассказывайте» туда, чат не возвращается (владелец, 2026-11-03)."""

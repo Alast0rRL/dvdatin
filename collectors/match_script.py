@@ -418,7 +418,15 @@ class MatchScript:
         (владелец удалил) — «владелец писал»: бот молчит.
         """
         last_id = int(row.get("script_msg_id") or 0)
+        wake_id = int(row.get("wake_msg_id") or 0)
         since = _parse_dt(row.get("script_at"))
+        try:
+            bot_ids = await self._db.get_bot_message_ids(
+                str(row.get("account_session") or ""), int(row["user_id"]),
+            )
+        except Exception as e:
+            logger.warning(f"MatchScript: не прочитал id бота: {e}")
+            bot_ids = set()
         owner_wrote = False
         seen = False
         texts: list[str] = []
@@ -436,6 +444,10 @@ class MatchScript:
                     if date <= since:
                         break
             if getattr(msg, "out", False):
+                # Своё «АЛООО» и прочие известные отправки бота — не владелец
+                # (иначе бот принимал свой шаг за takeover, прод 2026-11-07).
+                if isinstance(msg_id, int) and msg_id in bot_ids | {wake_id}:
+                    continue
                 if getattr(msg, "action", None) is None:
                     owner_wrote = True
                 continue

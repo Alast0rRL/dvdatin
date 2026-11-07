@@ -214,11 +214,54 @@ class TestDialogLogger:
         ])
         client.iter_messages = history
         assert run(log.sync(client, "dvai")) == 4
-        assert [r["sent_by"] for r in messages(db)] == [BOT, HER, BOT, OWNER]
+        # Неизвестный исходящий стикер / пересылка — владелец, не бот
+        # (прод 2026-11-07, Вера: владелец вёл сам, а в журнале «бот»).
+        assert [r["sent_by"] for r in messages(db)] == [OWNER, HER, OWNER, OWNER]
         assert messages(db)[0]["text"] == "👋"
         # Повторный проход в пределах интервала — без запросов.
         assert run(log.sync(client, "dvai")) == 0
         assert len(history.calls) == 1
+
+    def test_sync_labels_only_known_bot_ids_as_bot(self, db) -> None:
+        """Своё «АЛООО» и шаг сценария — бот; прочие исходящие — владелец."""
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        run(db.add_match_dialog("dvai", 77))
+        run(db.update_match_dialog("dvai", 77, script_msg_id=5, wake_msg_id=6))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value="peer")
+        client.iter_messages = History([
+            tg_msg(5, "анкета", out=True),
+            tg_msg(6, "АЛООО ПРОСЫПАЕМСЯ", out=True),
+            tg_msg(7, "я сам напишу", out=True),
+            tg_msg(8, "привет"),
+        ])
+        assert run(log.sync(client, "dvai")) == 4
+        assert [r["sent_by"] for r in messages(db)] == [
+            BOT, BOT, OWNER, HER,
+        ]
+
+    def test_live_service_message_is_bot(self, db) -> None:
+        """Закреп анкеты (MessageActionPinMessage) — бот, не владелец."""
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        assert run(log.log_event(
+            "dvai", tg_msg(1, "", out=True, action=object()),
+            outgoing=True, user_id=77,
+        ))
+        assert messages(db)[0]["sent_by"] == BOT
+
+    def test_history_service_message_is_bot(self, db) -> None:
+        """Сверка истории тоже не считает закреп владельцем."""
+        log = DialogLogger(db)
+        run(log.track(None, "dvai", ParsedMatch(telegram_user_id=77)))
+        client = AsyncMock()
+        client.get_input_entity = AsyncMock(return_value="peer")
+        client.iter_messages = History([
+            tg_msg(1, "", out=True, action=object()),
+        ])
+        assert run(log.sync(client, "dvai")) == 1
+        assert messages(db)[0]["sent_by"] == BOT
 
     def test_second_sync_only_newer(self, db) -> None:
         log = DialogLogger(db)

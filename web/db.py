@@ -1003,6 +1003,7 @@ class SyncDB:
         SELECT c.account_session, c.user_id, c.username, c.name, c.profile_id,
                c.matched_at, c.last_message_at, c.synced_at,
                c.chat_deleted_at, c.chat_folder, c.blocked_at, c.archived_at,
+               CASE WHEN md.user_id IS NULL THEN 0 ELSE 1 END AS has_match_dialog,
                md.status AS intro_status,
                md.script_step AS script_step,
                md.greeted_at AS greeted_at, md.wake_at AS wake_at,
@@ -1025,11 +1026,19 @@ class SyncDB:
                    AND m.user_id = c.user_id
                  ORDER BY m.message_date DESC, m.telegram_message_id DESC
                  LIMIT 1) AS last_text,
-               (SELECT m.sent_by FROM dialog_messages m
-                 WHERE m.account_session = c.account_session
-                   AND m.user_id = c.user_id
-                 ORDER BY m.message_date DESC, m.telegram_message_id DESC
-                 LIMIT 1) AS last_by
+                (SELECT m.sent_by FROM dialog_messages m
+                  WHERE m.account_session = c.account_session
+                    AND m.user_id = c.user_id
+                  ORDER BY m.message_date DESC, m.telegram_message_id DESC
+                  LIMIT 1) AS last_by,
+                (SELECT MAX(m.message_date) FROM dialog_messages m
+                  WHERE m.account_session = c.account_session
+                    AND m.user_id = c.user_id AND m.sent_by = 'owner')
+                  AS last_owner_at,
+                (SELECT MAX(m.message_date) FROM dialog_messages m
+                  WHERE m.account_session = c.account_session
+                    AND m.user_id = c.user_id AND m.sent_by = 'bot')
+                  AS last_bot_at
         FROM dialog_contacts c
         LEFT JOIN match_dialogs md
           ON md.account_session = c.account_session AND md.user_id = c.user_id

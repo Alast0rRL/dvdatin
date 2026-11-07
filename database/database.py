@@ -319,9 +319,12 @@ CREATE INDEX IF NOT EXISTS idx_match_dialogs_status
 -- удалён в Telegram; кто удалил — Telegram не говорит); новое сообщение
 -- в чате снимает отметку.
 -- archived_at — бот положил её чат в архив Telegram (один раз; вынул владелец —
--- обратно не кладём). chat_folder — папка, куда её положил бот (new | active |
--- fifty | auto, '' — ни в одной); folder_manual = 1 — владелец перенёс чат
--- сам, бот его больше не двигает (collectors/chat_folders.py).
+-- обратно не кладём). chat_folder — ФАКТИЧЕСКАЯ папка из Telegram (new |
+-- active | fifty | auto, '' — ни в одной; её и показывает сайт).
+-- folder_placed — папка, куда чат положил сам бот ('' — не клал): только
+-- расхождение с ней считается ручным переносом владельца.
+-- folder_manual = 1 — владелец перенёс чат сам, бот его больше не двигает
+-- (collectors/chat_folders.py).
 -- blocked_at — эвристика «она нас заблокировала» (статус пуст и нет фото),
 -- block_checked_at — когда проверяли; notify_mark: 'bot_muted' — звук чата
 -- выключил бот (в Auto), 'on' — вернул, '' — не трогал.
@@ -338,6 +341,7 @@ CREATE TABLE IF NOT EXISTS dialog_contacts (
     archived_at TEXT NOT NULL DEFAULT '',
     chat_folder TEXT NOT NULL DEFAULT '',
     folder_manual INTEGER NOT NULL DEFAULT 0,
+    folder_placed TEXT NOT NULL DEFAULT '',
     blocked_at TEXT,
     block_checked_at TEXT NOT NULL DEFAULT '',
     notify_mark TEXT NOT NULL DEFAULT '',
@@ -565,6 +569,7 @@ class Database:
         "archived_at": "TEXT NOT NULL DEFAULT ''",
         "chat_folder": "TEXT NOT NULL DEFAULT ''",
         "folder_manual": "INTEGER NOT NULL DEFAULT 0",
+        "folder_placed": "TEXT NOT NULL DEFAULT ''",
         # ЧС и звук чатов в Auto (владелец, 2026-11-07).
         "blocked_at": "TEXT",
         "block_checked_at": "TEXT NOT NULL DEFAULT ''",
@@ -2213,6 +2218,36 @@ class Database:
             logger.warning(f"save_dialog_message: {e}")
             return False
 
+    async def get_bot_message_ids(
+        self, account_session: str, user_id: int,
+    ) -> set[int]:
+        """Id сообщений, про которые точно известно: их отправил бот.
+
+        Свои отправки бот пишет сам (``sent_by='bot'``), плюс id шага
+        сценария и «АЛООО» из ``match_dialogs``. Сверка истории по ним
+        отличает владельца от бота даже у стикера / пересланной анкеты.
+        """
+        try:
+            cursor = await self._connection.execute(
+                """SELECT telegram_message_id FROM dialog_messages
+                   WHERE account_session = ? AND user_id = ? AND sent_by = 'bot'
+                   UNION
+                   SELECT script_msg_id FROM match_dialogs
+                   WHERE account_session = ? AND user_id = ? AND script_msg_id > 0
+                   UNION
+                   SELECT wake_msg_id FROM match_dialogs
+                   WHERE account_session = ? AND user_id = ? AND wake_msg_id > 0""",
+                (
+                    account_session or "", int(user_id),
+                    account_session or "", int(user_id),
+                    account_session or "", int(user_id),
+                ),
+            )
+            return {int(r[0]) for r in await cursor.fetchall() if r[0]}
+        except Exception as e:
+            logger.warning(f"get_bot_message_ids: {e}")
+            return set()
+
     async def get_dialog_sync_queue(
         self, account_session: str, *, older_than: str, limit: int = 15,
     ) -> list[dict]:
@@ -2280,9 +2315,19 @@ class Database:
                    (SELECT MAX(m.message_date) FROM dialog_messages m
                      WHERE m.account_session = c.account_session
                        AND m.user_id = c.user_id) AS last_msg_at,
+                   (SELECT MAX(m.message_date) FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id AND m.sent_by = 'owner')
+                     AS last_owner_at,
+                   (SELECT MAX(m.message_date) FROM dialog_messages m
+                     WHERE m.account_session = c.account_session
+                       AND m.user_id = c.user_id AND m.sent_by = 'bot')
+                     AS last_bot_at,
                    c.matched_at, c.last_message_at, c.chat_deleted_at,
                    c.archived_at, c.chat_folder, c.folder_manual,
+                   c.folder_placed,
                    c.blocked_at, c.block_checked_at, c.notify_mark, c.block_hits,
+                   CASE WHEN md.user_id IS NULL THEN 0 ELSE 1 END AS has_match_dialog,
                    md.status AS intro_status, md.script_step AS script_step,
                    md.greeted_at AS greeted_at, md.wake_at AS wake_at,
                    (SELECT COUNT(*) FROM dialog_messages m
@@ -2315,7 +2360,7 @@ class Database:
 
     #: Поля dialog_contacts, которые меняет update_dialog_contact.
     _DIALOG_CONTACT_FIELDS: frozenset[str] = frozenset({
-        "archived_at", "chat_folder", "folder_manual",
+        "archived_at", "chat_folder", "folder_manual", "folder_placed",
         "blocked_at", "block_checked_at", "notify_mark", "block_hits",
     })
 

@@ -475,13 +475,11 @@ class ChatFolders:
         filters = getattr(result, "filters", result)
         return list(filters or [])
 
-    async def _sync_folders(
-        self, client: Any, session: str, rows: list[dict], bot_on: bool,
-    ) -> int:
-        filters = await self._load_filters(client, session)
-        if filters is None:
-            return 0
-        titles = self._titles()
+    @staticmethod
+    def _collect_ours(
+        filters: list[Any], titles: dict[str, str],
+    ) -> tuple[dict[str, Any], set[int]]:
+        """Наши папки по названию (casefold) + занятые id фильтров."""
         by_title = {t.casefold(): key for key, t in titles.items()}
         ours: dict[str, Any] = {}
         used_ids: set[int] = set()
@@ -494,12 +492,47 @@ class ChatFolders:
             key = by_title.get(_title(f).casefold())
             if key and key not in ours:
                 ours[key] = f
+        return ours, used_ids
+
+    @staticmethod
+    def _members(ours: dict[str, Any]) -> dict[int, set[str]]:
+        """user_id → в каких наших папках он реально лежит (Telegram)."""
         members: dict[int, set[str]] = {}
         for key, f in ours.items():
             for p in [*f.include_peers, *f.pinned_peers]:
                 uid = _peer_user(p)
                 if uid is not None:
                     members.setdefault(uid, set()).add(key)
+        return members
+
+    @staticmethod
+    def _folder_key(actual: set[str]) -> str:
+        """Ключ фактической папки для сайта; несколько — первый по порядку."""
+        return min(actual, key=FOLDERS.index) if actual else ""
+
+    async def _store_actual(
+        self, session: str, rows: list[dict], members: dict[int, set[str]],
+    ) -> None:
+        """``chat_folder`` = правда из Telegram (сайт читает её как есть)."""
+        for row in rows:
+            user_id = int(row["user_id"])
+            actual = self._folder_key(members.get(user_id, set()))
+            if str(row.get("chat_folder") or "") == actual:
+                continue
+            await self._db.update_dialog_contact(
+                session, user_id, chat_folder=actual,
+            )
+            row["chat_folder"] = actual
+
+    async def _sync_folders(
+        self, client: Any, session: str, rows: list[dict], bot_on: bool,
+    ) -> int:
+        filters = await self._load_filters(client, session)
+        if filters is None:
+            return 0
+        titles = self._titles()
+        ours, used_ids = self._collect_ours(filters, titles)
+        members = self._members(ours)
 
         uncertain = self._uncertain.setdefault(session, set())
         cfg = self._config
@@ -510,10 +543,16 @@ class ChatFolders:
         for row in rows:
             user_id = int(row["user_id"])
             actual = members.get(user_id, set())
+            placed = str(row.get("folder_placed") or "")
             if int(row.get("folder_manual") or 0):
-                continue
-            stored = str(row.get("chat_folder") or "")
-            expected = {stored} if stored else set()
+                if placed:
+                    continue  # бот правда клал её сам — владелец перенёс
+                # Бот никогда не клал её в папку (старая ошибка «владелец
+                # перенёс сам»): снимаем отметку и снова применяем правила.
+                await self._db.update_dialog_contact(
+                    session, user_id, folder_manual=0,
+                )
+                row["folder_manual"] = 0
             target = folder_target(
                 row, bot_on=bot_on,
                 active_days=cfg.active_days,
@@ -526,30 +565,37 @@ class ChatFolders:
             # Telegram сам выкидывает из папок) — это не перенос владельца
             # (прод 2026-11-04: Альбина, Алина).
             pruned = not actual and target is None
-            if user_id not in uncertain and actual != expected and not pruned:
-                # Чат не там, где его оставил бот, — перенёс владелец.
-                where = min(actual) if actual else ""
+            expected = {placed} if placed else set()
+            if (
+                placed and user_id not in uncertain
+                and actual != expected and not pruned
+            ):
+                # Бот клал в X, а сейчас она в другой нашей папке / вне X —
+                # перенёс владелец.
                 logger.info(
                     f"Папки чатов: {row.get('name') or user_id} на {session} — "
                     "владелец перенёс сам, бот больше не трогает"
                 )
                 await self._db.update_dialog_contact(
-                    session, user_id, folder_manual=1, chat_folder=where,
+                    session, user_id, folder_manual=1,
                 )
                 continue
             want = {target} if target else set()
             if actual == want:
-                if user_id in uncertain or stored != (target or ""):
+                if placed != (target or ""):
                     await self._db.update_dialog_contact(
-                        session, user_id, chat_folder=target or "",
+                        session, user_id, folder_placed=target or "",
                     )
-                    uncertain.discard(user_id)
+                    row["folder_placed"] = target or ""
+                uncertain.discard(user_id)
                 if target == AUTO:
                     auto_rows.append(row)
                 continue
             plan.append((row, user_id, actual, target))
 
         if not plan:
+            # Фактическая папка уже совпадает с тем, что знает Telegram.
+            await self._store_actual(session, rows, members)
             await self._mute_pending(client, session, auto_rows, {})
             return 0
         changed: set[str] = set()
@@ -614,22 +660,37 @@ class ChatFolders:
                 failed.add(key)
                 logger.warning(f"Папки чатов: папка «{titles[key]}» на {session}: {e}")
 
+        # После своих переносов сверяем ФАКТ из Telegram, а не то, что просили:
+        # упавшая / не принятая папка не должна записаться как настоящая.
+        members_after = members
+        if changed:
+            fresh = await self._load_filters(client, session)
+            if fresh is not None:
+                fresh_ours, _ = self._collect_ours(fresh, titles)
+                members_after = self._members(fresh_ours)
         moved = 0
         for row, user_id, actual, target in done:
             keys = actual | ({target} if target else set())
             if keys & failed:
                 uncertain.add(user_id)
                 continue
+            want = {target} if target else set()
+            if members_after.get(user_id, set()) != want:
+                uncertain.add(user_id)  # не приняли / владелец переложил
+                continue
             uncertain.discard(user_id)
-            await self._db.update_dialog_contact(
-                session, user_id, chat_folder=target or "",
-            )
+            if str(row.get("folder_placed") or "") != (target or ""):
+                await self._db.update_dialog_contact(
+                    session, user_id, folder_placed=target or "",
+                )
+                row["folder_placed"] = target or ""
             moved += 1
             logger.info(
                 f"Папки чатов: {row.get('name') or user_id} на {session} — "
                 f"{titles[target] if target else 'убран из папок'}"
             )
             await self._update_mute(client, session, row, user_id, target, peers)
+        await self._store_actual(session, rows, members_after)
         await self._mute_pending(client, session, auto_rows, peers)
         return moved
 
