@@ -24,6 +24,11 @@ ABOUT_WHAT: str = "about_what"    # «о чём? / что?»
 #: живой ответ: бот молчит, переписка владельцу (владелец, 2026-11-04).
 HER_QUESTION: str = "her_question"
 OTHER: str = "other"
+#: Она узнала себя в анкете: «Ага это я», «это я да», «мгм, моя анкетка» —
+#: утверждение, а не вопрос. Объяснять «Это твоя анкета…» глупо (она сама это
+#: сказала) → «Рассказывайте, дамочка», как ответил владелец (прод 2026-11-08,
+#: Настя; раньше Карина, сашка).
+RECOGNIZED: str = "recognized"
 #: Стикер / эмодзи / короткое «привет» — единственное, на что на шаге after_pin
 #: отвечает «Рассказывайте»; любой другой текст — владельцу (2026-11-07).
 GREETING: str = "greeting"
@@ -68,6 +73,8 @@ _PRIORITY: dict[str, int] = {
     HER_QUESTION: 3,
     NOT_DAMOCHKA: 2, ASKS_TOO_MANY: 2, ASKS_WHAT: 2, ABOUT_WHAT: 2,
     OTHER: 1,
+    # Узнавание — как приветствие: «это я» + «учусь в меде» — владельцу (OTHER).
+    RECOGNIZED: 0,
     GREETING: 0,
     AND_SO: 3,
 }
@@ -126,12 +133,20 @@ _RULES: list[tuple[str, list[str]]] = [
     (ASKS_WHAT, [
         r"что\s+это", r"это\s+что", r"зачем", r"нафига", r"нахрена", r"нафиг",
         r"к\s+ч[её]му", r"для\s+чего", r"почему\s+(ты\s+)?(мою|моя|это)",
-        r"\bмо(я|ю)\s+анкет", r"что\s+за\b", r"\bэто\s+я\s*\?",  # «это я?» — вопрос; «Ага это я» — подтверждение, не вопрос
+        # «моя анкета?» / «это я?» — вопрос; без «?» это узнавание (RECOGNIZED)
+        r"\bмо(я|ю)\s+(же\s+)?анкет\w*\s*\?", r"что\s+за\b", r"\bэто\s+я\s*\?",
         r"в\s+ч[её]м\s+(прикол|смысл)", r"смысл",
     ]),
     (ABOUT_WHAT, [
         r"о\s+ч[её]м", r"про\s+что", r"(что|чего|че|чё)\s+рассказ",
         r"что\s+(именно|конкретно)", r"\bнапример\b",
+    ]),
+    # После всех вопросов: «это я, зачем?» — вопрос; узнавание — только без «?»
+    # (см. ``classify``).
+    (RECOGNIZED, [
+        r"\bэто\s+(же\s+)?я(\s+(да|ага|же))?[\s)(!.]*$",
+        r"^(ну\s+)?(да|ага|угу|мгм)[\s,]+я[\s)(!.]*$",
+        r"\bмо(я|ю|й)\s+(же\s+)?анкет", r"\bузнал[аи]\b",
     ]),
 ]
 
@@ -170,6 +185,8 @@ def classify(text: str) -> str:
     for kind, patterns in _COMPILED:
         if kind == ASKS_YOUR_CARD and _THIS_IS_YOUR_CARD.search(norm):
             continue
+        if kind == RECOGNIZED and "?" in norm:
+            continue  # «это я да?» — её вопрос, не узнавание
         if any(p.search(norm) for p in patterns):
             if kind in (ASKS_WHAT, ABOUT_WHAT) and _AND_SO.search(norm):
                 return AND_SO  # «Моя анкета в дв, и?» — не «Это твоя анкета…»
@@ -256,7 +273,7 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
             return "card_here", WAIT_MORE
         if kind == ASKS_TOO_MANY:
             return "convenient", WAIT_MORE
-        if kind == GREETING:
+        if kind in (GREETING, RECOGNIZED):
             return "tell_me", TELL_ME
         # Не знаем, что ответить, — передаём владельцу (2026-11-07).
         return None, HANDOFF

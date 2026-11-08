@@ -101,7 +101,16 @@ class TestClassify:
     @pytest.mark.parametrize("text,kind", [
         ("Что это?", R.ASKS_WHAT),
         ("Это я?", R.ASKS_WHAT),
-        ("Ага это я", R.OTHER),  # подтверждение, не вопрос (прод 2026-11-08, Barmalei)
+        # Узнала себя — утверждение, не «что это» (прод: Настя, Карина, сашка)
+        ("Ага это я", R.RECOGNIZED),
+        ("это я да", R.RECOGNIZED),
+        ("моя анкетка", R.RECOGNIZED),
+        ("Ну да, я", R.RECOGNIZED),
+        ("да, это же я)", R.RECOGNIZED),
+        ("это я да?", R.HER_QUESTION),
+        ("моя анкета?", R.ASKS_WHAT),
+        ("это я, зачем?", R.ASKS_WHAT),
+        ("это я тебе фото скинула", R.OTHER),
         ("зачем ты мне мою анкету скинул", R.ASKS_PIN),
         ("Почему ты это скинул мне", R.ASKS_PIN),
         ("зачем отправил", R.ASKS_PIN),
@@ -149,6 +158,14 @@ class TestClassify:
         assert R.strongest(kinds) == R.ASKS_PIN
         assert R.strongest([R.ASKS_PIN, R.ASKS_WHAT]) == R.ASKS_PIN
 
+    def test_recognized_plus_text_goes_to_owner(self) -> None:
+        """«это я» + содержательный текст — не «Рассказывайте», а владельцу;
+        «это я» + «?» — переспрос («Это твоя анкета…»)."""
+        assert R.strongest([R.RECOGNIZED, R.OTHER]) == R.OTHER
+        assert R.strongest([R.OTHER, R.RECOGNIZED]) == R.OTHER
+        assert R.strongest([R.RECOGNIZED, R.ABOUT_WHAT]) == R.ABOUT_WHAT
+        assert R.strongest([R.GREETING, R.RECOGNIZED]) == R.RECOGNIZED
+
 
 class TestHerQuestion:
     """Её свой вопрос — бот молчит, переписка владельцу (прод 2026-11-04,
@@ -189,6 +206,8 @@ class TestDecide:
         (R.WAIT_MORE, R.ASKS_PIN, ("pin_why", R.WAIT_MORE)),
         (R.AFTER_PIN, R.GREETING, ("tell_me", R.TELL_ME)),
         (R.AFTER_PIN, R.OTHER, (None, R.HANDOFF)),
+        (R.AFTER_PIN, R.RECOGNIZED, ("tell_me", R.TELL_ME)),
+        (R.WAIT_MORE, R.RECOGNIZED, (None, R.HANDOFF)),
         (R.AFTER_PIN, R.NOT_DAMOCHKA, (None, R.HANDOFF)),
         (R.WAIT_MORE, R.ASKS_TOO_MANY, ("convenient", R.WAIT_MORE)),
         (R.WAIT_MORE, R.OTHER, (None, R.HANDOFF)),
@@ -278,6 +297,16 @@ class TestMatchScript:
         assert got["script_msg_id"] == 300 and got["script_pending"] == ""
         assert got["script_variant"] == "card_here:0"
         assert results[0][1] == R.WAIT_MORE
+
+    def test_recognized_herself_gets_tell_me_not_card_here(self, db: Database) -> None:
+        """Прод 2026-11-08 (Настя): «Ага это я» → бот ответил «Это твоя анкета
+        из Дайвинчика…» — на её же утверждение. Нужно «Рассказывайте, дамочка»."""
+        step_to(db, R.AFTER_PIN)
+        script = make_script(db)
+        client, _ = reply(db, script, "Ага это я")
+        assert sent_text(client) != "Это твоя анкета из Дайвинчика) Закрепил, чтобы не потерять тебя среди чатов"
+        assert row(db)["script_step"] == R.TELL_ME
+        assert row(db)["script_variant"].startswith("tell_me")
 
     def test_pin_question_answered_not_card_here(self, db: Database) -> None:
         """Прод 2026-11-02 (Рина): «Ну да, я» + «А для чего закрепил?»."""
