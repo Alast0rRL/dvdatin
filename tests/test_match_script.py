@@ -100,6 +100,8 @@ def sent_text(client: AsyncMock) -> str | None:
 class TestClassify:
     @pytest.mark.parametrize("text,kind", [
         ("Что это?", R.ASKS_WHAT),
+        ("Это я?", R.ASKS_WHAT),
+        ("Ага это я", R.OTHER),  # подтверждение, не вопрос (прод 2026-11-08, Barmalei)
         ("зачем ты мне мою анкету скинул", R.ASKS_PIN),
         ("Почему ты это скинул мне", R.ASKS_PIN),
         ("зачем отправил", R.ASKS_PIN),
