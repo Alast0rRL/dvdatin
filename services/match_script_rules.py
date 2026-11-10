@@ -39,6 +39,10 @@ ASKS_KNOW: str = "asks_know"
 #: «а твою анкету можно?» / «скинь свою» / «как ты выглядишь?» → бот пересылает
 #: анкету владельца из чата Leo («Моя анкета»; владелец, 2026-11-07).
 ASKS_YOUR_CARD: str = "asks_your_card"
+#: «Что значит берём?» / «куда берём?» / «кого ты там берёшь?» — вопрос про наше
+#: «Берем)» из лайка. Один ответ «Анкета понравилась, вот и беру)» (владелец,
+#: 2026-11-10); повторный вопрос — владельцу.
+ASKS_TAKING: str = "asks_taking"
 #: Ключ «фразы» — не текст, а пересылка анкеты владельца.
 OWN_CARD: str = "own_card"
 
@@ -68,6 +72,7 @@ _PRIORITY: dict[str, int] = {
     ASKS_KNOW: 4,
     # Просьба показать его анкету — её вопрос, на который у бота есть ответ.
     ASKS_YOUR_CARD: 4,
+    ASKS_TAKING: 4,
     # Её свой вопрос важнее переспроса: «а че» + «ну вы любите розы?» — не
     # «О себе конечно», а владельцу (прод 2026-11-04, @Pivo2007).
     HER_QUESTION: 3,
@@ -104,6 +109,13 @@ _RULES: list[tuple[str, list[str]]] = [
         r"пришлешь|пришлёшь)\s+(\w+\s+)?(себя|фот|фоч|селф|анкет)",
         r"(посмотреть|глянуть|увидеть)\s+(на\s+)?(тебя|вас)\b",
         r"(тебя|вас)\s+(\w+\s+)?(посмотреть|глянуть|увидеть)",
+    ]),
+    (ASKS_TAKING, [
+        # «что значит берём?» / «куда берём? зачем берём?» / «че ты там берешь»;
+        # «в рот берешь или как» без вопросительного слова рядом — не оно.
+        r"что\s+(это\s+)?значит\W{0,3}бер[её](м|шь|те|у)\b",
+        r"\b(куда|кого|чего|че|чё|что|зачем|почему|кому)\s+(ты\s+|вы\s+|мы\s+)?"
+        r"(там\s+|это\s+|тут\s+|уже\s+)?бер[её](м|шь|те|у)\b",
     ]),
     (NOT_DAMOCHKA, [
         r"не\s+дамочк", r"какая\s+(я\s+)?(тебе\s+)?дамочк", r"\bя\s+не\s+дама\b",
@@ -218,13 +230,16 @@ def classify_before_card(text: str) -> str:
 
 def decide_before_card(texts: list[str]) -> str:
     """Что делать с анкетой по её сообщениям на стикер (сильнейший вид):
-    ``know`` — сначала «Лайкнули друг друга…», потом анкета; ``handoff`` —
+    ``know`` — сначала «Лайкнули друг друга…», потом анкета; ``taking`` —
+    сначала «Анкета понравилась, вот и беру)», потом анкета; ``handoff`` —
     её вопрос не про знакомство: анкету не шлём, владельцу; ``card`` — анкета."""
     if not texts:
         return "card"
     kind = strongest([classify_before_card(t) for t in texts])
     if kind == ASKS_KNOW:
         return "know"
+    if kind == ASKS_TAKING:
+        return "taking"
     if kind == HER_QUESTION:
         return "handoff"
     return "card"
@@ -243,7 +258,9 @@ def strongest(kinds: list[str]) -> str:
     return best
 
 
-def decide(step: str, kind: str) -> tuple[str | None, str]:
+def decide(
+    step: str, kind: str, taking_answered: bool = False,
+) -> tuple[str | None, str]:
     """(ключ фразы из ``MatchScriptTexts`` или None, следующий шаг).
 
     Схема владельца (канвас «Знакомство для бота», 2026-11-02):
@@ -264,6 +281,16 @@ def decide(step: str, kind: str) -> tuple[str | None, str]:
         # Пересылка анкеты владельца на любом шаге; дальше — как после
         # «Это твоя анкета…» (её следующий ответ — владельцу).
         return OWN_CARD, WAIT_MORE
+    if kind == ASKS_TAKING:
+        # «Что значит берём?» — один ответ; переспросила («а сказать нельзя»)
+        # или уже поздно (TELL_ME и дальше) — владельцу.
+        if taking_answered:
+            return None, HANDOFF
+        if step in (AFTER_PIN, WAIT_MORE):
+            return "taking", WAIT_MORE
+        if step == TELL_ME:
+            return "taking", HANDOFF
+        return None, HANDOFF
     if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_PIN:
         return "pin_why", WAIT_MORE
     if step in (AFTER_PIN, WAIT_MORE) and kind == ASKS_KNOW:

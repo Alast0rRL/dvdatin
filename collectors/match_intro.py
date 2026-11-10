@@ -360,10 +360,17 @@ class MatchIntro:
                 )
                 await self._update(account_session, user_id, status=OTHER_ACCOUNT)
                 return OTHER_ACCOUNT
-        if plan == "know" and not await self._send_know_before(
-            client, peer, account_session, user_id, name,
+        if plan in ("know", "taking") and not await self._send_know_before(
+            client, peer, account_session, user_id, name, kind=plan,
         ):
             return "FLOOD"
+        if plan == "taking":
+            # Ответ про «берём» дан — после анкеты второй раз бот не отвечает.
+            variants = str(row.get("script_variant") or "")
+            row["script_variant"] = f"{variants},taking:0" if variants else "taking:0"
+            await self._update(
+                account_session, user_id, script_variant=row["script_variant"],
+            )
         try:
             if src_client is not None:
                 sent = await self._send_copy(client, peer, src_client, ids)
@@ -437,13 +444,18 @@ class MatchIntro:
 
     async def _send_know_before(
         self, client: Any, peer: Any, account_session: str, user_id: int,
-        name: str,
+        name: str, kind: str = "know",
     ) -> bool:
-        """«Лайкнули друг друга в Дайвинчике)» перед анкетой (один раз).
+        """«Лайкнули друг друга в Дайвинчике)» (``kind='know'``) или «Анкета
+        понравилась, вот и беру)» (``'taking'``) перед анкетой (один раз).
         False — FloodWait, повтор позже. Прочие ошибки — анкета уходит так."""
         key = (account_session, user_id)
         cfg = self._script
-        texts = [t for t in ((cfg.texts.know_before if cfg else None) or []) if t]
+        pool = (
+            cfg.texts.taking if cfg and kind == "taking"
+            else (cfg.texts.know_before if cfg else None)
+        )
+        texts = [t for t in (pool or []) if t]
         if key in self._know_ids or not texts:
             return True
         try:
@@ -573,10 +585,10 @@ class MatchIntro:
 
     def _know_texts(self) -> set[str]:
         cfg = self._script
-        return {
-            t.strip() for t in ((cfg.texts.know_before if cfg else None) or [])
-            if t and t.strip()
-        }
+        pool = (
+            list(cfg.texts.know_before) + list(cfg.texts.taking) if cfg else []
+        )
+        return {t.strip() for t in pool if t and t.strip()}
 
     @staticmethod
     async def _owner_wrote(

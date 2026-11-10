@@ -28,8 +28,13 @@
       любой ответ → HANDOFF; молчит ещё ``give_up_hours`` → STOPPED, чат
       удаляется только у владельца
 
+«что значит берём? / куда берём? / кого ты там берёшь?» → ``texts.taking``
+(«Анкета понравилась, вот и беру)»), один раз (AFTER_PIN / WAIT_MORE →
+WAIT_MORE, TELL_ME → HANDOFF), повторный вопрос — владельцу.
+
 До анкеты (``MatchIntro``): «мы знакомы? / кто ты?» или одиночное «?» →
 ``texts.know_before`` («Лайкнули друг друга в Дайвинчике)»), затем анкета;
+«что значит берём?» → ``texts.taking``, затем анкета;
 другой её вопрос до анкеты → анкета не уходит, ``OWNER_CHAT``.
 
 Везде: «не пиши» / «есть парень» / прямое оскорбление → чат удаляется
@@ -331,7 +336,11 @@ class MatchScript:
                 ):
                     return None
         else:
-            key, nxt = decide(step, kind)
+            answered = any(
+                part.startswith("taking:")
+                for part in str(row.get("script_variant") or "").split(",")
+            )
+            key, nxt = decide(step, kind, taking_answered=answered)
 
         if nxt == DELETED:
             await client.delete_dialog(

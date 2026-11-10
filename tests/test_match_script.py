@@ -565,6 +565,57 @@ class TestAndSo:
         assert row(db)["script_step"] == R.HANDOFF
 
 
+class TestAsksTaking:
+    """«Что значит берём?» — про наше «Берем)» из лайка (владелец, 2026-11-10;
+    прод: 9 вопросов за две недели, раньше уходили владельцу)."""
+
+    @pytest.mark.parametrize("text", [
+        "Что значит берём?)", "что значит берем", "Что значит \"берём\"?",
+        "куда берём?", "Привет! Куда берём? Зачем берём? 0-0",
+        "Кого ты там берешь?)", "чего ты там берешь то", "Че ты там берешь",
+        "че ты там берёшь?",
+    ])
+    def test_classified(self, text: str) -> None:
+        assert R.classify(text) == R.ASKS_TAKING
+
+    @pytest.mark.parametrize("text", [
+        "в рот берешь или как чзх", "хехппх уже берешь", "ты куда", "куда едешь то",
+    ])
+    def test_other_texts_are_not_taking(self, text: str) -> None:
+        assert R.classify(text) != R.ASKS_TAKING
+
+    def test_priority(self) -> None:
+        assert R.strongest([R.HER_QUESTION, R.ASKS_TAKING]) == R.ASKS_TAKING
+        assert R.strongest([R.ASKS_TAKING, R.ASKS_PIN]) == R.ASKS_PIN
+        assert R.strongest([R.ASKS_TAKING, R.ASKS_BOT]) == R.ASKS_BOT
+
+    @pytest.mark.parametrize("step", [R.AFTER_PIN, R.WAIT_MORE])
+    def test_decide_answers_once(self, step: str) -> None:
+        assert R.decide(step, R.ASKS_TAKING) == ("taking", R.WAIT_MORE)
+        assert R.decide(step, R.ASKS_TAKING, taking_answered=True) == (None, R.HANDOFF)
+
+    def test_decide_after_tell_me_ends_branch(self) -> None:
+        assert R.decide(R.TELL_ME, R.ASKS_TAKING) == ("taking", R.HANDOFF)
+
+    def test_before_card_decision(self) -> None:
+        assert R.decide_before_card(["куда берём?"]) == "taking"
+        assert R.decide_before_card(["привет", "что значит берем"]) == "taking"
+
+    def test_reply_text_and_step(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        client, _ = reply(db, make_script(db), "что значит берём?")
+        assert sent_text(client) == "Анкета понравилась, вот и беру)"
+        assert row(db)["script_step"] == R.WAIT_MORE
+
+    def test_second_question_goes_to_owner(self, db: Database) -> None:
+        step_to(db, R.AFTER_PIN)
+        script = make_script(db)
+        reply(db, script, "что значит берём?")
+        client, _ = reply(db, script, "а сказать нельзя? что значит берем")
+        assert sent_text(client) is None
+        assert row(db)["script_step"] == R.HANDOFF
+
+
 class TestAsksKnow:
     """«Мы знакомы?» / «кто ты?» (владелец, 2026-11-07)."""
 

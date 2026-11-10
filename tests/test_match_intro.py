@@ -940,6 +940,24 @@ class TestBeforeCardQuestions:
         assert client.send_message.await_args.args[1] == "Лайкнули друг друга в Дайвинчике)"
         client.forward_messages.assert_awaited_once()
 
+    @pytest.mark.parametrize("texts", [
+        ("Что значит берём?",), ("Привет", "куда берём?"), ("Кого ты там берешь?)",),
+    ])
+    def test_taking_text_then_card(self, texts: tuple[str, ...]) -> None:
+        db = make_db()
+        client = self._client(*texts)
+        status = run(self._intro(db).send_intro(client, "dvai_2", due_row()))
+        assert status == INTRO_SENT
+        client.send_message.assert_awaited_once()
+        assert client.send_message.await_args.args[1] == "Анкета понравилась, вот и беру)"
+        client.forward_messages.assert_awaited_once()
+        variants = [
+            c.kwargs["script_variant"]
+            for c in db.update_match_dialog.await_args_list
+            if "script_variant" in c.kwargs
+        ]
+        assert variants == ["taking:0"]  # после анкеты второй раз не отвечаем
+
     @pytest.mark.parametrize("texts", [("Привет",), ("😊",), ("",)])
     def test_greeting_goes_straight_to_card(self, texts: tuple[str, ...]) -> None:
         client = self._client(*texts)
