@@ -45,6 +45,10 @@ class LeoNavigationMixin:
                     self._dvinchik_chat_id, limit=limit
                 )
             ]
+        except ConnectionError as e:
+            # Telethon переподключается — не ошибка бота, следующий проход прочитает.
+            logger.warning(f"AutoAction: нет соединения, историю Leo пропускаем: {e}")
+            return []
         except Exception as e:
             # Как и раньше (каждый обработчик глотал свою ошибку): сбой
             # чтения истории не роняет автопоток — кнопки просто не жмём.
