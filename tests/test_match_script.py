@@ -319,6 +319,14 @@ class TestMatchScript:
         assert got["script_step"] == R.WAIT_MORE
         assert got["script_variant"] == "pin_why:0"
 
+    def test_pin_answer_not_repeated(self, db: Database) -> None:
+        """Прод 2026-11-13: «это зачем» → «Это твоя анкета…», затем «ты всех
+        типо закрепляешь» → тот же текст второй раз → ЧС. Второй раз — владельцу."""
+        step_to(db, R.WAIT_MORE, script_variant="card_here:0")
+        client, _ = reply(db, make_script(db), "ты всех типо закрепляешь")
+        assert sent_text(client) is None
+        assert row(db)["script_step"] == R.HANDOFF
+
     def test_why_sent_answered_not_card_here(self, db: Database) -> None:
         """Прод 2026-11-03: «Почему ты это скинул мне» → не «Пусть лежит здесь»."""
         step_to(db, R.AFTER_PIN)

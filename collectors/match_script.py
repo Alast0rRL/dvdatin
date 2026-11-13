@@ -96,6 +96,15 @@ if TYPE_CHECKING:
 SILENCE: str = "silence"
 #: Сколько последних сообщений её чата смотреть перед действием.
 SCAN_HISTORY: int = 30
+
+#: Ответы, которые второй раз не повторяем (одна группа = один смысл):
+#: «Это твоя анкета…» (`card_here` = `pin_why`), «Это так-то удобно», «Пока нет…».
+_REPEAT_GROUPS: dict[str, frozenset[str]] = {
+    "card_here": frozenset({"card_here", "pin_why"}),
+    "pin_why": frozenset({"card_here", "pin_why"}),
+    "convenient": frozenset({"convenient"}),
+    "know_after": frozenset({"know_after"}),
+}
 #: Сколько сообщений после «Так выглядит твоя анкета» смотреть в поиске карточки.
 OWN_CARD_LOOKAHEAD: int = 10
 #: Подпись шага «переслал анкету владельца» (для уведомлений и журнала шагов).
@@ -341,6 +350,15 @@ class MatchScript:
                 for part in str(row.get("script_variant") or "").split(",")
             )
             key, nxt = decide(step, kind, taking_answered=answered)
+            # Тот же ответ второй раз не шлём (прод 2026-11-13: «это зачем» →
+            # «Это твоя анкета…», «ты всех закрепляешь?» → тот же текст → ЧС).
+            sent_keys = {
+                part.split(":", 1)[0]
+                for part in str(row.get("script_variant") or "").split(",")
+            }
+            group = _REPEAT_GROUPS.get(key or "")
+            if group is not None and sent_keys & group:
+                key, nxt = None, HANDOFF
 
         if nxt == DELETED:
             await client.delete_dialog(
